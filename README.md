@@ -50,8 +50,8 @@
 
 ```bash
 # Clone repository
-git clone https://github.com/YOUR_USERNAME/llama-chat-service.git
-cd llama-chat-service
+git clone https://github.com/PetrovDE/chat-service.git
+cd chat-service
 
 # Create virtual environment
 python3.11 -m venv venv
@@ -80,8 +80,8 @@ Open http://localhost:8000 in your browser.
 
 ```bash
 # On your RedOS8/RHEL server
-git clone https://github.com/YOUR_USERNAME/llama-chat-service.git
-cd llama-chat-service
+git clone https://github.com/PetrovDE/chat-service.git
+cd chat-service
 chmod +x scripts/*.sh
 
 # Run installation script
@@ -367,9 +367,9 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 
 ## 📮 Support
 
-- **Issues**: [GitHub Issues](https://github.com/YOUR_USERNAME/llama-chat-service/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/YOUR_USERNAME/llama-chat-service/discussions)
-- **Wiki**: [Documentation Wiki](https://github.com/YOUR_USERNAME/llama-chat-service/wiki)
+- **Issues**: [GitHub Issues](https://github.com/PetrovDE/chat-service/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/PetrovDE/chat-service/discussions)
+- **Wiki**: [Documentation Wiki](https://github.com/PetrovDE/chat-service/wiki)
 
 ## 🚦 Status
 
@@ -380,5 +380,5 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 ---
 
 <div align="center">
-Made with ❤️ for enterprise AI deployment
+From all my ❤️!
 </div>

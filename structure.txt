@@ -1,0 +1,20 @@
+llama-service/
+├── app/
+│   ├── __init__.py
+│   ├── main.py               # ✅ Обновлен - новые endpoints, менеджер моделей
+│   ├── models.py             # ✅ Обновлен - новые модели данных
+│   ├── llm_service.py        # ✅ Обновлен - поддержка Excel
+│   ├── llm_manager.py        # 🆕 НОВЫЙ - управление источниками моделей
+│   ├── api_llm_service.py    # 🆕 НОВЫЙ - корпоративный API
+│   └── static/
+│       ├── index.html        # ✅ Обновлен - UI выбора моделей
+│       ├── styles.css        # Существующие стили (+ новые в HTML)
+│       └── js/
+│           ├── app.js        # ✅ Обновлен - интеграция моделей
+│           ├── api-service.js # Без изменений
+│           ├── chat-manager.js # Без изменений
+│           ├── file-manager.js # ✅ Обновлен - поддержка Excel
+│           ├── ui-controller.js # ✅ Обновлен - управление моделями
+│           └── utils.js       # Без изменений
+├── requirements.txt           # ✅ Обновлен - новые зависимости
+└── README.md

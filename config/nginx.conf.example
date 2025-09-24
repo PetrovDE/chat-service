@@ -1,0 +1,212 @@
+# Nginx configuration for Llama Chat Service
+# Place this file in /etc/nginx/conf.d/llama-chat.conf
+# Replace YOUR_DOMAIN with your actual domain name
+
+upstream llama_chat_backend {
+    server 127.0.0.1:8000;
+    keepalive 32;
+}
+
+# Rate limiting zones
+limit_req_zone $binary_remote_addr zone=llama_chat_limit:10m rate=10r/s;
+limit_conn_zone $binary_remote_addr zone=llama_chat_conn:10m;
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name YOUR_DOMAIN;
+
+    # ACME challenge for Let's Encrypt
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$server_name$request_uri;
+    }
+}
+
+# Main HTTPS server
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name YOUR_DOMAIN;
+
+    # SSL Configuration
+    ssl_certificate /etc/nginx/ssl/YOUR_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/YOUR_DOMAIN/privkey.pem;
+
+    # Modern SSL configuration
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_tickets off;
+    ssl_stapling on;
+    ssl_stapling_verify on;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+
+    # Logging
+    access_log /var/log/nginx/llama-chat-access.log combined;
+    error_log /var/log/nginx/llama-chat-error.log warn;
+
+    # File upload limits
+    client_max_body_size 50M;
+    client_body_buffer_size 1M;
+    client_body_timeout 120s;
+
+    # Proxy timeouts for long LLM responses
+    proxy_connect_timeout 600s;
+    proxy_send_timeout 600s;
+    proxy_read_timeout 600s;
+    send_timeout 600s;
+
+    # Rate limiting
+    limit_req zone=llama_chat_limit burst=20 nodelay;
+    limit_conn llama_chat_conn 10;
+
+    # Static files with caching
+    location /static/ {
+        alias /opt/llama-chat/app/static/;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+
+        # Security for static files
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$ {
+            add_header X-Content-Type-Options nosniff;
+            add_header Cache-Control "public, max-age=31536000, immutable";
+        }
+    }
+
+    # Favicon
+    location /favicon.ico {
+        alias /opt/llama-chat/app/static/favicon.ico;
+        access_log off;
+        log_not_found off;
+    }
+
+    # Health check endpoint (no auth required)
+    location /health {
+        proxy_pass http://llama_chat_backend;
+        proxy_http_version 1.1;
+        access_log off;
+
+        # Quick timeout for health checks
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 5s;
+        proxy_read_timeout 5s;
+    }
+
+    # WebSocket/SSE support for streaming responses
+    location /chat/stream {
+        proxy_pass http://llama_chat_backend;
+        proxy_http_version 1.1;
+
+        # WebSocket headers
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Common headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+
+        # Disable buffering for real-time streaming
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding off;
+
+        # SSE specific headers
+        proxy_set_header Cache-Control "no-cache";
+        proxy_set_header X-Accel-Buffering "no";
+
+        # Don't timeout on long responses
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # API endpoints
+    location /api/ {
+        proxy_pass http://llama_chat_backend;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "keep-alive";
+
+        # Allow large file uploads
+        client_max_body_size 100M;
+
+        # CORS headers (if needed for API)
+        add_header Access-Control-Allow-Origin $http_origin always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+
+        if ($request_method = OPTIONS) {
+            return 204;
+        }
+    }
+
+    # File upload endpoint
+    location /upload {
+        proxy_pass http://llama_chat_backend;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Specific settings for file uploads
+        client_max_body_size 100M;
+        client_body_buffer_size 10M;
+
+        # Longer timeout for file processing
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Main application (catch-all)
+    location / {
+        proxy_pass http://llama_chat_backend;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_set_header Connection "keep-alive";
+
+        # Buffer settings
+        proxy_buffering on;
+        proxy_buffer_size 4k;
+        proxy_buffers 8 4k;
+        proxy_busy_buffers_size 8k;
+
+        # Caching for better performance
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    # Deny access to hidden files
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+}

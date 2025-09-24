@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Llama 3.1 8B Chat Service</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        /* Additional styles for model selector */
+        .model-selector {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .model-info {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: #f7f7f8;
+            border-radius: 20px;
+            border: 1px solid #e1e5e9;
+        }
+
+        .model-source-badge {
+            font-size: 0.85rem;
+            font-weight: 500;
+            padding: 0.25rem 0.5rem;
+            border-radius: 12px;
+        }
+
+        .model-source-badge.local {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        .model-source-badge.api {
+            background: #e3f2fd;
+            color: #1565c0;
+        }
+
+        .model-name {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: #1f2937;
+        }
+
+        .model-settings-btn {
+            padding: 0.5rem;
+            background: white;
+            border: 1px solid #e1e5e9;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .model-settings-btn:hover {
+            background: #f7f7f8;
+            border-color: #c7c7cc;
+        }
+
+        /* Model Settings Panel */
+        .model-settings-panel {
+            position: fixed;
+            top: 0;
+            right: -400px;
+            height: 100vh;
+            width: 400px;
+            background: white;
+            box-shadow: -2px 0 8px rgba(0,0,0,0.1);
+            transition: right 0.3s ease;
+            z-index: 1998;
+            overflow-y: auto;
+        }
+
+        .model-settings-panel.show {
+            right: 0;
+        }
+
+        /* Source Selector */
+        .source-selector {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .radio-option {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .radio-option input[type="radio"] {
+            margin-right: 0.5rem;
+        }
+
+        .radio-label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1rem;
+            border: 1px solid #e1e5e9;
+            border-radius: 8px;
+            transition: all 0.2s;
+            flex: 1;
+        }
+
+        .radio-option input[type="radio"]:checked + .radio-label {
+            background: #f0f9ff;
+            border-color: #007aff;
+        }
+
+        .radio-icon {
+            font-size: 1.2rem;
+        }
+
+        /* Model Select */
+        .model-select-wrapper {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .model-select-wrapper select {
+            flex: 1;
+        }
+
+        .refresh-btn {
+            padding: 0.5rem;
+            background: #f7f7f8;
+            border: 1px solid #e1e5e9;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1.2rem;
+            transition: all 0.2s;
+        }
+
+        .refresh-btn:hover {
+            background: #e8e8e8;
+            transform: rotate(180deg);
+        }
+
+        /* API Config Modal */
+        .api-config-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 3000;
+        }
+
+        .api-config-modal.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid #e1e5e9;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h3 {
+            margin: 0;
+            color: #1f2937;
+        }
+
+        .modal-body {
+            padding: 1.5rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: #374151;
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 1rem;
+            margin-top: 2rem;
+        }
+
+        .primary-button {
+            flex: 1;
+            padding: 0.75rem;
+            background: #007aff;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .primary-button:hover {
+            background: #0056b3;
+        }
+
+        .secondary-button {
+            flex: 1;
+            padding: 0.75rem;
+            background: #f7f7f8;
+            color: #1f2937;
+            border: 1px solid #e1e5e9;
+            border-radius: 8px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .secondary-button:hover {
+            background: #e8e8e8;
+        }
+
+        .config-button {
+            width: 100%;
+            padding: 0.75rem;
+            background: #f0f9ff;
+            color: #007aff;
+            border: 1px solid #007aff;
+            border-radius: 8px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .config-button:hover {
+            background: #007aff;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🦙 Llama 3.1 8B Chat</h1>
+
+        <div class="model-selector">
+            <div class="model-info">
+                <span id="modelSourceIndicator" class="model-source-badge local">💻 Local</span>
+                <span class="model-name" id="currentModelName">llama3.1:8b</span>
+            </div>
+            <button class="model-settings-btn" onclick="toggleModelSettings()" aria-label="Model settings">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                    <path d="M2 17l10 5 10-5M2 12l10 5 10-5"/>
+                </svg>
+            </button>
+        </div>
+
+        <div class="health-status">
+            <div class="status-indicator" id="healthIndicator"></div>
+            <span id="healthStatus">Checking...</span>
+            <button class="toggle-settings" onclick="toggleSettings()" aria-label="Open settings">⚙️ Settings</button>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="chat-container">
+            <div class="chat-messages" id="chatMessages">
+                <div class="message assistant">
+                    <div class="message-bubble">
+                        Hello! I'm Llama 3.1 8B. How can I help you today? You can chat with me or upload files for analysis!
+                    </div>
+                    <div class="message-time">Just now</div>
+                </div>
+            </div>
+
+            <div class="chat-input-container">
+                <div class="input-wrapper">
+                    <textarea
+                        id="messageInput"
+                        class="message-input"
+                        placeholder="Message Llama..."
+                        aria-label="Message input"
+                        rows="1"
+                    ></textarea>
+                    <div class="input-controls">
+                        <button
+                            id="attachButton"
+                            class="attach-button"
+                            onclick="toggleFileModal()"
+                            aria-label="Attach file"
+                            title="Attach file"
+                        >
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66L9.64 16.2a2 2 0 0 1-2.83-2.83l8.49-8.49"/>
+                            </svg>
+                        </button>
+                        <button id="sendButton" class="send-button" onclick="sendMessage()" aria-label="Send message">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <!-- File Upload Modal -->
+                    <div id="fileModal" class="file-modal">
+                        <div class="file-upload-section">
+                            <div class="file-upload-area" id="fileUploadArea" onclick="document.getElementById('fileInput').click()">
+                                <div>
+                                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom: 0.5rem; color: #8e8e93;">
+                                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                        <polyline points="14,2 14,8 20,8"/>
+                                        <line x1="16" y1="13" x2="8" y2="13"/>
+                                        <line x1="16" y1="17" x2="8" y2="17"/>
+                                        <polyline points="10,9 9,9 8,9"/>
+                                    </svg>
+                                    <p style="margin: 0 0 0.25rem 0; font-weight: 500;">Upload a file</p>
+                                    <p style="margin: 0; color: #8e8e93; font-size: 0.85rem;">
+                                        TXT, PDF, CSV, JSON, XLSX, XLS
+                                    </p>
+                                </div>
+                                <input type="file" id="fileInput" style="display: none" onchange="handleFileUpload(event)" accept=".txt,.pdf,.csv,.json,.xlsx,.xls" aria-label="File upload input">
+                            </div>
+
+                            <div id="fileInfo" class="file-info" style="display: none;">
+                                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                        <polyline points="14,2 14,8 20,8"/>
+                                    </svg>
+                                    <h4 id="fileName" style="margin: 0; font-size: 0.9rem; font-weight: 500;">No file selected</h4>
+                                </div>
+                                <p id="fileDetails" style="margin: 0 0 0.5rem 0; font-size: 0.8rem; color: #8e8e93;"></p>
+                                <p id="filePreview" style="margin: 0; font-size: 0.8rem; color: #8e8e93; line-height: 1.3;"></p>
+                            </div>
+                        </div>
+
+                        <div id="analysisSection" class="analysis-section" style="display: none;">
+                            <label class="setting-label">Analysis Type:</label>
+                            <div class="analysis-options">
+                                <button class="analysis-btn active" data-type="summary">Summary</button>
+                                <button class="analysis-btn" data-type="extract_data">Extract Data</button>
+                                <button class="analysis-btn" data-type="qa">Q&A</button>
+                                <button class="analysis-btn" data-type="custom">Custom</button>
+                            </div>
+
+                            <div id="customPromptArea" style="display: none;">
+                                <label for="customPrompt" class="setting-label">Custom Prompt:</label>
+                                <textarea
+                                    id="customPrompt"
+                                    class="custom-prompt"
+                                    placeholder="Enter your custom analysis prompt..."
+                                    rows="3"
+                                ></textarea>
+                            </div>
+
+                            <button
+                                id="analyzeButton"
+                                class="analyze-button"
+                                onclick="analyzeFile()"
+                            >
+                                🔍 Analyze File
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div class="settings-overlay" id="settingsOverlay" onclick="closeSettings()"></div>
+    <div class="settings-panel" id="settingsPanel">
+        <div class="settings-header">
+            <div class="settings-title">Settings</div>
+            <button class="close-button" onclick="closeSettings()" aria-label="Close settings">×</button>
+        </div>
+        <div class="settings-content">
+            <div class="setting-group">
+                <label class="setting-label" for="temperatureInput">Temperature</label>
+                <input
+                    type="range"
+                    id="temperatureInput"
+                    class="setting-input"
+                    min="0"
+                    max="2"
+                    step="0.1"
+                    value="0.7"
+                    aria-describedby="temperatureDesc"
+                >
+                <div class="settings-description" id="temperatureDesc">
+                    Current: <span id="temperatureValue">0.7</span> - Controls response creativity and randomness
+                </div>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="maxTokensInput">Max Tokens</label>
+                <input
+                    type="range"
+                    id="maxTokensInput"
+                    class="setting-input"
+                    min="100"
+                    max="4000"
+                    step="100"
+                    value="1000"
+                    aria-describedby="maxTokensDesc"
+                >
+                <div class="settings-description" id="maxTokensDesc">
+                    Current: <span id="maxTokensValue">1000</span> - Maximum response length
+                </div>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label">
+                    <input type="checkbox" id="streamingEnabled" checked style="margin-right: 0.5rem;">
+                    Enable Streaming
+                </label>
+                <div class="settings-description">
+                    Show words as they're generated in real-time
+                </div>
+            </div>
+
+            <div class="setting-group">
+                <button
+                    onclick="clearChat()"
+                    style="width: 100%; padding: 0.75rem; background: #ff3b30; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 500;"
+                >
+                    Clear Chat History
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Model Settings Panel -->
+    <div class="model-settings-panel" id="modelSettingsPanel">
+        <div class="settings-header">
+            <div class="settings-title">Model Settings</div>
+            <button class="close-button" onclick="closeModelSettings()" aria-label="Close">×</button>
+        </div>
+
+        <div class="settings-content">
+            <!-- Model Source Selection -->
+            <div class="setting-group">
+                <label class="setting-label">Model Source</label>
+                <div class="source-selector">
+                    <label class="radio-option">
+                        <input type="radio" name="modelSource" value="local" checked>
+                        <span class="radio-label">
+                            <span class="radio-icon">💻</span>
+                            Local (Ollama)
+                        </span>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="modelSource" value="api">
+                        <span class="radio-label">
+                            <span class="radio-icon">☁️</span>
+                            Corporate API
+                        </span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Local Model Selection -->
+            <div class="setting-group" id="localModelSection">
+                <label class="setting-label" for="localModelSelect">Local Model</label>
+                <div class="model-select-wrapper">
+                    <select id="localModelSelect" class="setting-input">
+                        <option>Loading models...</option>
+                    </select>
+                    <button id="refreshLocalModels" class="refresh-btn" title="Refresh models">
+                        🔄
+                    </button>
+                </div>
+                <div class="settings-description">
+                    Select from locally installed Ollama models
+                </div>
+            </div>
+
+            <!-- API Configuration Button -->
+            <div class="setting-group" id="apiConfigSection" style="display: none;">
+                <button onclick="showApiConfig()" class="config-button">
+                    ⚙️ Configure API Connection
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Configuration Modal -->
+    <div class="api-config-modal" id="apiConfigModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Configure Corporate API</h3>
+                <button class="close-button" onclick="closeApiConfig()">×</button>
+            </div>
+
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="apiType">API Type</label>
+                    <select id="apiType" class="setting-input">
+                        <option value="openai">OpenAI Compatible</option>
+                        <option value="claude">Claude (Anthropic)</option>
+                        <option value="custom">Custom</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="apiUrl">API Endpoint URL *</label>
+                    <input
+                        type="url"
+                        id="apiUrl"
+                        class="setting-input"
+                        placeholder="https://api.example.com/v1/chat/completions"
+                        required
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="apiKey">API Key *</label>
+                    <input
+                        type="password"
+                        id="apiKey"
+                        class="setting-input"
+                        placeholder="sk-..."
+                        required
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="apiModelName">Model Name *</label>
+                    <input
+                        type="text"
+                        id="apiModelName"
+                        class="setting-input"
+                        placeholder="gpt-4, claude-3, etc."
+                        required
+                    >
+                </div>
+
+                <div class="form-actions">
+                    <button id="saveApiConfig" class="primary-button">
+                        Save & Connect
+                    </button>
+                    <button onclick="closeApiConfig()" class="secondary-button">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

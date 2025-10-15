@@ -145,6 +145,11 @@ export class ApiService {
                 },
             };
 
+            // Add authentication token if available
+            if (window.authManager && window.authManager.getToken()) {
+                defaultOptions.headers['Authorization'] = `Bearer ${window.authManager.getToken()}`;
+            }
+
             const response = await fetch(url, {
                 ...defaultOptions,
                 ...options,

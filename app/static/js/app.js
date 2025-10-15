@@ -3,6 +3,7 @@ import { ChatManager } from './chat-manager.js';
 import { FileManager } from './file-manager.js';
 import { UIController } from './ui-controller.js';
 import { ApiService } from './api-service.js';
+import { AuthManager } from './auth-manager.js';
 
 class App {
     constructor() {
@@ -10,6 +11,7 @@ class App {
         this.fileManager = null;
         this.uiController = null;
         this.apiService = null;
+        this.authManager = null;
     }
 
     async init() {
@@ -21,6 +23,7 @@ class App {
 
             // Initialize managers with dependencies
             this.uiController = new UIController();
+            this.authManager = new AuthManager(this.apiService, this.uiController);
             this.chatManager = new ChatManager(this.apiService, this.uiController);
             this.fileManager = new FileManager(this.apiService, this.uiController, this.chatManager);
 
@@ -33,6 +36,9 @@ class App {
             // Initialize model selector
             await this.uiController.initializeModelSelector();
 
+            // Check authentication and update UI
+            await this.initializeAuth();
+
             // Initial health check
             await this.apiService.checkHealth();
 
@@ -44,6 +50,27 @@ class App {
         } catch (error) {
             console.error('❌ Failed to initialize app:', error);
             this.uiController.showError('Failed to initialize application');
+        }
+    }
+
+    async initializeAuth() {  // ← Добавить весь метод
+        try {
+            if (this.authManager.isAuthenticated()) {
+                // Try to get current user info
+                const user = await this.authManager.getCurrentUserInfo();
+
+                if (user) {
+                    console.log('User authenticated:', user.username);
+                    this.authManager.updateUIAfterAuth();
+                } else {
+                    console.log('Token invalid, clearing');
+                    this.authManager.clearToken();
+                }
+            } else {
+                console.log('User not authenticated');
+            }
+        } catch (error) {
+            console.error('Error initializing auth:', error);
         }
     }
 
@@ -169,6 +196,10 @@ const app = new App();
 document.addEventListener('DOMContentLoaded', () => {
     app.init();
 });
+
+// Make app globally available for auth functions
+window.app = app;
+window.authManager = null;  // Will be set after init
 
 // Export for module access
 export default app;

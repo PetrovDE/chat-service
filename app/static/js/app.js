@@ -4,6 +4,7 @@ import { FileManager } from './file-manager.js';
 import { UIController } from './ui-controller.js';
 import { ApiService } from './api-service.js';
 import { AuthManager } from './auth-manager.js';
+import { ConversationsManager } from './conversations-manager.js';
 
 class App {
     constructor() {
@@ -12,6 +13,7 @@ class App {
         this.uiController = null;
         this.apiService = null;
         this.authManager = null;
+        this.conversationsManager = null;
     }
 
     async init() {
@@ -24,6 +26,11 @@ class App {
             // Initialize managers with dependencies
             this.uiController = new UIController();
             this.authManager = new AuthManager(this.apiService, this.uiController);
+            this.conversationsManager = new ConversationsManager(  // ← Добавить
+                this.apiService,
+                this.uiController,
+                this.authManager
+            );
             this.chatManager = new ChatManager(this.apiService, this.uiController);
             this.fileManager = new FileManager(this.apiService, this.uiController, this.chatManager);
 
@@ -53,7 +60,7 @@ class App {
         }
     }
 
-    async initializeAuth() {  // ← Добавить весь метод
+    async initializeAuth() {
         try {
             if (this.authManager.isAuthenticated()) {
                 // Try to get current user info
@@ -62,6 +69,9 @@ class App {
                 if (user) {
                     console.log('User authenticated:', user.username);
                     this.authManager.updateUIAfterAuth();
+
+                    // Load conversations after auth
+                    await this.conversationsManager.loadConversations();
                 } else {
                     console.log('Token invalid, clearing');
                     this.authManager.clearToken();

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Models management router - handles model selection and information
 """
 

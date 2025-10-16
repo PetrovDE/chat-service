@@ -1,4 +1,4 @@
-"""
+﻿"""
 Statistics router - handles usage statistics
 """
 

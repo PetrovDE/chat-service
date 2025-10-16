@@ -1,4 +1,4 @@
-"""
+﻿"""
 Authentication and security utilities
 """
 

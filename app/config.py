@@ -1,49 +1,68 @@
-"""
-Application configuration
-"""
-
-import os
+﻿# app/config.py
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
-from pydantic_settings import BaseSettings
-from dotenv import load_dotenv
-
-load_dotenv()
+from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    """Application settings"""
-
-    # Database
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL",
-        "postgresql+asyncpg://llama_chat_user:your_password@localhost:5432/llama_chat_db"
+    """Настройки приложения"""
+    
+    # Конфигурация Pydantic v2
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore"  # Игнорировать дополнительные поля из .env
     )
-
+    
+    # Database
+    DATABASE_URL: str
+    ALEMBIC_DATABASE_URL: str | None = None
+    
     # Ollama
-    OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
-
+    OLLAMA_HOST: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "llama3.1:8b"
+    
     # OpenAI (optional)
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4")
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4"
+    
+    # JWT Authentication
+    JWT_SECRET_KEY: str
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days
+    
+    # Password
+    PASSWORD_MIN_LENGTH: int = 8
+    
+    # CORS (stored as string, parsed to list)
+    ALLOWED_ORIGINS: str = "http://localhost:8000,http://127.0.0.1:8000"
+    
+    # Model settings
+    DEFAULT_MODEL_SOURCE: str = "ollama"
+    
+    # Server
+    SERVER_HOST: str = "127.0.0.1"
+    SERVER_PORT: int = 8000
+    LOG_LEVEL: str = "INFO"
+    
+    def get_allowed_origins(self) -> List[str]:
+        """Parse ALLOWED_ORIGINS string to list"""
+        return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")]
+    
+    def get_alembic_url(self) -> str:
+        """Get Alembic database URL (sync version)"""
+        if self.ALEMBIC_DATABASE_URL:
+            return self.ALEMBIC_DATABASE_URL
+        # Convert async URL to sync
+        return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
 
-    # Security
-    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
-    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
 
-    # CORS
-    ALLOWED_ORIGINS: List[str] = [
-        "http://localhost:8000",
-        "http://127.0.0.1:8000"
-    ]
-
-    # Model selection
-    DEFAULT_MODEL_SOURCE: str = os.getenv("DEFAULT_MODEL_SOURCE", "ollama")
-
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+@lru_cache()
+def get_settings() -> Settings:
+    """Get cached settings instance"""
+    return Settings()
 
 
-settings = Settings()
+# Global settings instance
+settings = get_settings()

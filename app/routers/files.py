@@ -1,4 +1,4 @@
-"""
+﻿"""
 Files router - handles file uploads and processing
 """
 

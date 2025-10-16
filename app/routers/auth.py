@@ -1,4 +1,4 @@
-"""
+﻿"""
 Authentication router
 """
 

@@ -1,7 +1,7 @@
-// API communication service
+// API Service - handles all API calls
 export class ApiService {
     constructor() {
-        this.baseURL = '';  // Using relative URLs
+        this.baseURL = '';
         this.uiController = null;
     }
 
@@ -9,134 +9,6 @@ export class ApiService {
         this.uiController = uiController;
     }
 
-    // Health check
-    async checkHealth() {
-        try {
-            const response = await fetch('/health');
-            const health = await response.json();
-
-            if (this.uiController) {
-                this.uiController.updateHealthStatus(health);
-            }
-
-            return health;
-        } catch (error) {
-            console.error('Health check failed:', error);
-            if (this.uiController) {
-                this.uiController.updateHealthError();
-            }
-            throw error;
-        }
-    }
-
-    // Chat endpoints
-    async sendChat(requestData) {
-        try {
-            const response = await fetch('/chat', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(requestData)
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || 'Failed to get response');
-            }
-
-            return await response.json();
-        } catch (error) {
-            console.error('Chat request failed:', error);
-            throw error;
-        }
-    }
-
-    async streamChat(requestData) {
-        try {
-            const response = await fetch('/chat/stream', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(requestData)
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || 'Streaming request failed');
-            }
-
-            return response;
-        } catch (error) {
-            console.error('Stream chat request failed:', error);
-            throw error;
-        }
-    }
-
-    // File endpoints
-    async uploadFile(file) {
-        try {
-            const formData = new FormData();
-            formData.append('file', file);
-
-            const response = await fetch('/upload', {
-                method: 'POST',
-                body: formData
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || 'Upload failed');
-            }
-
-            return await response.json();
-        } catch (error) {
-            console.error('File upload failed:', error);
-            throw error;
-        }
-    }
-
-    async analyzeFile(analysisData) {
-        try {
-            const response = await fetch('/analyze-file', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(analysisData)
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || 'Analysis failed');
-            }
-
-            return await response.json();
-        } catch (error) {
-            console.error('File analysis failed:', error);
-            throw error;
-        }
-    }
-
-    // Model information
-    async getModels() {
-        try {
-            const response = await fetch('/models');
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || 'Failed to get models');
-            }
-
-            return await response.json();
-        } catch (error) {
-            console.error('Get models failed:', error);
-            throw error;
-        }
-    }
-
-    // Generic request wrapper with error handling
     async request(url, options = {}) {
         try {
             const defaultOptions = {
@@ -146,8 +18,8 @@ export class ApiService {
             };
 
             // Add authentication token if available
-            if (window.authManager && window.authManager.getToken()) {
-                defaultOptions.headers['Authorization'] = `Bearer ${window.authManager.getToken()}`;
+            if (window.app && window.app.authManager && window.app.authManager.getToken()) {
+                defaultOptions.headers['Authorization'] = `Bearer ${window.app.authManager.getToken()}`;
             }
 
             const response = await fetch(url, {
@@ -165,13 +37,11 @@ export class ApiService {
                     const errorData = await response.json();
                     errorMessage = errorData.detail || errorMessage;
                 } catch {
-                    // If response is not JSON, use status text
                     errorMessage = response.statusText || errorMessage;
                 }
                 throw new Error(errorMessage);
             }
 
-            // Handle different content types
             const contentType = response.headers.get('content-type');
             if (contentType && contentType.includes('application/json')) {
                 return await response.json();
@@ -186,66 +56,74 @@ export class ApiService {
         }
     }
 
-    // Request interceptors for adding auth, logging, etc.
-    addRequestInterceptor(interceptor) {
-        // For future use - could modify requests before sending
-        this.requestInterceptors = this.requestInterceptors || [];
-        this.requestInterceptors.push(interceptor);
-    }
-
-    addResponseInterceptor(interceptor) {
-        // For future use - could modify responses after receiving
-        this.responseInterceptors = this.responseInterceptors || [];
-        this.responseInterceptors.push(interceptor);
-    }
-
-    // Utility methods for common patterns
     async get(endpoint) {
-        return this.request(endpoint, { method: 'GET' });
+        const url = `${this.baseURL}${endpoint}`;
+        return await this.request(url, { method: 'GET' });
     }
 
     async post(endpoint, data) {
-        return this.request(endpoint, {
+        const url = `${this.baseURL}${endpoint}`;
+        return await this.request(url, {
             method: 'POST',
             body: JSON.stringify(data)
         });
     }
 
     async put(endpoint, data) {
-        return this.request(endpoint, {
+        const url = `${this.baseURL}${endpoint}`;
+        return await this.request(url, {
             method: 'PUT',
             body: JSON.stringify(data)
         });
     }
 
     async delete(endpoint) {
-        return this.request(endpoint, { method: 'DELETE' });
+        const url = `${this.baseURL}${endpoint}`;
+        const response = await this.request(url, { method: 'DELETE' });
+        return response || { success: true };
     }
 
-    // Connection testing
-    async testConnection() {
-        try {
-            await this.checkHealth();
-            return { status: 'connected', message: 'Connection successful' };
-        } catch (error) {
-            return { status: 'error', message: error.message };
+    async patch(endpoint, data) {
+        const url = `${this.baseURL}${endpoint}`;
+        return await this.request(url, {
+            method: 'PATCH',
+            body: JSON.stringify(data)
+        });
+    }
+
+    async chat(message, conversationId = null) {
+        const endpoint = conversationId ? '/chat/continue' : '/chat';
+        const data = {
+            message: message,
+            temperature: 0.7,
+            max_tokens: 2048
+        };
+
+        if (conversationId) {
+            data.conversation_id = conversationId;
+            data.include_history = true;
         }
+
+        return await this.post(endpoint, data);
     }
 
-    // Performance monitoring
-    async measureRequestTime(requestFunction) {
-        const startTime = performance.now();
+    async checkHealth() {
         try {
-            const result = await requestFunction();
-            const endTime = performance.now();
-            const duration = endTime - startTime;
-            console.log(`Request completed in ${duration.toFixed(2)}ms`);
-            return { result, duration };
+            const health = await this.get('/health');
+
+            if (this.uiController) {
+                this.uiController.updateHealthStatus(health.status, health.model_info);
+            }
+
+            return health;
         } catch (error) {
-            const endTime = performance.now();
-            const duration = endTime - startTime;
-            console.log(`Request failed after ${duration.toFixed(2)}ms:`, error);
-            throw error;
+            console.error('Health check failed:', error);
+
+            if (this.uiController) {
+                this.uiController.updateHealthStatus('error', null);
+            }
+
+            return { status: 'error' };
         }
     }
 }

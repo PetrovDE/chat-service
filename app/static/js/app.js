@@ -26,12 +26,16 @@ class App {
             // Initialize managers with dependencies
             this.uiController = new UIController();
             this.authManager = new AuthManager(this.apiService, this.uiController);
-            this.conversationsManager = new ConversationsManager(  // ← Добавить
+            this.conversationsManager = new ConversationsManager(
                 this.apiService,
                 this.uiController,
                 this.authManager
             );
-            this.chatManager = new ChatManager(this.apiService, this.uiController);
+            this.chatManager = new ChatManager(
+                this.apiService,
+                this.uiController,
+                this.conversationsManager
+            );
             this.fileManager = new FileManager(this.apiService, this.uiController, this.chatManager);
 
             // Connect API service to UI controller for health updates
@@ -63,14 +67,11 @@ class App {
     async initializeAuth() {
         try {
             if (this.authManager.isAuthenticated()) {
-                // Try to get current user info
                 const user = await this.authManager.getCurrentUserInfo();
 
                 if (user) {
                     console.log('User authenticated:', user.username);
                     this.authManager.updateUIAfterAuth();
-
-                    // Load conversations after auth
                     await this.conversationsManager.loadConversations();
                 } else {
                     console.log('Token invalid, clearing');
@@ -85,79 +86,64 @@ class App {
     }
 
     setupEventListeners() {
-        // Message input handling
+        // Send message button
+        const sendBtn = document.getElementById('sendMessage');
+        if (sendBtn) {
+            sendBtn.addEventListener('click', () => this.handleSendMessage());
+        }
+
+        // Enter key in input
         const messageInput = document.getElementById('messageInput');
-
-        // Auto-resize textarea
-        messageInput.addEventListener('input', (e) => {
-            e.target.style.height = 'auto';
-            e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
-        });
-
-        // Send message on Enter (Shift+Enter for new line)
-        messageInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                this.chatManager.sendMessage();
-            }
-        });
-
-        // Global click handler for modal management
-        document.addEventListener('click', (e) => {
-            this.uiController.handleGlobalClick(e);
-        });
-
-        // Settings form handlers
-        this.setupSettingsHandlers();
-
-        // Model settings handlers
-        this.setupModelSettingsHandlers();
-    }
-
-    setupSettingsHandlers() {
-        // Temperature control
-        const tempInput = document.getElementById('temperatureInput');
-        const tempValue = document.getElementById('temperatureValue');
-        if (tempInput && tempValue) {
-            tempInput.addEventListener('input', () => {
-                tempValue.textContent = tempInput.value;
-            });
-        }
-
-        // Max tokens control
-        const tokensInput = document.getElementById('maxTokensInput');
-        const tokensValue = document.getElementById('maxTokensValue');
-        if (tokensInput && tokensValue) {
-            tokensInput.addEventListener('input', () => {
-                tokensValue.textContent = tokensInput.value;
-            });
-        }
-
-        // Streaming toggle
-        const streamingToggle = document.getElementById('streamingEnabled');
-        if (streamingToggle) {
-            streamingToggle.addEventListener('change', () => {
-                this.chatManager.setStreamingEnabled(streamingToggle.checked);
-            });
-        }
-    }
-
-    setupModelSettingsHandlers() {
-        // Source type radio buttons
-        document.querySelectorAll('input[name="modelSource"]').forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                const localSection = document.getElementById('localModelSection');
-                const apiSection = document.getElementById('apiConfigSection');
-
-                if (e.target.value === 'local') {
-                    localSection.style.display = 'block';
-                    apiSection.style.display = 'none';
-                } else {
-                    localSection.style.display = 'none';
-                    apiSection.style.display = 'block';
+        if (messageInput) {
+            messageInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.handleSendMessage();
                 }
             });
-        });
+        }
+
+        // File upload
+        const fileUpload = document.getElementById('fileUpload');
+        if (fileUpload) {
+            fileUpload.addEventListener('change', (e) => this.handleFileUpload(e));
+        }
+
+        // Clear chat
+        const clearBtn = document.getElementById('clearChat');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', () => this.handleClearChat());
+        }
+    }
+
+    async handleSendMessage() {
+        const input = document.getElementById('messageInput');
+        const message = input.value.trim();
+
+        if (!message) return;
+
+        // Clear input
+        input.value = '';
+
+        // Send to chat manager
+        await this.chatManager.sendMessage(message);
+    }
+
+    async handleFileUpload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        await this.fileManager.uploadFile(file);
+
+        // Reset input
+        event.target.value = '';
+    }
+
+    handleClearChat() {
+        if (confirm('Clear all messages in current chat?')) {
+            this.chatManager.clearChat();
+            this.conversationsManager.createNewConversation();
+        }
     }
 
     startHealthMonitoring() {
@@ -168,48 +154,16 @@ class App {
     }
 }
 
-// Global functions for HTML onclick handlers
-window.sendMessage = () => app.chatManager.sendMessage();
-window.toggleFileModal = () => app.fileManager.toggleModal();
-window.handleFileUpload = (event) => app.fileManager.handleFileUpload(event);
-window.analyzeFile = () => app.fileManager.analyzeFile();
-window.toggleSettings = () => app.uiController.toggleSettings();
-window.closeSettings = () => app.uiController.closeSettings();
-window.clearChat = () => app.chatManager.clearChat();
-
-// Model settings functions
-window.toggleModelSettings = () => {
-    const panel = document.getElementById('modelSettingsPanel');
-    panel.classList.toggle('show');
-
-    // Load models if opening
-    if (panel.classList.contains('show')) {
-        app.uiController.loadLocalModels();
-    }
-};
-
-window.closeModelSettings = () => {
-    document.getElementById('modelSettingsPanel').classList.remove('show');
-};
-
-window.showApiConfig = () => {
-    document.getElementById('apiConfigModal').classList.add('show');
-    app.uiController.loadSavedApiConfig();
-};
-
-window.closeApiConfig = () => {
-    document.getElementById('apiConfigModal').classList.remove('show');
-};
-
 // Initialize app when DOM is ready
 const app = new App();
-document.addEventListener('DOMContentLoaded', () => {
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => app.init());
+} else {
     app.init();
-});
+}
 
-// Make app globally available for auth functions
+// Make app globally available
 window.app = app;
-window.authManager = null;  // Will be set after init
 
-// Export for module access
 export default app;

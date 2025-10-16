@@ -1,134 +1,193 @@
+"""
+Pydantic models for request/response validation
+"""
+
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 
-class ChatMessage(BaseModel):
-    """Represents a single message in a conversation"""
-    role: Literal["user", "assistant", "system"] = Field(
-        description="The role of the message sender"
-    )
-    content: str = Field(
-        description="The content of the message",
-        min_length=1
-    )
-    timestamp: Optional[datetime] = Field(
-        default_factory=datetime.now,
-        description="When the message was created"
-    )
-
+# ==================== CHAT MODELS ====================
 
 class ChatRequest(BaseModel):
-    """Request model for chat endpoint"""
-    message: str = Field(
-        description="The user's message to send to the LLM",
-        min_length=1,
-        max_length=10000
-    )
-    conversation_history: Optional[List[ChatMessage]] = Field(
-        default=[],
-        description="Previous messages in the conversation for context"
-    )
-    temperature: Optional[float] = Field(
-        default=0.7,
-        ge=0.0,
-        le=2.0,
-        description="Controls randomness in responses (0.0 = deterministic, 2.0 = very random)"
-    )
-    max_tokens: Optional[int] = Field(
-        default=1000,
-        ge=1,
-        le=4000,
-        description="Maximum number of tokens in the response"
-    )
+    """Basic chat request"""
+    message: str = Field(..., min_length=1, description="User message")
+    temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: Optional[int] = Field(default=2048, ge=1, le=8192)
+
+
+class ChatRequestExtended(ChatRequest):
+    """Extended chat request with conversation context"""
+    conversation_id: Optional[str] = Field(default=None)
+    include_history: bool = Field(default=False)
+    history_length: Optional[int] = Field(default=10, ge=1, le=50)
 
 
 class ChatResponse(BaseModel):
-    """Response model for chat endpoint"""
-    response: str = Field(
-        description="The LLM's response message"
-    )
-    model: str = Field(
-        description="The model used to generate the response"
-    )
-    timestamp: datetime = Field(
-        default_factory=datetime.now,
-        description="When the response was generated"
-    )
-    tokens_used: Optional[int] = Field(
-        default=None,
-        description="Number of tokens used in generation"
-    )
-    conversation_id: Optional[str] = Field(
-        default=None,
-        description="Unique identifier for this conversation"
-    )
+    """Chat response"""
+    response: str = Field(..., description="LLM response")
+    model: str = Field(..., description="Model used")
+    tokens_used: Optional[int] = Field(default=None)
+    generation_time: Optional[float] = Field(default=None)
+    conversation_id: Optional[str] = Field(default=None)
 
 
-class HealthResponse(BaseModel):
-    """Health check response"""
-    status: str = Field(default="healthy")
-    timestamp: datetime = Field(default_factory=datetime.now)
-    ollama_status: str = Field(description="Status of Ollama connection")
-    model_available: bool = Field(description="Whether Llama 3.1 8b is available")
+class ChatMessage(BaseModel):
+    """Individual chat message"""
+    role: str = Field(..., description="Message role (user/assistant)")
+    content: str = Field(..., description="Message content")
 
+
+# ==================== CONVERSATION MODELS ====================
+
+class ConversationCreate(BaseModel):
+    """Create conversation request"""
+    title: Optional[str] = Field(default=None, max_length=500)
+    model_source: str = Field(default="ollama")
+    model_name: str = Field(default="llama3.1:8b")
+
+
+class ConversationResponse(BaseModel):
+    """Conversation response"""
+    id: str
+    title: str
+    model_source: str
+    model_name: str
+    is_archived: bool
+    message_count: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MessageResponse(BaseModel):
+    """Message response"""
+    id: str
+    role: str
+    content: str
+    model_name: Optional[str] = None
+    tokens_used: Optional[int] = None
+    generation_time: Optional[float] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ConversationHistoryResponse(BaseModel):
+    """Conversation with messages"""
+    conversation: ConversationResponse
+    messages: List[MessageResponse]
+
+
+class ConversationListResponse(BaseModel):
+    """List of conversations"""
+    conversations: List[ConversationResponse]
+    total: int
+
+
+# ==================== AUTHENTICATION MODELS ====================
+
+class UserRegister(BaseModel):
+    """User registration request"""
+    username: str = Field(min_length=3, max_length=50)
+    email: str
+    password: str = Field(min_length=8)
+    full_name: Optional[str] = Field(default=None, max_length=255)
+
+
+class UserLogin(BaseModel):
+    """User login request"""
+    username: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    """User response model"""
+    id: str
+    username: str
+    email: str
+    full_name: Optional[str] = None
+    is_active: bool
+    is_admin: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TokenResponse(BaseModel):
+    """JWT token response"""
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+
+class UserUpdate(BaseModel):
+    """User update request"""
+    username: Optional[str] = Field(default=None, min_length=3, max_length=50)
+    email: Optional[str] = Field(default=None)
+    full_name: Optional[str] = Field(default=None, max_length=255)
+
+
+class PasswordChange(BaseModel):
+    """Password change request"""
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+
+# ==================== FILE MODELS ====================
 
 class FileAnalysisRequest(BaseModel):
-    """Request model for file analysis"""
-    content: str = Field(
-        description="The file content to analyze",
-        min_length=1
-    )
-    filename: str = Field(
-        description="Original filename"
-    )
-    analysis_type: Literal["summary", "extract_data", "qa", "custom"] = Field(
-        default="summary",
-        description="Type of analysis to perform"
-    )
-    custom_prompt: Optional[str] = Field(
-        default=None,
-        description="Custom analysis prompt"
-    )
+    """File analysis request"""
+    filename: str
+    content: str
+    analysis_type: str = Field(default="summarize")
+    custom_prompt: Optional[str] = None
 
 
 class FileAnalysisResponse(BaseModel):
-    """Response model for file analysis"""
-    filename: str = Field(description="Original filename")
-    analysis_type: str = Field(description="Type of analysis performed")
-    result: str = Field(description="Analysis result")
-    model: str = Field(description="Model used for analysis")
-    timestamp: datetime = Field(default_factory=datetime.now)
+    """File analysis response"""
+    filename: str
+    analysis_type: str
+    result: str
+    model: str
+    timestamp: datetime
 
 
-class ErrorResponse(BaseModel):
-    """Error response model"""
-    error: str = Field(description="Error message")
-    detail: Optional[str] = Field(default=None, description="Additional error details")
-    timestamp: datetime = Field(default_factory=datetime.now)
-
-
-class ModelSourceConfig(BaseModel):
-    """Configuration for model source"""
-    source: Literal["local", "api"] = Field(
-        description="Source type - local Ollama or API"
-    )
-    api_config: Optional[dict] = Field(
-        default=None,
-        description="API configuration if source is 'api'"
-    )
-
+# ==================== MODEL MANAGEMENT ====================
 
 class ModelInfo(BaseModel):
-    """Information about a model"""
-    name: str = Field(description="Model name")
-    size: Optional[int] = Field(default=None, description="Model size in bytes")
-    modified: Optional[str] = Field(default=None, description="Last modified date")
-    source: Literal["local", "api"] = Field(description="Model source")
+    """Model information"""
+    name: str
+    source: str
+    size: Optional[str] = None
+    modified: Optional[str] = None
 
 
-class ModelsListResponse(BaseModel):
-    """Response for listing models"""
-    models: List[str] = Field(description="List of available model names")
-    current_model: Optional[str] = Field(description="Currently active model")
-    source: str = Field(description="Current source (local/api)")
+class ModelListResponse(BaseModel):
+    """List of available models"""
+    models: List[ModelInfo]
+    active_source: str
+    active_model: str
+
+
+class ModelSwitchRequest(BaseModel):
+    """Switch model request"""
+    source: str = Field(..., description="Model source (ollama/openai)")
+    model_name: str = Field(..., description="Model name")
+
+
+# ==================== STATISTICS ====================
+
+class UsageStatsResponse(BaseModel):
+    """Usage statistics response"""
+    total_requests: int
+    total_tokens: int
+    average_response_time: float
+    successful_requests: int
+    failed_requests: int
+    period_start: datetime
+    period_end: datetime

@@ -1,20 +1,52 @@
-llama-service/
+llama-chat/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py               # ✅ Обновлен - новые endpoints, менеджер моделей
-│   ├── models.py             # ✅ Обновлен - новые модели данных
-│   ├── llm_service.py        # ✅ Обновлен - поддержка Excel
-│   ├── llm_manager.py        # 🆕 НОВЫЙ - управление источниками моделей
-│   ├── api_llm_service.py    # 🆕 НОВЫЙ - корпоративный API
+│   ├── main.py                      # FastAPI application
+│   ├── config.py                    # Configuration settings
+│   ├── models.py                    # Pydantic models
+│   ├── auth.py                      # Authentication utilities
+│   ├── llm_manager.py              # LLM interaction manager
+│   │
+│   ├── database/
+│   │   ├── __init__.py
+│   │   ├── database.py             # Database connection
+│   │   ├── models.py               # SQLAlchemy models
+│   │   └── crud.py                 # CRUD operations
+│   │
+│   ├── routers/
+│   │   ├── __init__.py
+│   │   ├── auth.py                 # Authentication routes
+│   │   ├── chat.py                 # Chat routes
+│   │   ├── conversations.py        # Conversations routes
+│   │   ├── files.py                # File upload routes
+│   │   ├── models_management.py    # Model management routes
+│   │   └── stats.py                # Statistics routes
+│   │
 │   └── static/
-│       ├── index.html        # ✅ Обновлен - UI выбора моделей
-│       ├── styles.css        # Существующие стили (+ новые в HTML)
+│       ├── index.html              # Main HTML page
+│       │
+│       ├── css/
+│       │   └── styles.css          # All CSS styles
+│       │
 │       └── js/
-│           ├── app.js        # ✅ Обновлен - интеграция моделей
-│           ├── api-service.js # Без изменений
-│           ├── chat-manager.js # Без изменений
-│           ├── file-manager.js # ✅ Обновлен - поддержка Excel
-│           ├── ui-controller.js # ✅ Обновлен - управление моделями
-│           └── utils.js       # Без изменений
-├── requirements.txt           # ✅ Обновлен - новые зависимости
+│           ├── app.js              # Main app initialization
+│           ├── api-service.js      # API communication
+│           ├── auth-manager.js     # Authentication logic
+│           ├── auth-ui.js          # Auth UI functions
+│           ├── chat-manager.js     # Chat logic
+│           ├── conversations-manager.js  # Conversations logic
+│           ├── conversations-ui.js # Conversations UI functions
+│           ├── file-manager.js     # File upload logic
+│           ├── ui-controller.js    # UI updates & notifications
+│           └── utils.js            # Utility functions
+│
+├── alembic/
+│   ├── versions/                   # Database migrations
+│   ├── env.py
+│   └── script.py.mako
+│
+├── venv/                           # Virtual environment
+├── .env                            # Environment variables
+├── requirements.txt                # Python dependencies
+├── alembic.ini                     # Alembic configuration
 └── README.md

@@ -12,7 +12,6 @@ export class ConversationsManager {
 
     async loadConversations() {
         try {
-            // Only load if user is authenticated
             if (!this.authManager.isAuthenticated()) {
                 this.showEmptyState('Войдите для просмотра истории бесед');
                 return;
@@ -56,12 +55,10 @@ export class ConversationsManager {
         div.className = 'conversation-item';
         div.dataset.conversationId = conversation.id;
 
-        // Mark as active if current
         if (this.currentConversationId === conversation.id) {
             div.classList.add('active');
         }
 
-        // Format date
         const date = new Date(conversation.updated_at);
         const dateStr = this.formatConversationDate(date);
 
@@ -84,9 +81,7 @@ export class ConversationsManager {
             </div>
         `;
 
-        // Click to load conversation
         div.addEventListener('click', (e) => {
-            // Don't trigger if clicking action buttons
             if (e.target.closest('.conversation-actions')) {
                 return;
             }
@@ -122,7 +117,6 @@ export class ConversationsManager {
 
             this.currentConversationId = conversationId;
 
-            // Update active state in sidebar
             document.querySelectorAll('.conversation-item').forEach(item => {
                 item.classList.remove('active');
             });
@@ -131,7 +125,6 @@ export class ConversationsManager {
                 activeItem.classList.add('active');
             }
 
-            // Load messages into chat
             this.loadMessagesIntoChat(data.messages);
 
             this.uiController.hideLoading();
@@ -147,15 +140,12 @@ export class ConversationsManager {
         const chatMessages = document.getElementById('chatMessages');
         if (!chatMessages) return;
 
-        // Clear current chat
         chatMessages.innerHTML = '';
 
-        // Add all messages
         messages.forEach(msg => {
             this.addMessageToChat(msg.role, msg.content, new Date(msg.created_at));
         });
 
-        // Scroll to bottom
         chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
@@ -180,7 +170,6 @@ export class ConversationsManager {
 
     async createNewConversation() {
         try {
-            // Clear current chat
             this.currentConversationId = null;
 
             const chatMessages = document.getElementById('chatMessages');
@@ -195,7 +184,6 @@ export class ConversationsManager {
                 `;
             }
 
-            // Clear active state
             document.querySelectorAll('.conversation-item').forEach(item => {
                 item.classList.remove('active');
             });
@@ -216,15 +204,11 @@ export class ConversationsManager {
         if (!newTitle || newTitle === conversation.title) return;
 
         try {
-            await this.apiService.request(`/conversations/${conversationId}`, {
-                method: 'PATCH',
-                body: JSON.stringify({ title: newTitle })
+            await this.apiService.patch(`/conversations/${conversationId}`, {
+                title: newTitle
             });
 
-            // Update local state
             conversation.title = newTitle;
-
-            // Re-render
             this.renderConversations();
 
             this.uiController.showSuccess('Беседа переименована');
@@ -243,10 +227,8 @@ export class ConversationsManager {
         try {
             await this.apiService.delete(`/conversations/${conversationId}`);
 
-            // Remove from local state
             this.conversations = this.conversations.filter(c => c.id !== conversationId);
 
-            // If it was current conversation, clear chat
             if (this.currentConversationId === conversationId) {
                 this.currentConversationId = null;
                 const chatMessages = document.getElementById('chatMessages');
@@ -262,9 +244,7 @@ export class ConversationsManager {
                 }
             }
 
-            // Re-render
             this.renderConversations();
-
             this.uiController.showSuccess('Беседа удалена');
 
         } catch (error) {

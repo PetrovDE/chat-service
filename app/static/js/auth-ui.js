@@ -9,7 +9,6 @@ window.showLogin = function() {
     loginModal.classList.add('show');
     registerModal.classList.remove('show');
 
-    // Clear form
     document.getElementById('loginForm').reset();
     document.getElementById('loginError').style.display = 'none';
 };
@@ -23,7 +22,6 @@ window.showRegister = function() {
     registerModal.classList.add('show');
     loginModal.classList.remove('show');
 
-    // Clear form
     document.getElementById('registerForm').reset();
     document.getElementById('registerError').style.display = 'none';
 };
@@ -54,7 +52,6 @@ window.handleLogin = async function(event) {
     const errorDiv = document.getElementById('loginError');
     const submitBtn = document.getElementById('loginSubmitBtn');
 
-    // Clear previous errors
     errorDiv.style.display = 'none';
     submitBtn.disabled = true;
     submitBtn.textContent = 'Вход...';
@@ -63,15 +60,12 @@ window.handleLogin = async function(event) {
         const result = await window.app.authManager.login(username, password);
 
         if (result.success) {
-            // Close modal
             window.closeAuthModals();
 
-            // Show success message
             if (window.app.uiController) {
                 window.app.uiController.showSuccess(`Добро пожаловать, ${result.user.username}!`);
             }
         } else {
-            // Show error
             errorDiv.textContent = result.error || 'Ошибка входа. Проверьте данные.';
             errorDiv.style.display = 'block';
         }
@@ -94,7 +88,6 @@ window.handleRegister = async function(event) {
     const errorDiv = document.getElementById('registerError');
     const submitBtn = document.getElementById('registerSubmitBtn');
 
-    // Clear previous errors
     errorDiv.style.display = 'none';
     submitBtn.disabled = true;
     submitBtn.textContent = 'Регистрация...';
@@ -103,15 +96,12 @@ window.handleRegister = async function(event) {
         const result = await window.app.authManager.register(username, email, password, fullName);
 
         if (result.success) {
-            // Close modal
             window.closeAuthModals();
 
-            // Show success message
             if (window.app.uiController) {
                 window.app.uiController.showSuccess(`Добро пожаловать, ${result.user.username}!`);
             }
         } else {
-            // Show error
             errorDiv.textContent = result.error || 'Ошибка регистрации';
             errorDiv.style.display = 'block';
         }
@@ -126,7 +116,6 @@ window.handleRegister = async function(event) {
 
 window.handleLogout = async function() {
     if (confirm('Вы уверены, что хотите выйти?')) {
-        // Close dropdown
         const dropdown = document.getElementById('userMenuDropdown');
         if (dropdown) {
             dropdown.style.display = 'none';
@@ -148,13 +137,11 @@ window.toggleUserMenu = function() {
 };
 
 window.showProfile = function() {
-    // Close dropdown
     const dropdown = document.getElementById('userMenuDropdown');
     if (dropdown) {
         dropdown.style.display = 'none';
     }
 
-    // TODO: Implement profile modal
     alert('Профиль пользователя - в разработке');
 };
 

@@ -1,289 +1,380 @@
 """
-LLM Manager - Unified interface for multiple LLM sources
-Manages both local Ollama and Corporate API models
+LLM Manager - handles interactions with different LLM providers
 """
 
-import logging
-from typing import Dict, Any, List, AsyncGenerator, Optional
+import httpx
+import json
+from typing import Optional, List, Dict, AsyncGenerator
 from enum import Enum
-from .llm_service import llm_service
-from .api_llm_service import api_service
-from .models import ChatRequest, ChatResponse
+import logging
+from datetime import datetime
+
+from .config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class ModelSource(Enum):
-    LOCAL = "local"
-    API = "api"
+    """Available model sources"""
+    OLLAMA = "ollama"
+    OPENAI = "openai"
+
+
+class LLMResponse:
+    """LLM response wrapper"""
+    def __init__(self, response: str, model: str, tokens_used: int = 0, generation_time: float = 0):
+        self.response = response
+        self.model = model
+        self.tokens_used = tokens_used
+        self.generation_time = generation_time
 
 
 class LLMManager:
-    """Manages multiple LLM sources and provides unified interface"""
+    """Manager for LLM interactions"""
 
     def __init__(self):
-        self.active_source = ModelSource.LOCAL
-        self.local_service = llm_service
-        self.api_service = api_service
+        self.active_source = ModelSource.OLLAMA
+        self.ollama_host = settings.OLLAMA_HOST
+        self.ollama_model = settings.OLLAMA_MODEL
+        self.openai_api_key = settings.OPENAI_API_KEY
+        self.openai_model = settings.OPENAI_MODEL
 
     async def initialize(self):
-        """Initialize the manager and available services"""
-        logger.info("Initializing LLM Manager...")
+        """Initialize LLM manager"""
+        logger.info(f"Initializing LLM Manager with {self.active_source.value}")
 
-        # Try to initialize local service
-        try:
-            await self.local_service.initialize()
-            logger.info("Local Ollama service initialized")
-        except Exception as e:
-            logger.warning(f"Local service initialization failed: {e}")
-
-    def set_active_source(self, source: str):
-        """Switch between local and API sources"""
-        if source == "local":
-            self.active_source = ModelSource.LOCAL
-        elif source == "api":
-            self.active_source = ModelSource.API
+        # Set default source
+        if settings.DEFAULT_MODEL_SOURCE == "openai" and self.openai_api_key:
+            self.active_source = ModelSource.OPENAI
         else:
-            raise ValueError(f"Invalid source: {source}")
+            self.active_source = ModelSource.OLLAMA
 
-        logger.info(f"Switched to {self.active_source.value} source")
-
-    def configure_api(self, api_url: str, api_key: str, model_name: str, api_type: str = "openai"):
-        """Configure the API service"""
-        self.api_service.configure(api_url, api_key, model_name, api_type)
-
-    async def get_available_models(self) -> Dict[str, Any]:
-        """Get available models based on active source"""
-        result = {
-            "source": self.active_source.value,
-            "models": [],
-            "current_model": None
-        }
-
-        if self.active_source == ModelSource.LOCAL:
-            try:
-                # Get local Ollama models
-                if self.local_service.ollama_client:
-                    models_response = self.local_service.ollama_client.list()
-                    model_names = []
-
-                    if hasattr(models_response, 'models'):
-                        for model in models_response.models:
-                            if hasattr(model, 'model'):
-                                model_names.append(model.model)
-
-                    result["models"] = model_names
-                    result["current_model"] = self.local_service.model_name
-            except Exception as e:
-                logger.error(f"Error getting local models: {e}")
-
-        elif self.active_source == ModelSource.API:
-            # For API, return configured model
-            if self.api_service.is_configured:
-                result["models"] = [self.api_service.model_name]
-                result["current_model"] = self.api_service.model_name
-
-        return result
-
-    async def get_local_models(self) -> Dict[str, Any]:
-        """Get detailed info about local models"""
+        # Test connection
         try:
-            if not self.local_service.ollama_client:
-                # Try to initialize if not done
-                if not self.local_service.is_initialized:
-                    await self.local_service.initialize()
-
-                if not self.local_service.ollama_client:
-                    return {"models": [], "error": "Ollama not connected"}
-
-            models_response = self.local_service.ollama_client.list()
-            model_list = []
-
-            if hasattr(models_response, 'models'):
-                for model in models_response.models:
-                    model_info = {
-                        "name": getattr(model, 'model', 'unknown'),
-                        "size": getattr(model, 'size', None),
-                        "modified": getattr(model, 'modified_at', None)
-                    }
-                    model_list.append(model_info)
-
-            return {
-                "models": model_list,
-                "current": self.local_service.model_name
-            }
-
+            await self.test_connection()
+            logger.info(f"Successfully connected to {self.active_source.value}")
         except Exception as e:
-            logger.error(f"Error getting local models: {e}")
-            return {"models": [], "error": str(e)}
+            logger.error(f"Failed to connect to {self.active_source.value}: {e}")
 
-    async def switch_local_model(self, model_name: str) -> bool:
-        """Switch to a different local model"""
+    async def test_connection(self) -> bool:
+        """Test connection to active LLM source"""
+        if self.active_source == ModelSource.OLLAMA:
+            return await self._test_ollama_connection()
+        elif self.active_source == ModelSource.OPENAI:
+            return await self._test_openai_connection()
+        return False
+
+    async def _test_ollama_connection(self) -> bool:
+        """Test Ollama connection"""
         try:
-            # Update the local service model
-            self.local_service.model_name = model_name
-
-            # Re-initialize the LangChain LLM with new model
-            from langchain_ollama import OllamaLLM
-            self.local_service.langchain_llm = OllamaLLM(
-                model=model_name,
-                temperature=0.7,
-                num_predict=1000,
-                top_p=0.9,
-                top_k=40
-            )
-
-            logger.info(f"Switched to local model: {model_name}")
-            return True
-
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{self.ollama_host}/api/tags")
+                return response.status_code == 200
         except Exception as e:
-            logger.error(f"Error switching local model: {e}")
+            logger.error(f"Ollama connection test failed: {e}")
             return False
 
-    async def generate_response(self, request: ChatRequest) -> ChatResponse:
-        """Generate response using active source"""
-        if self.active_source == ModelSource.LOCAL:
-            if not self.local_service.is_initialized:
-                await self.local_service.initialize()
-            return await self.local_service.generate_response(request)
+    async def _test_openai_connection(self) -> bool:
+        """Test OpenAI connection"""
+        if not self.openai_api_key:
+            return False
 
-        elif self.active_source == ModelSource.API:
-            if not self.api_service.is_configured:
-                raise RuntimeError("API service not configured")
-            return await self.api_service.generate_response(request)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {self.openai_api_key}"}
+                )
+                return response.status_code == 200
+        except Exception as e:
+            logger.error(f"OpenAI connection test failed: {e}")
+            return False
 
-    async def generate_streaming_response(
+    def get_current_model_name(self) -> str:
+        """Get current model name"""
+        if self.active_source == ModelSource.OLLAMA:
+            return self.ollama_model
+        elif self.active_source == ModelSource.OPENAI:
+            return self.openai_model
+        return "unknown"
+
+    async def get_response(
         self,
-        request: ChatRequest
-    ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Generate streaming response using active source"""
-        if self.active_source == ModelSource.LOCAL:
-            if not self.local_service.is_initialized:
-                await self.local_service.initialize()
-            async for chunk in self.local_service.generate_streaming_response(request):
-                yield chunk
+        message: str,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        context: Optional[List[Dict]] = None
+    ) -> LLMResponse:
+        """Get response from LLM"""
+        if self.active_source == ModelSource.OLLAMA:
+            return await self._get_ollama_response(message, temperature, max_tokens, context)
+        elif self.active_source == ModelSource.OPENAI:
+            return await self._get_openai_response(message, temperature, max_tokens, context)
+        else:
+            raise ValueError(f"Unsupported model source: {self.active_source}")
 
-        elif self.active_source == ModelSource.API:
-            if not self.api_service.is_configured:
-                yield {"type": "error", "content": "API service not configured"}
-                return
-            async for chunk in self.api_service.generate_streaming_response(request):
+    async def _get_ollama_response(
+        self,
+        message: str,
+        temperature: float,
+        max_tokens: int,
+        context: Optional[List[Dict]] = None
+    ) -> LLMResponse:
+        """Get response from Ollama"""
+        start_time = datetime.now()
+
+        messages = []
+        if context:
+            messages.extend(context)
+        messages.append({"role": "user", "content": message})
+
+        payload = {
+            "model": self.ollama_model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens
+            }
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    f"{self.ollama_host}/api/chat",
+                    json=payload
+                )
+                response.raise_for_status()
+
+                data = response.json()
+                generation_time = (datetime.now() - start_time).total_seconds()
+
+                return LLMResponse(
+                    response=data["message"]["content"],
+                    model=self.ollama_model,
+                    tokens_used=data.get("eval_count", 0),
+                    generation_time=generation_time
+                )
+
+        except Exception as e:
+            logger.error(f"Ollama request failed: {e}")
+            raise Exception(f"Failed to get response from Ollama: {str(e)}")
+
+    async def _get_openai_response(
+        self,
+        message: str,
+        temperature: float,
+        max_tokens: int,
+        context: Optional[List[Dict]] = None
+    ) -> LLMResponse:
+        """Get response from OpenAI"""
+        start_time = datetime.now()
+
+        messages = []
+        if context:
+            messages.extend(context)
+        messages.append({"role": "user", "content": message})
+
+        payload = {
+            "model": self.openai_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.openai_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload
+                )
+                response.raise_for_status()
+
+                data = response.json()
+                generation_time = (datetime.now() - start_time).total_seconds()
+
+                return LLMResponse(
+                    response=data["choices"][0]["message"]["content"],
+                    model=self.openai_model,
+                    tokens_used=data["usage"]["total_tokens"],
+                    generation_time=generation_time
+                )
+
+        except Exception as e:
+            logger.error(f"OpenAI request failed: {e}")
+            raise Exception(f"Failed to get response from OpenAI: {str(e)}")
+
+    async def stream_response(
+        self,
+        message: str,
+        temperature: float = 0.7,
+        max_tokens: int = 2048
+    ) -> AsyncGenerator[str, None]:
+        """Stream response from LLM"""
+        if self.active_source == ModelSource.OLLAMA:
+            async for chunk in self._stream_ollama_response(message, temperature, max_tokens):
                 yield chunk
+        else:
+            raise NotImplementedError("Streaming not implemented for OpenAI yet")
+
+    async def _stream_ollama_response(
+        self,
+        message: str,
+        temperature: float,
+        max_tokens: int
+    ) -> AsyncGenerator[str, None]:
+        """Stream response from Ollama"""
+        payload = {
+            "model": self.ollama_model,
+            "messages": [{"role": "user", "content": message}],
+            "stream": True,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens
+            }
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.ollama_host}/api/chat",
+                    json=payload
+                ) as response:
+                    response.raise_for_status()
+
+                    async for line in response.aiter_lines():
+                        if line:
+                            try:
+                                data = json.loads(line)
+                                if "message" in data and "content" in data["message"]:
+                                    yield data["message"]["content"]
+                            except json.JSONDecodeError:
+                                continue
+
+        except Exception as e:
+            logger.error(f"Ollama streaming failed: {e}")
+            raise Exception(f"Failed to stream from Ollama: {str(e)}")
+
+    async def get_available_models(self) -> List[Dict]:
+        """Get list of available models"""
+        if self.active_source == ModelSource.OLLAMA:
+            return await self._get_ollama_models()
+        elif self.active_source == ModelSource.OPENAI:
+            return await self._get_openai_models()
+        return []
+
+    async def _get_ollama_models(self) -> List[Dict]:
+        """Get Ollama models"""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{self.ollama_host}/api/tags")
+                response.raise_for_status()
+
+                data = response.json()
+                return [
+                    {
+                        "name": model["name"],
+                        "source": "ollama",
+                        "size": model.get("size"),
+                        "modified": model.get("modified_at")
+                    }
+                    for model in data.get("models", [])
+                ]
+        except Exception as e:
+            logger.error(f"Failed to get Ollama models: {e}")
+            return []
+
+    async def _get_openai_models(self) -> List[Dict]:
+        """Get OpenAI models"""
+        if not self.openai_api_key:
+            return []
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {self.openai_api_key}"}
+                )
+                response.raise_for_status()
+
+                data = response.json()
+                return [
+                    {
+                        "name": model["id"],
+                        "source": "openai"
+                    }
+                    for model in data.get("data", [])
+                    if "gpt" in model["id"]
+                ]
+        except Exception as e:
+            logger.error(f"Failed to get OpenAI models: {e}")
+            return []
+
+    def switch_model(self, source: str, model_name: str):
+        """Switch active model"""
+        if source == "ollama":
+            self.active_source = ModelSource.OLLAMA
+            self.ollama_model = model_name
+            logger.info(f"Switched to Ollama model: {model_name}")
+        elif source == "openai":
+            self.active_source = ModelSource.OPENAI
+            self.openai_model = model_name
+            logger.info(f"Switched to OpenAI model: {model_name}")
+        else:
+            raise ValueError(f"Unknown source: {source}")
 
     async def process_uploaded_file(
         self,
         file_content: bytes,
         filename: str,
         file_extension: str
-    ) -> Dict[str, Any]:
-        """Process uploaded file - works with local service"""
-        # File processing uses local service as it doesn't require LLM
-        return await self.local_service.process_uploaded_file(
-            file_content, filename, file_extension
-        )
+    ) -> Dict:
+        """Process uploaded file"""
+        # Simple text extraction
+        try:
+            if file_extension in ['.txt', '.csv', '.json']:
+                content = file_content.decode('utf-8')
+            else:
+                content = f"File: {filename} ({file_extension})"
+
+            preview = content[:500] if len(content) > 500 else content
+
+            return {
+                "content": content,
+                "preview": preview,
+                "success": True
+            }
+        except Exception as e:
+            logger.error(f"File processing failed: {e}")
+            return {
+                "content": "",
+                "preview": f"Failed to process file: {str(e)}",
+                "success": False
+            }
 
     async def analyze_file_content(
         self,
         content: str,
         analysis_type: str,
-        custom_prompt: str = None
+        custom_prompt: Optional[str] = None
     ) -> str:
-        """Analyze file content using active source"""
-        if self.active_source == ModelSource.LOCAL:
-            return await self.local_service.analyze_file_content(
-                content, analysis_type, custom_prompt
-            )
-        else:
-            # For API, create a custom request
-            prompt = self._build_analysis_prompt(content, analysis_type, custom_prompt)
-            request = ChatRequest(
-                message=prompt,
-                temperature=0.7,
-                max_tokens=2000
-            )
-            response = await self.api_service.generate_response(request)
-            return response.response
-
-    def _build_analysis_prompt(
-        self,
-        content: str,
-        analysis_type: str,
-        custom_prompt: str = None
-    ) -> str:
-        """Build analysis prompt for API requests"""
-        if analysis_type == "summary":
-            return f"Please provide a concise summary of the following content:\n\n{content}"
-        elif analysis_type == "extract_data":
-            return f"Please extract and list the key data points from:\n\n{content}"
-        elif analysis_type == "qa":
-            return f"Analyze this content and answer potential questions:\n\n{content}"
-        elif analysis_type == "custom" and custom_prompt:
-            return f"{custom_prompt}\n\nContent:\n{content}"
-        else:
-            return f"Please analyze the following:\n\n{content}"
-
-    def get_current_model_name(self) -> str:
-        """Get current active model name"""
-        if self.active_source == ModelSource.LOCAL:
-            return self.local_service.model_name
-        else:
-            return self.api_service.model_name or "Unknown"
-
-    def get_status(self) -> Dict[str, Any]:
-        """Get current manager status"""
-        status = {
-            "active_source": self.active_source.value,
-            "local": {
-                "initialized": self.local_service.is_initialized,
-                "model": self.local_service.model_name if hasattr(self.local_service, 'model_name') else None
-            },
-            "api": {
-                "configured": self.api_service.is_configured,
-                "model": self.api_service.model_name if self.api_service.model_name else None,
-                "type": self.api_service.api_type
-            }
-        }
-        return status
-
-    async def health_check(self) -> Dict[str, Any]:
-        """Comprehensive health check"""
-        health = {
-            "status": "degraded",
-            "active_source": self.active_source.value,
-            "local_status": "unavailable",
-            "api_status": "unconfigured"
+        """Analyze file content using LLM"""
+        prompts = {
+            "summarize": f"Please summarize the following content:\n\n{content[:4000]}",
+            "extract": f"Extract key information from:\n\n{content[:4000]}",
+            "analyze": f"Analyze the following content:\n\n{content[:4000]}"
         }
 
-        # Check local service
-        try:
-            if self.local_service.is_initialized:
-                local_health = await self.local_service.health_check()
-                health["local_status"] = local_health.status
-                health["ollama_status"] = local_health.ollama_status
-                health["model_available"] = local_health.model_available
-        except Exception as e:
-            health["local_status"] = f"error: {str(e)}"
+        prompt = custom_prompt or prompts.get(analysis_type, prompts["summarize"])
 
-        # Check API service
-        if self.api_service.is_configured:
-            try:
-                if await self.api_service.test_connection():
-                    health["api_status"] = "healthy"
-                else:
-                    health["api_status"] = "unhealthy"
-            except Exception as e:
-                health["api_status"] = f"error: {str(e)}"
-
-        # Determine overall status
-        if self.active_source == ModelSource.LOCAL:
-            if health["local_status"] == "healthy":
-                health["status"] = "healthy"
-        elif self.active_source == ModelSource.API:
-            if health["api_status"] == "healthy":
-                health["status"] = "healthy"
-
-        return health
+        response = await self.get_response(prompt)
+        return response.response
 
 
-# Global manager instance
+# Global LLM manager instance
 llm_manager = LLMManager()

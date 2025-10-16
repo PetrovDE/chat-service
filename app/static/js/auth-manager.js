@@ -65,10 +65,7 @@ export class AuthManager {
                 full_name: fullName || null
             });
 
-            // Save token and user
             this.saveToken(response.access_token, response.user);
-
-            // Update UI
             this.updateUIAfterAuth();
 
             return { success: true, user: response.user };
@@ -85,10 +82,7 @@ export class AuthManager {
                 password
             });
 
-            // Save token and user
             this.saveToken(response.access_token, response.user);
-
-            // Update UI
             this.updateUIAfterAuth();
 
             return { success: true, user: response.user };
@@ -100,17 +94,13 @@ export class AuthManager {
 
     async logout() {
         try {
-            // Call logout endpoint
             if (this.isAuthenticated()) {
                 await this.apiService.post('/auth/logout', {});
             }
         } catch (error) {
             console.error('Logout error:', error);
         } finally {
-            // Clear token regardless of API call result
             this.clearToken();
-
-            // Update UI
             this.updateUIAfterLogout();
         }
     }
@@ -124,7 +114,6 @@ export class AuthManager {
             const user = await this.apiService.get('/auth/me');
             this.currentUser = user;
 
-            // Update stored user info
             if (this.token) {
                 this.saveToken(this.token, user);
             }
@@ -133,7 +122,6 @@ export class AuthManager {
         } catch (error) {
             console.error('Error getting user info:', error);
 
-            // Token might be invalid - clear it
             if (error.message.includes('401') || error.message.includes('Unauthorized')) {
                 this.clearToken();
                 this.updateUIAfterLogout();
@@ -159,7 +147,6 @@ export class AuthManager {
                 </div>
             `;
 
-            // Update dropdown info
             const dropdownName = document.getElementById('dropdownUserName');
             const dropdownEmail = document.getElementById('dropdownUserEmail');
 
@@ -171,7 +158,6 @@ export class AuthManager {
             }
         }
 
-        // Reload conversations list if sidebar exists
         if (typeof window.loadConversations === 'function') {
             window.loadConversations();
         }
@@ -186,13 +172,11 @@ export class AuthManager {
             `;
         }
 
-        // Clear conversations list
         const conversationsList = document.getElementById('conversationsList');
         if (conversationsList) {
             conversationsList.innerHTML = '<div class="conversations-loading">Войдите для просмотра истории</div>';
         }
 
-        // Reload page to clear any cached data
         setTimeout(() => {
             window.location.reload();
         }, 1000);

@@ -1,314 +1,252 @@
-﻿"""
-Chat router - handles chat interactions with LLM
-"""
-
-from fastapi import APIRouter, HTTPException, status, Depends
+﻿# app/routers/chat.py
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-import time
+from app.database import get_db, crud
+from app import models
+from app.llm_manager import llm_manager
+from app.routers.auth import get_current_user_optional
+from app.database.models import User
+from typing import Optional
 import logging
-from uuid import UUID
+import json
+import uuid
+from datetime import datetime
 
-from ..models import ChatRequest, ChatResponse, ChatRequestExtended
-from ..llm_manager import llm_manager
-from ..database import get_db, crud
-from ..auth import get_optional_user
-from ..database.models import User
-
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-@router.post("", response_model=ChatResponse)
-async def chat(
-    request: ChatRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_optional_user)
-):
-    """Send a message to the LLM and get a response"""
-    start_time = time.time()
-    conversation_id = None
-
-    try:
-        logger.info(f"Received chat request: {request.message[:50]}...")
-
-        # Get user_id
-        user_id = current_user.id if current_user else None
-        logger.info(f"User: {current_user.username if current_user else 'anonymous'} (ID: {user_id})")
-
-        # Create conversation
-        conversation = await crud.create_conversation(
-            db=db,
-            user_id=user_id,
-            model_source=llm_manager.active_source.value,
-            model_name=llm_manager.get_current_model_name()
-        )
-        conversation_id = conversation.id
-        logger.info(f"Created conversation {conversation_id}")
-
-        # Save user message
-        await crud.create_message(
-            db=db,
-            conversation_id=conversation.id,
-            role="user",
-            content=request.message
-        )
-
-        # Get LLM response
-        response = await llm_manager.get_response(
-            message=request.message,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens
-        )
-
-        # Save assistant message
-        await crud.create_message(
-            db=db,
-            conversation_id=conversation.id,
-            role="assistant",
-            content=response.response,
-            model_name=response.model,
-            tokens_used=response.tokens_used,
-            generation_time=response.generation_time
-        )
-
-        # Calculate response time
-        response_time = time.time() - start_time
-
-        # Log API usage
-        await crud.log_api_usage(
-            db=db,
-            user_id=user_id,
-            conversation_id=conversation.id,
-            model_source=llm_manager.active_source.value,
-            model_name=llm_manager.get_current_model_name(),
-            endpoint="/chat",
-            tokens_total=response.tokens_used,
-            response_time=response_time,
-            status="success"
-        )
-
-        return ChatResponse(
-            response=response.response,
-            model=response.model,
-            tokens_used=response.tokens_used,
-            generation_time=response.generation_time,
-            conversation_id=str(conversation.id)
-        )
-
-    except Exception as e:
-        logger.error(f"Error in chat endpoint: {str(e)}")
-
-        if conversation_id:
-            await crud.log_api_usage(
-                db=db,
-                user_id=user_id if current_user else None,
-                conversation_id=conversation_id,
-                model_source=llm_manager.active_source.value,
-                model_name=llm_manager.get_current_model_name(),
-                endpoint="/chat",
-                response_time=time.time() - start_time,
-                status="error",
-                error_message=str(e)
-            )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get response from LLM: {str(e)}"
-        )
 
 
 @router.post("/stream")
 async def chat_stream(
-    request: ChatRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_optional_user)
+        chat_data: models.ChatMessage,
+        db: AsyncSession = Depends(get_db),
+        current_user: Optional[User] = Depends(get_current_user_optional)
 ):
-    """Stream a response from the LLM in real-time"""
-    start_time = time.time()
-    conversation_id = None
-    full_response = ""
-
-    async def generate_stream():
-        nonlocal conversation_id, full_response
-
-        try:
-            logger.info(f"Starting streaming response for: {request.message[:50]}...")
-
-            # Get user_id
-            user_id = current_user.id if current_user else None
-
-            # Create conversation
-            conversation = await crud.create_conversation(
-                db=db,
-                user_id=user_id,
-                model_source=llm_manager.active_source.value,
-                model_name=llm_manager.get_current_model_name()
-            )
-            conversation_id = conversation.id
-
-            # Save user message
-            await crud.create_message(
-                db=db,
-                conversation_id=conversation.id,
-                role="user",
-                content=request.message
-            )
-
-            # Send conversation_id first
-            yield f"data: {{'conversation_id': '{conversation.id}'}}\n\n"
-
-            # Stream response
-            async for chunk in llm_manager.stream_response(
-                message=request.message,
-                temperature=request.temperature,
-                max_tokens=request.max_tokens
-            ):
-                full_response += chunk
-                yield f"data: {{'token': '{chunk}'}}\n\n"
-
-            # Save assistant message
-            await crud.create_message(
-                db=db,
-                conversation_id=conversation.id,
-                role="assistant",
-                content=full_response,
-                model_name=llm_manager.get_current_model_name()
-            )
-
-            # Log usage
-            response_time = time.time() - start_time
-            await crud.log_api_usage(
-                db=db,
-                user_id=user_id,
-                conversation_id=conversation.id,
-                model_source=llm_manager.active_source.value,
-                model_name=llm_manager.get_current_model_name(),
-                endpoint="/chat/stream",
-                response_time=response_time,
-                status="success"
-            )
-
-            yield "data: [DONE]\n\n"
-
-        except Exception as e:
-            logger.error(f"Error in streaming chat: {str(e)}")
-
-            if conversation_id:
-                await crud.log_api_usage(
-                    db=db,
-                    user_id=user_id if current_user else None,
-                    conversation_id=conversation_id,
-                    model_source=llm_manager.active_source.value,
-                    model_name=llm_manager.get_current_model_name(),
-                    endpoint="/chat/stream",
-                    response_time=time.time() - start_time,
-                    status="error",
-                    error_message=str(e)
-                )
-
-            yield f"data: {{'error': '{str(e)}'}}\n\n"
-
-    return StreamingResponse(
-        generate_stream(),
-        media_type="text/event-stream"
-    )
-
-
-@router.post("/continue", response_model=ChatResponse)
-async def chat_continue(
-    request: ChatRequestExtended,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_optional_user)
-):
-    """Continue an existing conversation or create new one"""
-    start_time = time.time()
-
+    """
+    Отправить сообщение и получить потоковый ответ (Server-Sent Events)
+    """
     try:
         user_id = current_user.id if current_user else None
+        username = current_user.username if current_user else "anonymous"
 
-        # Get or create conversation
-        if request.conversation_id:
-            conv_uuid = UUID(request.conversation_id)
-            conversation = await crud.get_conversation(db, conv_uuid)
+        logger.info(f"Received streaming chat request: {chat_data.message[:50]}...")
+        logger.info(f"User: {username} (ID: {user_id})")
+
+        # Получить или создать беседу
+        if chat_data.conversation_id:
+            conversation = await crud.get_conversation(db, chat_data.conversation_id)
             if not conversation:
-                raise HTTPException(status_code=404, detail="Conversation not found")
-
-            # Check access
-            if current_user and conversation.user_id != current_user.id:
-                raise HTTPException(status_code=403, detail="Access denied")
-            if not current_user and conversation.user_id is not None:
-                raise HTTPException(status_code=403, detail="Access denied")
-
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Conversation not found"
+                )
+            if conversation.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied"
+                )
+            conversation_id = conversation.id
         else:
-            # Create new conversation
+            # Создать новую беседу
+            title = chat_data.message[:100] if len(chat_data.message) <= 100 else chat_data.message[:97] + "..."
             conversation = await crud.create_conversation(
                 db=db,
                 user_id=user_id,
-                model_source=llm_manager.active_source.value,
-                model_name=llm_manager.get_current_model_name()
+                title=title,
+                model_source=chat_data.model_source or "ollama",
+                model_name=chat_data.model_name or llm_manager.ollama_model
             )
+            conversation_id = conversation.id
+            logger.info(f"Created conversation {conversation_id}")
 
-        # Save user message
-        await crud.create_message(
+        # Сохранить сообщение пользователя
+        user_message = await crud.create_message(
             db=db,
-            conversation_id=conversation.id,
+            conversation_id=conversation_id,
             role="user",
-            content=request.message
+            content=chat_data.message
         )
 
-        # Get context if needed
-        context = []
-        if request.include_history:
-            messages = await crud.get_conversation_messages(db, conversation.id, limit=request.history_length or 10)
-            context = [{"role": msg.role, "content": msg.content} for msg in messages[:-1]]
+        # Получить историю беседы
+        messages = await crud.get_conversation_messages(db, conversation_id)
+        conversation_history = [
+            {"role": msg.role, "content": msg.content}
+            for msg in messages[:-1]  # Исключаем последнее (текущее) сообщение
+        ]
 
-        # Get response
-        response = await llm_manager.get_response(
-            message=request.message,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            context=context if context else None
-        )
+        # Генерировать ID для ответа заранее
+        assistant_message_id = uuid.uuid4()
 
-        # Save assistant message
-        await crud.create_message(
-            db=db,
-            conversation_id=conversation.id,
-            role="assistant",
-            content=response.response,
-            model_name=response.model,
-            tokens_used=response.tokens_used,
-            generation_time=response.generation_time
-        )
+        # Функция-генератор для SSE
+        async def event_stream():
+            full_response = ""
+            start_time = datetime.utcnow()
 
-        # Log usage
-        response_time = time.time() - start_time
-        await crud.log_api_usage(
-            db=db,
-            user_id=user_id,
-            conversation_id=conversation.id,
-            model_source=llm_manager.active_source.value,
-            model_name=llm_manager.get_current_model_name(),
-            endpoint="/chat/continue",
-            tokens_total=response.tokens_used,
-            response_time=response_time,
-            status="success"
-        )
+            try:
+                # Отправить метаданные
+                yield f"data: {json.dumps({'type': 'start', 'conversation_id': str(conversation_id), 'message_id': str(assistant_message_id)})}\n\n"
 
-        return ChatResponse(
-            response=response.response,
-            model=response.model,
-            tokens_used=response.tokens_used,
-            generation_time=response.generation_time,
-            conversation_id=str(conversation.id)
+                # Генерировать ответ
+                async for chunk in llm_manager.generate_response_stream(
+                        prompt=chat_data.message,
+                        model_source=chat_data.model_source,
+                        model_name=chat_data.model_name,
+                        temperature=chat_data.temperature or 0.7,
+                        max_tokens=chat_data.max_tokens or 2000,
+                        conversation_history=conversation_history
+                ):
+                    full_response += chunk
+                    # Отправить chunk клиенту
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
+
+                # Вычислить время генерации
+                end_time = datetime.utcnow()
+                generation_time = (end_time - start_time).total_seconds()
+
+                # Сохранить ответ в БД
+                await crud.create_message(
+                    db=db,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=full_response,
+                    model_name=chat_data.model_name or llm_manager.ollama_model,
+                    temperature=chat_data.temperature,
+                    max_tokens=chat_data.max_tokens,
+                    generation_time=generation_time
+                )
+
+                # Отправить событие завершения
+                yield f"data: {json.dumps({'type': 'done', 'generation_time': generation_time})}\n\n"
+
+                logger.info(f"Streaming completed in {generation_time:.2f}s")
+
+            except Exception as e:
+                logger.error(f"Error in streaming: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in continue chat: {str(e)}")
+        logger.error(f"Error in streaming chat endpoint: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=f"Chat streaming failed: {str(e)}"
+        )
+
+
+@router.post("/", response_model=models.ChatResponse)
+async def chat(
+        chat_data: models.ChatMessage,
+        db: AsyncSession = Depends(get_db),
+        current_user: Optional[User] = Depends(get_current_user_optional)
+):
+    """
+    Отправить сообщение и получить ответ (без streaming, для обратной совместимости)
+    """
+    try:
+        user_id = current_user.id if current_user else None
+        username = current_user.username if current_user else "anonymous"
+
+        logger.info(f"Received chat request: {chat_data.message[:50]}...")
+        logger.info(f"User: {username} (ID: {user_id})")
+
+        # Получить или создать беседу
+        if chat_data.conversation_id:
+            conversation = await crud.get_conversation(db, chat_data.conversation_id)
+            if not conversation:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Conversation not found"
+                )
+            if conversation.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied"
+                )
+            conversation_id = conversation.id
+        else:
+            # Создать новую беседу
+            title = chat_data.message[:100] if len(chat_data.message) <= 100 else chat_data.message[:97] + "..."
+            conversation = await crud.create_conversation(
+                db=db,
+                user_id=user_id,
+                title=title,
+                model_source=chat_data.model_source or "ollama",
+                model_name=chat_data.model_name or llm_manager.ollama_model
+            )
+            conversation_id = conversation.id
+            logger.info(f"Created conversation {conversation_id}")
+
+        # Сохранить сообщение пользователя
+        user_message = await crud.create_message(
+            db=db,
+            conversation_id=conversation_id,
+            role="user",
+            content=chat_data.message
+        )
+
+        # Получить историю беседы
+        messages = await crud.get_conversation_messages(db, conversation_id)
+        conversation_history = [
+            {"role": msg.role, "content": msg.content}
+            for msg in messages[:-1]
+        ]
+
+        # Генерировать ответ
+        start_time = datetime.utcnow()
+
+        result = await llm_manager.generate_response(
+            prompt=chat_data.message,
+            model_source=chat_data.model_source,
+            model_name=chat_data.model_name,
+            temperature=chat_data.temperature or 0.7,
+            max_tokens=chat_data.max_tokens or 2000,
+            conversation_history=conversation_history
+        )
+
+        end_time = datetime.utcnow()
+        generation_time = (end_time - start_time).total_seconds()
+
+        # Сохранить ответ ассистента
+        assistant_message = await crud.create_message(
+            db=db,
+            conversation_id=conversation_id,
+            role="assistant",
+            content=result["response"],
+            model_name=result["model"],
+            temperature=chat_data.temperature,
+            max_tokens=chat_data.max_tokens,
+            tokens_used=result.get("tokens_used"),
+            generation_time=generation_time
+        )
+
+        logger.info(f"Chat completed in {generation_time:.2f}s")
+
+        return models.ChatResponse(
+            response=result["response"],
+            conversation_id=conversation_id,
+            message_id=assistant_message.id,
+            model_used=result["model"],
+            tokens_used=result.get("tokens_used"),
+            generation_time=generation_time
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in chat endpoint: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Chat failed: {str(e)}"
         )

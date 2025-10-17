@@ -16,24 +16,19 @@
 
         <div class="health-status">
             <div class="status-indicator" id="healthIndicator"></div>
-            <span id="healthStatus">Checking...</span>
+            <span id="healthStatus">Проверка...</span>
 
-            <!-- Auth Section -->
             <div id="authSection">
                 <button class="login-btn" onclick="showLogin()">Войти</button>
             </div>
-
-            <button class="toggle-settings" onclick="toggleSettings()" aria-label="Settings">
-                ⚙️ Settings
-            </button>
         </div>
     </div>
 
     <!-- Sidebar -->
     <div class="sidebar" id="conversationSidebar">
         <div class="sidebar-header">
-            <h3>💬 История бесед</h3>
-            <button class="icon-btn" onclick="toggleSidebar()" title="Свернуть">
+            <h3>💬 История</h3>
+            <button class="icon-btn" onclick="toggleSidebar()">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M15 18l-6-6 6-6"/>
                 </svg>
@@ -47,13 +42,11 @@
         </div>
 
         <div class="conversations-list" id="conversationsList">
-            <div class="conversations-loading">
-                Загрузка бесед...
-            </div>
+            <div class="conversations-loading">Загрузка...</div>
         </div>
     </div>
 
-    <!-- Sidebar Toggle Button -->
+    <!-- Sidebar Toggle -->
     <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" style="display: none;">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M9 18l6-6-6-6"/>
@@ -63,7 +56,6 @@
     <!-- Main Container -->
     <div class="main-container">
         <div class="chat-container">
-            <!-- Chat Messages -->
             <div class="chat-messages" id="chatMessages">
                 <div class="message assistant">
                     <div class="message-bubble">
@@ -73,7 +65,6 @@
                 </div>
             </div>
 
-            <!-- Input Area -->
             <div class="input-area">
                 <div class="input-container">
                     <textarea
@@ -99,9 +90,8 @@
     </div>
 
     <!-- Auth Modals -->
-    <div class="auth-overlay" id="authOverlay"></div>
+    <div class="auth-overlay" id="authOverlay" onclick="closeAuthModals()"></div>
 
-    <!-- Login Modal -->
     <div class="auth-modal" id="loginModal">
         <div class="auth-modal-content">
             <div class="auth-header">
@@ -112,34 +102,18 @@
             <div class="auth-body">
                 <form id="loginForm" onsubmit="handleLogin(event)">
                     <div class="form-group">
-                        <label for="loginUsername">Имя пользователя</label>
-                        <input
-                            type="text"
-                            id="loginUsername"
-                            class="auth-input"
-                            placeholder="username"
-                            required
-                            autocomplete="username"
-                        >
+                        <label>Имя пользователя</label>
+                        <input type="text" id="loginUsername" class="auth-input" required>
                     </div>
 
                     <div class="form-group">
-                        <label for="loginPassword">Пароль</label>
-                        <input
-                            type="password"
-                            id="loginPassword"
-                            class="auth-input"
-                            placeholder="••••••••"
-                            required
-                            autocomplete="current-password"
-                        >
+                        <label>Пароль</label>
+                        <input type="password" id="loginPassword" class="auth-input" required>
                     </div>
 
                     <div class="auth-error" id="loginError" style="display: none;"></div>
 
-                    <button type="submit" class="auth-submit-btn" id="loginSubmitBtn">
-                        Войти
-                    </button>
+                    <button type="submit" class="auth-submit-btn">Войти</button>
                 </form>
 
                 <div class="auth-switch">
@@ -150,7 +124,6 @@
         </div>
     </div>
 
-    <!-- Register Modal -->
     <div class="auth-modal" id="registerModal">
         <div class="auth-modal-content">
             <div class="auth-header">
@@ -161,62 +134,28 @@
             <div class="auth-body">
                 <form id="registerForm" onsubmit="handleRegister(event)">
                     <div class="form-group">
-                        <label for="registerUsername">Имя пользователя *</label>
-                        <input
-                            type="text"
-                            id="registerUsername"
-                            class="auth-input"
-                            placeholder="username"
-                            required
-                            minlength="3"
-                            pattern="[a-zA-Z0-9_-]+"
-                            title="Только буквы, цифры, _ и -"
-                            autocomplete="username"
-                        >
+                        <label>Имя пользователя</label>
+                        <input type="text" id="registerUsername" class="auth-input" required minlength="3">
                     </div>
 
                     <div class="form-group">
-                        <label for="registerEmail">Email *</label>
-                        <input
-                            type="email"
-                            id="registerEmail"
-                            class="auth-input"
-                            placeholder="email@example.com"
-                            required
-                            autocomplete="email"
-                        >
+                        <label>Email</label>
+                        <input type="email" id="registerEmail" class="auth-input" required>
                     </div>
 
                     <div class="form-group">
-                        <label for="registerFullName">Полное имя</label>
-                        <input
-                            type="text"
-                            id="registerFullName"
-                            class="auth-input"
-                            placeholder="Иван Иванов"
-                            autocomplete="name"
-                        >
+                        <label>Полное имя</label>
+                        <input type="text" id="registerFullName" class="auth-input">
                     </div>
 
                     <div class="form-group">
-                        <label for="registerPassword">Пароль *</label>
-                        <input
-                            type="password"
-                            id="registerPassword"
-                            class="auth-input"
-                            placeholder="••••••••"
-                            required
-                            minlength="8"
-                            autocomplete="new-password"
-                        >
-                        <small>Минимум 8 символов</small>
+                        <label>Пароль</label>
+                        <input type="password" id="registerPassword" class="auth-input" required minlength="8">
                     </div>
 
                     <div class="auth-error" id="registerError" style="display: none;"></div>
 
-                    <button type="submit" class="auth-submit-btn" id="registerSubmitBtn">
-                        Зарегистрироваться
-                    </button>
+                    <button type="submit" class="auth-submit-btn">Зарегистрироваться</button>
                 </form>
 
                 <div class="auth-switch">
@@ -227,34 +166,7 @@
         </div>
     </div>
 
-    <!-- User Menu Dropdown -->
-    <div class="user-menu-dropdown" id="userMenuDropdown" style="display: none;">
-        <div class="user-menu-header">
-            <div class="user-avatar">👤</div>
-            <div class="user-info">
-                <div class="user-name" id="dropdownUserName">User</div>
-                <div class="user-email" id="dropdownUserEmail">email</div>
-            </div>
-        </div>
-        <div class="user-menu-divider"></div>
-        <button class="user-menu-item" onclick="showProfile()">
-            ⚙️ Профиль
-        </button>
-        <button class="user-menu-item" onclick="handleLogout()">
-            🚪 Выйти
-        </button>
-    </div>
-
     <!-- Scripts -->
-    <script src="/static/js/auth-ui.js"></script>
-    <script src="/static/js/conversations-ui.js"></script>
-    <script type="module" src="/static/js/app.js"></script>
-
-    <script>
-        // Simple settings toggle
-        function toggleSettings() {
-            alert('Settings panel - в разработке');
-        }
-    </script>
+    <script src="/static/js/app-simple.js"></script>
 </body>
 </html>

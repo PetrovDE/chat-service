@@ -1,169 +1,185 @@
-// Main application entry point
-import { ChatManager } from './chat-manager.js';
-import { FileManager } from './file-manager.js';
-import { UIController } from './ui-controller.js';
+// app/static/js/app.js
 import { ApiService } from './api-service.js';
 import { AuthManager } from './auth-manager.js';
+import { ChatManager } from './chat-manager.js';
 import { ConversationsManager } from './conversations-manager.js';
+import { UIController } from './ui-controller.js';
+import { FileManager } from './file-manager.js';
 
 class App {
     constructor() {
-        this.chatManager = null;
-        this.fileManager = null;
-        this.uiController = null;
         this.apiService = null;
         this.authManager = null;
+        this.chatManager = null;
         this.conversationsManager = null;
+        this.uiController = null;
+        this.fileManager = null;
+        this.initialized = false;
     }
 
-    async init() {
-        console.log('🚀 Initializing Llama Chat App...');
-
+    async initialize() {
         try {
-            // Initialize API service
-            this.apiService = new ApiService();
+            console.log('🚀 Initializing Llama Chat Application...');
 
-            // Initialize managers with dependencies
+            // 1. Initialize UI Controller (first, as others depend on it)
             this.uiController = new UIController();
+            console.log('✓ UI Controller initialized');
+
+            // 2. Initialize API Service
+            this.apiService = new ApiService();
+            console.log('✓ API Service initialized');
+
+            // 3. Initialize Auth Manager
             this.authManager = new AuthManager(this.apiService, this.uiController);
+            console.log('✓ Auth Manager initialized');
+
+            // 4. Initialize Chat Manager
+            this.chatManager = new ChatManager(this.apiService, this.uiController);
+            console.log('✓ Chat Manager initialized');
+
+            // 5. Initialize Conversations Manager
             this.conversationsManager = new ConversationsManager(
                 this.apiService,
                 this.uiController,
-                this.authManager
+                this.chatManager
             );
-            this.chatManager = new ChatManager(
-                this.apiService,
-                this.uiController,
-                this.conversationsManager
-            );
-            this.fileManager = new FileManager(this.apiService, this.uiController, this.chatManager);
+            console.log('✓ Conversations Manager initialized');
 
-            // Connect API service to UI controller for health updates
-            this.apiService.setUIController(this.uiController);
+            // 6. Initialize File Manager
+            this.fileManager = new FileManager(this.apiService, this.uiController);
+            console.log('✓ File Manager initialized');
 
-            // Setup event listeners
+            // 7. Setup event listeners
             this.setupEventListeners();
+            console.log('✓ Event listeners setup');
 
-            // Initialize model selector
-            await this.uiController.initializeModelSelector();
+            // 8. Check authentication status
+            await this.authManager.checkAuthStatus();
+            console.log('✓ Auth status checked');
 
-            // Check authentication and update UI
-            await this.initializeAuth();
-
-            // Initial health check
-            await this.apiService.checkHealth();
-
-            // Start health monitoring
-            this.startHealthMonitoring();
-
-            console.log('✅ App initialized successfully');
-
-        } catch (error) {
-            console.error('❌ Failed to initialize app:', error);
-            this.uiController.showError('Failed to initialize application');
-        }
-    }
-
-    async initializeAuth() {
-        try {
+            // 9. Load conversations if authenticated
             if (this.authManager.isAuthenticated()) {
-                const user = await this.authManager.getCurrentUserInfo();
-
-                if (user) {
-                    console.log('User authenticated:', user.username);
-                    this.authManager.updateUIAfterAuth();
-                    await this.conversationsManager.loadConversations();
-                } else {
-                    console.log('Token invalid, clearing');
-                    this.authManager.clearToken();
-                }
-            } else {
-                console.log('User not authenticated');
+                await this.conversationsManager.loadConversations();
+                console.log('✓ Conversations loaded');
             }
+
+            // 10. Check system health
+            await this.checkSystemHealth();
+            console.log('✓ System health checked');
+
+            this.initialized = true;
+            console.log('✅ Application initialized successfully!');
+
         } catch (error) {
-            console.error('Error initializing auth:', error);
+            console.error('❌ Failed to initialize application:', error);
+
+            // Show error to user
+            const errorContainer = document.getElementById('chatMessages');
+            if (errorContainer) {
+                errorContainer.innerHTML = `
+                    <div style="padding: 2rem; text-align: center; color: #ef4444;">
+                        <h2>⚠️ Ошибка инициализации</h2>
+                        <p>${error.message || 'Не удалось загрузить приложение'}</p>
+                        <button onclick="location.reload()" style="margin-top: 1rem; padding: 0.5rem 1rem; background: #007aff; color: white; border: none; border-radius: 8px; cursor: pointer;">
+                            Перезагрузить
+                        </button>
+                    </div>
+                `;
+            }
+
+            throw error;
         }
     }
 
     setupEventListeners() {
         // Send message button
-        const sendBtn = document.getElementById('sendMessage');
-        if (sendBtn) {
-            sendBtn.addEventListener('click', () => this.handleSendMessage());
+        const sendButton = document.getElementById('sendMessage');
+        if (sendButton) {
+            sendButton.addEventListener('click', () => this.handleSendMessage());
         }
 
-        // Enter key in input
+        // Message input (Enter to send)
         const messageInput = document.getElementById('messageInput');
         if (messageInput) {
-            messageInput.addEventListener('keypress', (e) => {
+            messageInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     this.handleSendMessage();
                 }
             });
+
+            // Auto-resize textarea
+            messageInput.addEventListener('input', (e) => {
+                e.target.style.height = 'auto';
+                e.target.style.height = e.target.scrollHeight + 'px';
+            });
         }
 
-        // File upload
-        const fileUpload = document.getElementById('fileUpload');
-        if (fileUpload) {
-            fileUpload.addEventListener('change', (e) => this.handleFileUpload(e));
+        // Sidebar toggle
+        const sidebarToggle = document.getElementById('sidebarToggle');
+        if (sidebarToggle) {
+            sidebarToggle.addEventListener('click', () => window.toggleSidebar());
         }
 
-        // Clear chat
-        const clearBtn = document.getElementById('clearChat');
-        if (clearBtn) {
-            clearBtn.addEventListener('click', () => this.handleClearChat());
-        }
+        // Health status check (every 30 seconds)
+        setInterval(() => this.checkSystemHealth(), 30000);
     }
 
     async handleSendMessage() {
-        const input = document.getElementById('messageInput');
-        const message = input.value.trim();
+        const messageInput = document.getElementById('messageInput');
+        if (!messageInput) return;
 
+        const message = messageInput.value.trim();
         if (!message) return;
 
-        // Clear input
-        input.value = '';
-
-        // Send to chat manager
-        await this.chatManager.sendMessage(message);
+        const conversationId = this.chatManager.getCurrentConversation();
+        await this.chatManager.sendMessage(message, conversationId);
     }
 
-    async handleFileUpload(event) {
-        const file = event.target.files[0];
-        if (!file) return;
+    async checkSystemHealth() {
+        try {
+            const health = await this.apiService.checkHealth();
 
-        await this.fileManager.uploadFile(file);
+            const statusIndicator = document.getElementById('healthIndicator');
+            const statusText = document.getElementById('healthStatus');
 
-        // Reset input
-        event.target.value = '';
-    }
+            if (statusIndicator && statusText) {
+                if (health.status === 'healthy') {
+                    statusIndicator.style.background = '#10b981'; // green
+                    statusText.textContent = 'Работает';
+                } else if (health.status === 'degraded') {
+                    statusIndicator.style.background = '#f59e0b'; // orange
+                    statusText.textContent = 'Ограничено';
+                } else {
+                    statusIndicator.style.background = '#ef4444'; // red
+                    statusText.textContent = 'Недоступно';
+                }
+            }
+        } catch (error) {
+            console.error('Health check failed:', error);
 
-    handleClearChat() {
-        if (confirm('Clear all messages in current chat?')) {
-            this.chatManager.clearChat();
-            this.conversationsManager.createNewConversation();
+            const statusIndicator = document.getElementById('healthIndicator');
+            const statusText = document.getElementById('healthStatus');
+
+            if (statusIndicator && statusText) {
+                statusIndicator.style.background = '#ef4444';
+                statusText.textContent = 'Ошибка';
+            }
         }
-    }
-
-    startHealthMonitoring() {
-        // Check health every 30 seconds
-        setInterval(() => {
-            this.apiService.checkHealth();
-        }, 30000);
     }
 }
 
 // Initialize app when DOM is ready
-const app = new App();
+document.addEventListener('DOMContentLoaded', async () => {
+    console.log('DOM loaded, initializing app...');
 
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => app.init());
-} else {
-    app.init();
-}
+    try {
+        window.app = new App();
+        await window.app.initialize();
+    } catch (error) {
+        console.error('App initialization failed:', error);
+    }
+});
 
-// Make app globally available
-window.app = app;
-
-export default app;
+// Export for use in HTML onclick handlers
+export default App;

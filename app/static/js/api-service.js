@@ -1,129 +1,116 @@
-// API Service - handles all API calls
+// app/static/js/api-service.js
 export class ApiService {
     constructor() {
-        this.baseURL = '';
-        this.uiController = null;
+        this.baseURL = window.location.origin;
     }
 
-    setUIController(uiController) {
-        this.uiController = uiController;
-    }
+    async request(endpoint, options = {}) {
+        const url = `${this.baseURL}${endpoint}`;
 
-    async request(url, options = {}) {
+        const defaultOptions = {
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        };
+
+        // Add auth token if exists
+        const token = localStorage.getItem('token');
+        if (token) {
+            defaultOptions.headers['Authorization'] = `Bearer ${token}`;
+        }
+
+        const config = { ...defaultOptions, ...options };
+
         try {
-            const defaultOptions = {
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-            };
+            const response = await fetch(url, config);
 
-            // Add authentication token if available
-            if (window.app && window.app.authManager && window.app.authManager.getToken()) {
-                defaultOptions.headers['Authorization'] = `Bearer ${window.app.authManager.getToken()}`;
+            // Handle non-JSON responses
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return await response.text();
             }
 
-            const response = await fetch(url, {
-                ...defaultOptions,
-                ...options,
-                headers: {
-                    ...defaultOptions.headers,
-                    ...options.headers,
-                }
-            });
+            const data = await response.json();
 
             if (!response.ok) {
-                let errorMessage = `HTTP Error: ${response.status}`;
-                try {
-                    const errorData = await response.json();
-                    errorMessage = errorData.detail || errorMessage;
-                } catch {
-                    errorMessage = response.statusText || errorMessage;
-                }
-                throw new Error(errorMessage);
+                throw new Error(data.detail || data.error || `HTTP error! status: ${response.status}`);
             }
 
-            const contentType = response.headers.get('content-type');
-            if (contentType && contentType.includes('application/json')) {
-                return await response.json();
-            } else if (contentType && contentType.includes('text/')) {
-                return await response.text();
-            } else {
-                return response;
-            }
+            return data;
         } catch (error) {
-            console.error(`API request failed for ${url}:`, error);
+            console.error('API request failed:', error);
             throw error;
         }
     }
 
-    async get(endpoint) {
-        const url = `${this.baseURL}${endpoint}`;
-        return await this.request(url, { method: 'GET' });
-    }
-
-    async post(endpoint, data) {
-        const url = `${this.baseURL}${endpoint}`;
-        return await this.request(url, {
+    // Auth endpoints
+    async register(username, email, password, fullName) {
+        return await this.request('/auth/register', {
             method: 'POST',
-            body: JSON.stringify(data)
+            body: JSON.stringify({
+                username,
+                email,
+                password,
+                full_name: fullName
+            })
         });
     }
 
-    async put(endpoint, data) {
-        const url = `${this.baseURL}${endpoint}`;
-        return await this.request(url, {
-            method: 'PUT',
-            body: JSON.stringify(data)
+    async login(username, password) {
+        return await this.request('/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ username, password })
         });
     }
 
-    async delete(endpoint) {
-        const url = `${this.baseURL}${endpoint}`;
-        const response = await this.request(url, { method: 'DELETE' });
-        return response || { success: true };
+    async getCurrentUser() {
+        return await this.request('/auth/me');
     }
 
-    async patch(endpoint, data) {
-        const url = `${this.baseURL}${endpoint}`;
-        return await this.request(url, {
+    async logout() {
+        return await this.request('/auth/logout', { method: 'POST' });
+    }
+
+    // Chat endpoints
+    async sendMessage(message, conversationId = null) {
+        return await this.request('/chat', {
+            method: 'POST',
+            body: JSON.stringify({
+                message,
+                conversation_id: conversationId
+            })
+        });
+    }
+
+    // Conversations endpoints
+    async getConversations() {
+        return await this.request('/conversations');
+    }
+
+    async getConversation(id) {
+        return await this.request(`/conversations/${id}`);
+    }
+
+    async deleteConversation(id) {
+        return await this.request(`/conversations/${id}`, { method: 'DELETE' });
+    }
+
+    async updateConversation(id, data) {
+        return await this.request(`/conversations/${id}`, {
             method: 'PATCH',
             body: JSON.stringify(data)
         });
     }
 
-    async chat(message, conversationId = null) {
-        const endpoint = conversationId ? '/chat/continue' : '/chat';
-        const data = {
-            message: message,
-            temperature: 0.7,
-            max_tokens: 2048
-        };
-
-        if (conversationId) {
-            data.conversation_id = conversationId;
-            data.include_history = true;
-        }
-
-        return await this.post(endpoint, data);
+    // System endpoints
+    async checkHealth() {
+        return await this.request('/health');
     }
 
-    async checkHealth() {
-        try {
-            const health = await this.get('/health');
-
-            if (this.uiController) {
-                this.uiController.updateHealthStatus(health.status, health.model_info);
-            }
-
-            return health;
-        } catch (error) {
-            console.error('Health check failed:', error);
-
-            if (this.uiController) {
-                this.uiController.updateHealthStatus('error', null);
-            }
-
-            return { status: 'error' };
-        }
+    async getAppInfo() {
+        return await this.request('/info');
     }
 }

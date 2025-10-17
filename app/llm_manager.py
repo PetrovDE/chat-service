@@ -1,249 +1,313 @@
-﻿"""
-LLM Manager - handles interactions with different LLM providers
-"""
-
+﻿# app/llm_manager.py
 import httpx
+from typing import Optional, AsyncGenerator, List, Dict
 import json
-from typing import Optional, List, Dict, AsyncGenerator
-from enum import Enum
 import logging
-from datetime import datetime
-
-from .config import settings
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-class ModelSource(Enum):
-    """Available model sources"""
-    OLLAMA = "ollama"
-    OPENAI = "openai"
-
-
-class LLMResponse:
-    """LLM response wrapper"""
-    def __init__(self, response: str, model: str, tokens_used: int = 0, generation_time: float = 0):
-        self.response = response
-        self.model = model
-        self.tokens_used = tokens_used
-        self.generation_time = generation_time
-
-
 class LLMManager:
-    """Manager for LLM interactions"""
+    """Менеджер для работы с LLM (Ollama и OpenAI)"""
 
     def __init__(self):
-        self.active_source = ModelSource.OLLAMA
+        """Инициализация базовых параметров"""
         self.ollama_host = settings.OLLAMA_HOST
         self.ollama_model = settings.OLLAMA_MODEL
         self.openai_api_key = settings.OPENAI_API_KEY
         self.openai_model = settings.OPENAI_MODEL
+        self.default_source = settings.DEFAULT_MODEL_SOURCE
+
+        # Активная конфигурация
+        self.active_source = self.default_source
+        self.active_model = None
+
+        # Состояние инициализации
+        self._initialized = False
+        self._ollama_available = False
+        self._openai_available = False
+        self._available_ollama_models = []
 
     async def initialize(self):
-        """Initialize LLM manager"""
-        logger.info(f"Initializing LLM Manager with {self.active_source.value}")
+        """
+        Асинхронная инициализация LLM Manager
+        Проверяет доступность сервисов и моделей
+        """
+        if self._initialized:
+            logger.debug("LLM Manager already initialized")
+            return
 
-        # Set default source
-        if settings.DEFAULT_MODEL_SOURCE == "openai" and self.openai_api_key:
-            self.active_source = ModelSource.OPENAI
-        else:
-            self.active_source = ModelSource.OLLAMA
+        logger.info("Initializing LLM Manager...")
 
-        # Test connection
+        # Проверка Ollama
+        await self._check_ollama_availability()
+
+        # Проверка OpenAI
+        await self._check_openai_availability()
+
+        # Установка активной модели
+        self._set_initial_active_model()
+
+        self._initialized = True
+        logger.info("LLM Manager initialized successfully")
+        logger.info(f"  - Active source: {self.active_source}")
+        logger.info(f"  - Active model: {self.active_model or 'default'}")
+        logger.info(f"  - Ollama available: {self._ollama_available}")
+        logger.info(f"  - OpenAI available: {self._openai_available}")
+
+    async def _check_ollama_availability(self):
+        """Проверить доступность Ollama"""
         try:
-            await self.test_connection()
-            logger.info(f"Successfully connected to {self.active_source.value}")
-        except Exception as e:
-            logger.error(f"Failed to connect to {self.active_source.value}: {e}")
-
-    async def test_connection(self) -> bool:
-        """Test connection to active LLM source"""
-        if self.active_source == ModelSource.OLLAMA:
-            return await self._test_ollama_connection()
-        elif self.active_source == ModelSource.OPENAI:
-            return await self._test_openai_connection()
-        return False
-
-    async def _test_ollama_connection(self) -> bool:
-        """Test Ollama connection"""
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(f"{self.ollama_host}/api/tags")
-                return response.status_code == 200
-        except Exception as e:
-            logger.error(f"Ollama connection test failed: {e}")
-            return False
 
-    async def _test_openai_connection(self) -> bool:
-        """Test OpenAI connection"""
+                if response.status_code == 200:
+                    data = response.json()
+                    self._available_ollama_models = [
+                        model["name"] for model in data.get("models", [])
+                    ]
+                    self._ollama_available = True
+                    logger.info(f"Ollama available with {len(self._available_ollama_models)} models")
+
+                    # Проверить наличие дефолтной модели
+                    if self.ollama_model not in self._available_ollama_models:
+                        logger.warning(f"Default Ollama model '{self.ollama_model}' not found")
+                        if self._available_ollama_models:
+                            suggested = self._available_ollama_models[0]
+                            logger.info(f"Available models: {', '.join(self._available_ollama_models)}")
+                            logger.info(f"Consider using: {suggested}")
+                else:
+                    logger.warning(f"Ollama responded with status {response.status_code}")
+                    self._ollama_available = False
+
+        except httpx.ConnectError:
+            logger.warning(f"Cannot connect to Ollama at {self.ollama_host}")
+            logger.info("To use Ollama: Install from https://ollama.ai/ and run 'ollama pull llama3.1:8b'")
+            self._ollama_available = False
+        except Exception as e:
+            logger.error(f"Error checking Ollama availability: {e}")
+            self._ollama_available = False
+
+    async def _check_openai_availability(self):
+        """Проверить доступность OpenAI API"""
         if not self.openai_api_key:
-            return False
+            logger.debug("OpenAI API key not configured")
+            self._openai_available = False
+            return
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(
                     "https://api.openai.com/v1/models",
                     headers={"Authorization": f"Bearer {self.openai_api_key}"}
                 )
-                return response.status_code == 200
+
+                if response.status_code == 200:
+                    self._openai_available = True
+                    logger.info("OpenAI API available")
+                else:
+                    logger.warning(f"OpenAI API responded with status {response.status_code}")
+                    self._openai_available = False
+
         except Exception as e:
-            logger.error(f"OpenAI connection test failed: {e}")
-            return False
+            logger.debug(f"OpenAI API check failed: {e}")
+            self._openai_available = False
 
-    def get_current_model_name(self) -> str:
-        """Get current model name"""
-        if self.active_source == ModelSource.OLLAMA:
-            return self.ollama_model
-        elif self.active_source == ModelSource.OPENAI:
-            return self.openai_model
-        return "unknown"
-
-    async def get_response(
-        self,
-        message: str,
-        temperature: float = 0.7,
-        max_tokens: int = 2048,
-        context: Optional[List[Dict]] = None
-    ) -> LLMResponse:
-        """Get response from LLM"""
-        if self.active_source == ModelSource.OLLAMA:
-            return await self._get_ollama_response(message, temperature, max_tokens, context)
-        elif self.active_source == ModelSource.OPENAI:
-            return await self._get_openai_response(message, temperature, max_tokens, context)
+    def _set_initial_active_model(self):
+        """Установить начальную активную модель"""
+        if self.default_source == "ollama" and self._ollama_available:
+            self.active_model = self.ollama_model
+        elif self.default_source == "openai" and self._openai_available:
+            self.active_model = self.openai_model
+        elif self._ollama_available:
+            # Fallback на Ollama если доступен
+            self.active_source = "ollama"
+            self.active_model = self.ollama_model
+            logger.info(f"Falling back to Ollama (default source unavailable)")
+        elif self._openai_available:
+            # Fallback на OpenAI если доступен
+            self.active_source = "openai"
+            self.active_model = self.openai_model
+            logger.info(f"Falling back to OpenAI (Ollama unavailable)")
         else:
-            raise ValueError(f"Unsupported model source: {self.active_source}")
+            logger.warning("No LLM services available!")
+            self.active_model = self.ollama_model  # Keep default for later
 
-    async def _get_ollama_response(
-        self,
-        message: str,
-        temperature: float,
-        max_tokens: int,
-        context: Optional[List[Dict]] = None
-    ) -> LLMResponse:
-        """Get response from Ollama"""
-        start_time = datetime.now()
+    def is_available(self) -> bool:
+        """Проверить доступность хотя бы одного LLM сервиса"""
+        return self._ollama_available or self._openai_available
 
-        messages = []
-        if context:
-            messages.extend(context)
-        messages.append({"role": "user", "content": message})
-
-        payload = {
-            "model": self.ollama_model,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens
-            }
+    def get_status(self) -> Dict:
+        """Получить статус LLM Manager"""
+        return {
+            "initialized": self._initialized,
+            "active_source": self.active_source,
+            "active_model": self.active_model,
+            "ollama_available": self._ollama_available,
+            "openai_available": self._openai_available,
+            "available_ollama_models": self._available_ollama_models
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{self.ollama_host}/api/chat",
-                    json=payload
-                )
-                response.raise_for_status()
+    def set_active_model(self, source: str, model: str):
+        """Установить активную модель"""
+        if source == "ollama" and not self._ollama_available:
+            raise ValueError("Ollama is not available")
+        if source == "openai" and not self._openai_available:
+            raise ValueError("OpenAI is not available")
 
-                data = response.json()
-                generation_time = (datetime.now() - start_time).total_seconds()
+        self.active_source = source
+        self.active_model = model
+        logger.info(f"Active model changed to: {source}/{model}")
 
-                return LLMResponse(
-                    response=data["message"]["content"],
-                    model=self.ollama_model,
-                    tokens_used=data.get("eval_count", 0),
-                    generation_time=generation_time
-                )
-
-        except Exception as e:
-            logger.error(f"Ollama request failed: {e}")
-            raise Exception(f"Failed to get response from Ollama: {str(e)}")
-
-    async def _get_openai_response(
-        self,
-        message: str,
-        temperature: float,
-        max_tokens: int,
-        context: Optional[List[Dict]] = None
-    ) -> LLMResponse:
-        """Get response from OpenAI"""
-        start_time = datetime.now()
-
-        messages = []
-        if context:
-            messages.extend(context)
-        messages.append({"role": "user", "content": message})
-
-        payload = {
-            "model": self.openai_model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens
+    def get_active_model(self) -> Dict:
+        """Получить информацию об активной модели"""
+        return {
+            "source": self.active_source,
+            "model": self.active_model or (
+                self.ollama_model if self.active_source == "ollama" else self.openai_model
+            )
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.openai_api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json=payload
-                )
-                response.raise_for_status()
+    async def generate_response(
+            self,
+            prompt: str,
+            model_source: Optional[str] = None,
+            model_name: Optional[str] = None,
+            temperature: float = 0.7,
+            max_tokens: int = 2000,
+            conversation_history: List[Dict] = None
+    ) -> Dict:
+        """Генерация ответа (без streaming)"""
+        source = model_source or self.active_source
 
-                data = response.json()
-                generation_time = (datetime.now() - start_time).total_seconds()
+        if source == "ollama":
+            return await self._generate_ollama(
+                prompt=prompt,
+                model=model_name or self.ollama_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                conversation_history=conversation_history
+            )
+        elif source == "openai":
+            return await self._generate_openai(
+                prompt=prompt,
+                model=model_name or self.openai_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                conversation_history=conversation_history
+            )
+        else:
+            raise ValueError(f"Unknown model source: {source}")
 
-                return LLMResponse(
-                    response=data["choices"][0]["message"]["content"],
-                    model=self.openai_model,
-                    tokens_used=data["usage"]["total_tokens"],
-                    generation_time=generation_time
-                )
-
-        except Exception as e:
-            logger.error(f"OpenAI request failed: {e}")
-            raise Exception(f"Failed to get response from OpenAI: {str(e)}")
-
-    async def stream_response(
-        self,
-        message: str,
-        temperature: float = 0.7,
-        max_tokens: int = 2048
+    async def generate_response_stream(
+            self,
+            prompt: str,
+            model_source: Optional[str] = None,
+            model_name: Optional[str] = None,
+            temperature: float = 0.7,
+            max_tokens: int = 2000,
+            conversation_history: List[Dict] = None
     ) -> AsyncGenerator[str, None]:
-        """Stream response from LLM"""
-        if self.active_source == ModelSource.OLLAMA:
-            async for chunk in self._stream_ollama_response(message, temperature, max_tokens):
+        """Генерация ответа с потоковой передачей (streaming)"""
+        source = model_source or self.active_source
+
+        if source == "ollama":
+            async for chunk in self._generate_ollama_stream(
+                    prompt=prompt,
+                    model=model_name or self.ollama_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    conversation_history=conversation_history
+            ):
+                yield chunk
+        elif source == "openai":
+            async for chunk in self._generate_openai_stream(
+                    prompt=prompt,
+                    model=model_name or self.openai_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    conversation_history=conversation_history
+            ):
                 yield chunk
         else:
-            raise NotImplementedError("Streaming not implemented for OpenAI yet")
+            raise ValueError(f"Unknown model source: {source}")
 
-    async def _stream_ollama_response(
-        self,
-        message: str,
-        temperature: float,
-        max_tokens: int
-    ) -> AsyncGenerator[str, None]:
-        """Stream response from Ollama"""
-        payload = {
-            "model": self.ollama_model,
-            "messages": [{"role": "user", "content": message}],
-            "stream": True,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens
-            }
-        }
-
+    async def _generate_ollama(
+            self,
+            prompt: str,
+            model: str,
+            temperature: float,
+            max_tokens: int,
+            conversation_history: List[Dict] = None
+    ) -> Dict:
+        """Генерация через Ollama (без streaming)"""
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                async with client.stream(
-                    "POST",
-                    f"{self.ollama_host}/api/chat",
+                payload = {
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": max_tokens
+                    }
+                }
+
+                logger.debug(f"Sending request to Ollama: {self.ollama_host}/api/generate")
+
+                response = await client.post(
+                    f"{self.ollama_host}/api/generate",
                     json=payload
+                )
+                response.raise_for_status()
+
+                data = response.json()
+
+                return {
+                    "response": data.get("response", ""),
+                    "model": model,
+                    "tokens_used": data.get("eval_count", 0),
+                    "generation_time": data.get("total_duration", 0) / 1e9
+                }
+
+        except httpx.ConnectError as e:
+            logger.error(f"Ollama connection failed: {e}")
+            raise Exception(f"Cannot connect to Ollama at {self.ollama_host}. Make sure Ollama is running.")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Ollama HTTP error: {e}")
+            raise Exception(f"Ollama API error: {e.response.status_code}")
+        except Exception as e:
+            logger.error(f"Ollama request failed: {e}")
+            raise Exception(f"Failed to get response from Ollama: {e}")
+
+    async def _generate_ollama_stream(
+            self,
+            prompt: str,
+            model: str,
+            temperature: float,
+            max_tokens: int,
+            conversation_history: List[Dict] = None
+    ) -> AsyncGenerator[str, None]:
+        """Генерация через Ollama с потоковой передачей"""
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                payload = {
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": True,
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": max_tokens
+                    }
+                }
+
+                logger.debug(f"Starting Ollama stream: {self.ollama_host}/api/generate")
+
+                async with client.stream(
+                        "POST",
+                        f"{self.ollama_host}/api/generate",
+                        json=payload
                 ) as response:
                     response.raise_for_status()
 
@@ -251,130 +315,135 @@ class LLMManager:
                         if line:
                             try:
                                 data = json.loads(line)
-                                if "message" in data and "content" in data["message"]:
-                                    yield data["message"]["content"]
+                                if "response" in data:
+                                    yield data["response"]
                             except json.JSONDecodeError:
                                 continue
 
+        except httpx.ConnectError as e:
+            logger.error(f"Ollama streaming connection failed: {e}")
+            raise Exception(f"Cannot connect to Ollama at {self.ollama_host}")
         except Exception as e:
             logger.error(f"Ollama streaming failed: {e}")
-            raise Exception(f"Failed to stream from Ollama: {str(e)}")
+            raise Exception(f"Failed to get streaming response from Ollama: {e}")
 
-    async def get_available_models(self) -> List[Dict]:
-        """Get list of available models"""
-        if self.active_source == ModelSource.OLLAMA:
-            return await self._get_ollama_models()
-        elif self.active_source == ModelSource.OPENAI:
-            return await self._get_openai_models()
-        return []
-
-    async def _get_ollama_models(self) -> List[Dict]:
-        """Get Ollama models"""
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{self.ollama_host}/api/tags")
-                response.raise_for_status()
-
-                data = response.json()
-                return [
-                    {
-                        "name": model["name"],
-                        "source": "ollama",
-                        "size": model.get("size"),
-                        "modified": model.get("modified_at")
-                    }
-                    for model in data.get("models", [])
-                ]
-        except Exception as e:
-            logger.error(f"Failed to get Ollama models: {e}")
-            return []
-
-    async def _get_openai_models(self) -> List[Dict]:
-        """Get OpenAI models"""
+    async def _generate_openai(
+            self,
+            prompt: str,
+            model: str,
+            temperature: float,
+            max_tokens: int,
+            conversation_history: List[Dict] = None
+    ) -> Dict:
+        """Генерация через OpenAI (без streaming)"""
         if not self.openai_api_key:
-            return []
+            raise Exception("OpenAI API key not configured")
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    "https://api.openai.com/v1/models",
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                messages = []
+
+                if conversation_history:
+                    messages.extend(conversation_history)
+
+                messages.append({"role": "user", "content": prompt})
+
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stream": False
+                }
+
+                response = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    json=payload,
                     headers={"Authorization": f"Bearer {self.openai_api_key}"}
                 )
                 response.raise_for_status()
 
                 data = response.json()
-                return [
-                    {
-                        "name": model["id"],
-                        "source": "openai"
-                    }
-                    for model in data.get("data", [])
-                    if "gpt" in model["id"]
-                ]
+
+                return {
+                    "response": data["choices"][0]["message"]["content"],
+                    "model": model,
+                    "tokens_used": data["usage"]["total_tokens"],
+                    "generation_time": 0
+                }
+
         except Exception as e:
-            logger.error(f"Failed to get OpenAI models: {e}")
-            return []
+            logger.error(f"OpenAI request failed: {e}")
+            raise Exception(f"Failed to get response from OpenAI: {e}")
 
-    def switch_model(self, source: str, model_name: str):
-        """Switch active model"""
-        if source == "ollama":
-            self.active_source = ModelSource.OLLAMA
-            self.ollama_model = model_name
-            logger.info(f"Switched to Ollama model: {model_name}")
-        elif source == "openai":
-            self.active_source = ModelSource.OPENAI
-            self.openai_model = model_name
-            logger.info(f"Switched to OpenAI model: {model_name}")
-        else:
-            raise ValueError(f"Unknown source: {source}")
+    async def _generate_openai_stream(
+            self,
+            prompt: str,
+            model: str,
+            temperature: float,
+            max_tokens: int,
+            conversation_history: List[Dict] = None
+    ) -> AsyncGenerator[str, None]:
+        """Генерация через OpenAI с потоковой передачей"""
+        if not self.openai_api_key:
+            raise Exception("OpenAI API key not configured")
 
-    async def process_uploaded_file(
-        self,
-        file_content: bytes,
-        filename: str,
-        file_extension: str
-    ) -> Dict:
-        """Process uploaded file"""
-        # Simple text extraction
         try:
-            if file_extension in ['.txt', '.csv', '.json']:
-                content = file_content.decode('utf-8')
-            else:
-                content = f"File: {filename} ({file_extension})"
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                messages = []
 
-            preview = content[:500] if len(content) > 500 else content
+                if conversation_history:
+                    messages.extend(conversation_history)
 
-            return {
-                "content": content,
-                "preview": preview,
-                "success": True
-            }
+                messages.append({"role": "user", "content": prompt})
+
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stream": True
+                }
+
+                async with client.stream(
+                        "POST",
+                        "https://api.openai.com/v1/chat/completions",
+                        json=payload,
+                        headers={"Authorization": f"Bearer {self.openai_api_key}"}
+                ) as response:
+                    response.raise_for_status()
+
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            line = line[6:]
+
+                            if line == "[DONE]":
+                                break
+
+                            try:
+                                data = json.loads(line)
+                                if "choices" in data and len(data["choices"]) > 0:
+                                    delta = data["choices"][0].get("delta", {})
+                                    if "content" in delta:
+                                        yield delta["content"]
+                            except json.JSONDecodeError:
+                                continue
+
         except Exception as e:
-            logger.error(f"File processing failed: {e}")
-            return {
-                "content": "",
-                "preview": f"Failed to process file: {str(e)}",
-                "success": False
-            }
+            logger.error(f"OpenAI streaming failed: {e}")
+            raise Exception(f"Failed to get streaming response from OpenAI: {e}")
 
-    async def analyze_file_content(
-        self,
-        content: str,
-        analysis_type: str,
-        custom_prompt: Optional[str] = None
-    ) -> str:
-        """Analyze file content using LLM"""
-        prompts = {
-            "summarize": f"Please summarize the following content:\n\n{content[:4000]}",
-            "extract": f"Extract key information from:\n\n{content[:4000]}",
-            "analyze": f"Analyze the following content:\n\n{content[:4000]}"
-        }
-
-        prompt = custom_prompt or prompts.get(analysis_type, prompts["summarize"])
-
-        response = await self.get_response(prompt)
-        return response.response
+    async def list_available_models(self, source: str) -> List[str]:
+        """Получить список доступных моделей"""
+        if source == "ollama":
+            if not self._ollama_available:
+                return []
+            return self._available_ollama_models
+        elif source == "openai":
+            # OpenAI models are predefined
+            return ["gpt-4", "gpt-4-turbo-preview", "gpt-3.5-turbo", "gpt-3.5-turbo-16k"]
+        return []
 
 
-# Global LLM manager instance
+# Глобальный экземпляр
 llm_manager = LLMManager()

@@ -1,113 +1,145 @@
-﻿"""
-Files router - handles file uploads and processing
-"""
-
-from fastapi import APIRouter, UploadFile, File, HTTPException, status, Depends
+﻿# app/routers/files.py
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from pathlib import Path
-from datetime import datetime
+from app.database import get_db, crud
+from app.database.models import User
+from app.routers.auth import get_current_user_optional
+from app import models
 import logging
+import uuid
+import os
+from pathlib import Path
 
-from ..models import FileAnalysisRequest, FileAnalysisResponse
-from ..llm_manager import llm_manager
-from ..database import get_db, crud
-from ..auth import get_optional_user
-from ..database.models import User
-
-router = APIRouter(prefix="/files", tags=["files"])
+router = APIRouter()  # <-- БЕЗ prefix="/files"
 logger = logging.getLogger(__name__)
 
+# Директория для загрузки файлов
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
 
-@router.post("/upload")
+
+@router.post("/upload", response_model=models.FileUploadResponse)
 async def upload_file(
-    file: UploadFile = File(...),
+    file: UploadFile = FastAPIFile(...),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_optional_user)
+    current_user: User = Depends(get_current_user_optional)
 ):
-    """Upload and process a file for LLM analysis"""
+    """Загрузить файл"""
     try:
-        logger.info(f"Processing uploaded file: {file.filename}")
-
-        # Check file type
-        file_extension = Path(file.filename).suffix.lower()
-        supported_types = ['.txt', '.pdf', '.csv', '.xlsx', '.xls', '.json']
-
-        if file_extension not in supported_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported file type: {file_extension}. Supported: {supported_types}"
-            )
-
-        # Read file content
-        file_content = await file.read()
-
-        # Process file
-        processed_content = await llm_manager.process_uploaded_file(
-            file_content, file.filename, file_extension
-        )
-
-        # Get user_id
         user_id = current_user.id if current_user else None
-
-        # Save file record to database
-        file_record = await crud.create_file_record(
+        
+        # Генерировать уникальное имя файла
+        file_id = uuid.uuid4()
+        file_extension = Path(file.filename).suffix
+        unique_filename = f"{file_id}{file_extension}"
+        file_path = UPLOAD_DIR / unique_filename
+        
+        # Сохранить файл
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+        
+        file_size = len(content)
+        
+        # Создать preview (первые 500 символов для текстовых файлов)
+        content_preview = None
+        full_content = None
+        
+        if file.content_type and file.content_type.startswith('text/'):
+            try:
+                text_content = content.decode('utf-8')
+                content_preview = text_content[:500]
+                full_content = text_content
+            except:
+                pass
+        
+        # Сохранить в БД
+        db_file = await crud.create_file(
             db=db,
             user_id=user_id,
-            filename=file.filename,
+            filename=unique_filename,
             original_filename=file.filename,
-            file_path="",
-            file_type=file_extension,
-            file_size=len(file_content),
-            content_preview=processed_content["preview"],
-            full_content=processed_content["content"]
+            file_path=str(file_path),
+            file_type=file.content_type or "application/octet-stream",
+            file_size=file_size,
+            content_preview=content_preview,
+            full_content=full_content
+        )
+        
+        logger.info(f"File uploaded: {file.filename} ({file_size} bytes)")
+        
+        return models.FileUploadResponse(
+            file_id=db_file.id,
+            filename=db_file.filename,
+            original_filename=db_file.original_filename,
+            file_type=db_file.file_type,
+            file_size=db_file.file_size,
+            content_preview=content_preview
+        )
+        
+    except Exception as e:
+        logger.error(f"File upload error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload file: {str(e)}"
         )
 
-        return {
-            "file_id": str(file_record.id),
-            "filename": file.filename,
-            "file_type": file_extension,
-            "file_size": len(file_content),
-            "preview": processed_content["preview"],
-            "success": processed_content["success"]
-        }
 
+@router.get("/{file_id}", response_model=models.FileInfo)
+async def get_file_info(
+    file_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_optional)
+):
+    """Получить информацию о файле"""
+    try:
+        file = await crud.get_file(db, file_id)
+        
+        if not file:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        user_id = current_user.id if current_user else None
+        if file.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        return file
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error uploading file: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process file: {str(e)}"
-        )
+        logger.error(f"Get file error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get file")
 
 
-@router.post("/analyze-file", response_model=FileAnalysisResponse)
-async def analyze_file(
-    request: FileAnalysisRequest,
+@router.delete("/{file_id}")
+async def delete_file(
+    file_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_optional_user)
+    current_user: User = Depends(get_current_user_optional)
 ):
-    """Analyze uploaded file content using LLM"""
+    """Удалить файл"""
     try:
-        logger.info(f"Analyzing file with type: {request.analysis_type}")
-
-        result = await llm_manager.analyze_file_content(
-            content=request.content,
-            analysis_type=request.analysis_type,
-            custom_prompt=request.custom_prompt
-        )
-
-        return FileAnalysisResponse(
-            filename=request.filename,
-            analysis_type=request.analysis_type,
-            result=result,
-            model=llm_manager.get_current_model_name(),
-            timestamp=datetime.now()
-        )
-
+        file = await crud.get_file(db, file_id)
+        
+        if not file:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        user_id = current_user.id if current_user else None
+        if file.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Удалить физический файл
+        if os.path.exists(file.file_path):
+            os.remove(file.file_path)
+        
+        # Удалить из БД
+        await crud.delete_file(db, file_id)
+        
+        logger.info(f"File deleted: {file.filename}")
+        return {"success": True, "message": "File deleted"}
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error analyzing file: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to analyze file: {str(e)}"
-        )
+        logger.error(f"Delete file error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete file")

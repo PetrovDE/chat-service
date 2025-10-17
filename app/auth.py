@@ -1,143 +1,161 @@
-﻿"""
-Authentication and security utilities
-"""
-
+﻿# app/auth.py
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
 from datetime import datetime, timedelta
-from typing import Optional
 from jose import JWTError, jwt
-from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
-import os
-from dotenv import load_dotenv
+from typing import Optional
+from app.config import settings
+import logging
 
-from .database import get_db, crud
-from .database.models import User
+logger = logging.getLogger(__name__)
 
-load_dotenv()
+# Argon2 Password Hasher с рекомендованными параметрами
+ph = PasswordHasher(
+    time_cost=2,        # Количество итераций
+    memory_cost=65536,  # Память в КБ (64 MB)
+    parallelism=4,      # Количество параллельных потоков
+    hash_len=32,        # Длина хеша в байтах
+    salt_len=16         # Длина соли в байтах
+)
 
-# Configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-please-change-in-production")
-ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
-
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# Security scheme
-security = HTTPBearer(auto_error=False)
+# JWT константы
+SECRET_KEY = settings.JWT_SECRET_KEY
+ALGORITHM = settings.JWT_ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against a hash"""
-    # Обрезать пароль до 72 байтов (ограничение bcrypt)
-    plain_password = plain_password[:72]
-    return pwd_context.verify(plain_password, hashed_password)
+    """
+    Проверить пароль с использованием Argon2
+    
+    Args:
+        plain_password: Открытый пароль
+        hashed_password: Хешированный пароль из БД
+    
+    Returns:
+        True если пароль совпадает, False иначе
+    """
+    try:
+        # Argon2 автоматически проверяет пароль
+        ph.verify(hashed_password, plain_password)
+        
+        # Проверить нужно ли обновить хеш (если параметры изменились)
+        if ph.check_needs_rehash(hashed_password):
+            logger.info("Password hash needs rehashing with new parameters")
+        
+        return True
+        
+    except VerifyMismatchError:
+        # Пароль не совпадает
+        return False
+    except (VerificationError, InvalidHashError) as e:
+        # Ошибка верификации или невалидный хеш
+        logger.error(f"Password verification error: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error during password verification: {e}")
+        return False
 
 
 def get_password_hash(password: str) -> str:
-    """Hash a password"""
-    # Обрезать пароль до 72 байтов (ограничение bcrypt)
-    if len(password.encode('utf-8')) > 72:
-        # Обрезать по байтам, не по символам
-        password = password.encode('utf-8')[:72].decode('utf-8', errors='ignore')
-    return pwd_context.hash(password)
+    """
+    Хешировать пароль с использованием Argon2
+    
+    Args:
+        password: Открытый пароль (любой длины!)
+    
+    Returns:
+        Хешированный пароль
+    """
+    try:
+        # Argon2 не имеет ограничений на длину пароля!
+        hashed = ph.hash(password)
+        return hashed
+    except Exception as e:
+        logger.error(f"Error hashing password: {e}")
+        raise ValueError(f"Failed to hash password: {e}")
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Create JWT access token"""
+    """
+    Создать JWT токен
+    
+    Args:
+        data: Данные для включения в токен
+        expires_delta: Время жизни токена
+    
+    Returns:
+        JWT токен
+    """
     to_encode = data.copy()
-
+    
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-
+    
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-    return encoded_jwt
+    
+    try:
+        encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+        return encoded_jwt
+    except Exception as e:
+        logger.error(f"Error creating access token: {e}")
+        raise ValueError(f"Failed to create access token: {e}")
 
 
 def decode_access_token(token: str) -> Optional[dict]:
-    """Decode and verify JWT token"""
+    """
+    Декодировать JWT токен
+    
+    Args:
+        token: JWT токен
+    
+    Returns:
+        Payload токена или None если токен невалиден
+    """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
-    except JWTError:
+    except JWTError as e:
+        logger.debug(f"JWT decode error: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding token: {e}")
         return None
 
 
-async def get_current_user(
-        credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-        db: AsyncSession = Depends(get_db)
-) -> Optional[User]:
-    """Get current authenticated user from JWT token"""
-
-    if not credentials:
-        return None
-
-    token = credentials.credentials
-
+def verify_token(token: str) -> Optional[str]:
+    """
+    Проверить токен и вернуть username
+    
+    Args:
+        token: JWT токен
+    
+    Returns:
+        Username из токена или None
+    """
     payload = decode_access_token(token)
     if payload is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    user_id: str = payload.get("sub")
-    if user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    from uuid import UUID
-    try:
-        user_uuid = UUID(user_id)
-        user = await crud.get_user(db, user_uuid)
-    except (ValueError, Exception):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Inactive user"
-        )
-
-    return user
+        return None
+    
+    username: str = payload.get("sub")
+    return username
 
 
-async def get_current_active_user(
-        current_user: User = Depends(get_current_user)
-) -> User:
-    """Get current user - REQUIRED (raises 401 if not authenticated)"""
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return current_user
-
-
-async def get_optional_user(
-        current_user: Optional[User] = Depends(get_current_user)
-) -> Optional[User]:
-    """Get current user - OPTIONAL (returns None if not authenticated)"""
-    return current_user
+def create_refresh_token(data: dict) -> str:
+    """
+    Создать refresh токен (опционально, для будущего использования)
+    
+    Args:
+        data: Данные для включения в токен
+    
+    Returns:
+        Refresh токен
+    """
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=30)  # Refresh токен живёт дольше
+    to_encode.update({"exp": expire, "type": "refresh"})
+    
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt

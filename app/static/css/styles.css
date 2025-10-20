@@ -1216,3 +1216,102 @@ body.sidebar-collapsed .sidebar-toggle {
         padding: 0.5rem;
     }
 }
+
+/* Стили для Markdown в сообщениях */
+.message-bubble h1,
+.message-bubble h2,
+.message-bubble h3 {
+    margin: 0.5em 0;
+    font-weight: 600;
+}
+
+.message-bubble h1 { font-size: 1.5em; }
+.message-bubble h2 { font-size: 1.3em; }
+.message-bubble h3 { font-size: 1.1em; }
+
+.message-bubble p {
+    margin: 0.5em 0;
+}
+
+.message-bubble ul,
+.message-bubble ol {
+    margin: 0.5em 0;
+    padding-left: 1.5em;
+}
+
+.message-bubble li {
+    margin: 0.25em 0;
+}
+
+.message-bubble code {
+    background: rgba(0, 0, 0, 0.1);
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.9em;
+}
+
+.message-bubble pre {
+    background: #1e1e1e;
+    border-radius: 8px;
+    padding: 1em;
+    overflow-x: auto;
+    margin: 0.5em 0;
+}
+
+.message-bubble pre code {
+    background: none;
+    padding: 0;
+    color: #d4d4d4;
+    display: block;
+}
+
+.message-bubble blockquote {
+    border-left: 4px solid #007aff;
+    padding-left: 1em;
+    margin: 0.5em 0;
+    color: #666;
+    font-style: italic;
+}
+
+.message-bubble a {
+    color: #007aff;
+    text-decoration: none;
+}
+
+.message-bubble a:hover {
+    text-decoration: underline;
+}
+
+.message-bubble strong {
+    font-weight: 600;
+}
+
+.message-bubble em {
+    font-style: italic;
+}
+
+.message-bubble hr {
+    border: none;
+    border-top: 1px solid rgba(0, 0, 0, 0.1);
+    margin: 1em 0;
+}
+
+/* Таблицы в сообщениях */
+.message-bubble table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.5em 0;
+}
+
+.message-bubble th,
+.message-bubble td {
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    padding: 0.5em;
+    text-align: left;
+}
+
+.message-bubble th {
+    background: rgba(0, 0, 0, 0.05);
+    font-weight: 600;
+}

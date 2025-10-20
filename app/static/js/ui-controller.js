@@ -2,6 +2,22 @@
 export class UIController {
     constructor() {
         this.messageCounter = 0;
+
+        // 🆕 Настройка marked.js
+        if (typeof marked !== 'undefined') {
+            marked.setOptions({
+                highlight: function(code, lang) {
+                    if (lang && hljs.getLanguage(lang)) {
+                        try {
+                            return hljs.highlight(code, { language: lang }).value;
+                        } catch (err) {}
+                    }
+                    return hljs.highlightAuto(code).value;
+                },
+                breaks: true,  // Поддержка переносов строк
+                gfm: true      // GitHub Flavored Markdown
+            });
+        }
     }
 
     addMessage(role, content, isStreaming = false) {
@@ -15,7 +31,13 @@ export class UIController {
 
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble';
-        bubble.textContent = content || (isStreaming ? '▋' : '');
+
+        // 🆕 Рендерим Markdown если это assistant и есть контент
+        if (role === 'assistant' && content && !isStreaming) {
+            bubble.innerHTML = this.renderMarkdown(content);
+        } else {
+            bubble.textContent = content || (isStreaming ? '▋' : '');
+        }
 
         const timeDiv = document.createElement('div');
         timeDiv.className = 'message-time';
@@ -40,7 +62,8 @@ export class UIController {
 
         const bubble = messageDiv.querySelector('.message-bubble');
         if (bubble) {
-            bubble.textContent = content + '▋'; // Добавить курсор
+            // 🆕 Во время streaming показываем текст + курсор
+            bubble.textContent = content + '▋';
 
             // Прокрутить вниз
             const container = document.getElementById('chatMessages');
@@ -56,9 +79,35 @@ export class UIController {
 
         const bubble = messageDiv.querySelector('.message-bubble');
         if (bubble) {
-            // Убрать курсор
-            bubble.textContent = bubble.textContent.replace('▋', '');
+            // 🆕 Убрать курсор и отрендерить Markdown
+            const content = bubble.textContent.replace('▋', '');
+            bubble.innerHTML = this.renderMarkdown(content);
+
+            // 🆕 Применить подсветку кода
+            bubble.querySelectorAll('pre code').forEach((block) => {
+                if (typeof hljs !== 'undefined') {
+                    hljs.highlightElement(block);
+                }
+            });
         }
+    }
+
+    // 🆕 Метод для рендеринга Markdown
+    renderMarkdown(text) {
+        if (!text) return '';
+
+        // Если marked.js доступен - используем его
+        if (typeof marked !== 'undefined') {
+            try {
+                return marked.parse(text);
+            } catch (e) {
+                console.error('Markdown parsing error:', e);
+                return this.escapeHtml(text).replace(/\n/g, '<br>');
+            }
+        }
+
+        // Fallback: простая замена переносов строк
+        return this.escapeHtml(text).replace(/\n/g, '<br>');
     }
 
     clearMessages() {

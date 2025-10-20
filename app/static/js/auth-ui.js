@@ -1,3 +1,4 @@
+// app/static/js/auth-ui.js
 // Auth UI functions (called from HTML onclick handlers)
 
 window.showLogin = function() {
@@ -50,13 +51,20 @@ window.handleLogin = async function(event) {
     const username = document.getElementById('loginUsername').value;
     const password = document.getElementById('loginPassword').value;
     const errorDiv = document.getElementById('loginError');
-    const submitBtn = document.getElementById('loginSubmitBtn');
+    const submitBtn = event.target.querySelector('button[type="submit"]');
 
     errorDiv.style.display = 'none';
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Вход...';
+
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Вход...';
+    }
 
     try {
+        if (!window.app || !window.app.authManager) {
+            throw new Error('Application not initialized');
+        }
+
         const result = await window.app.authManager.login(username, password);
 
         if (result.success) {
@@ -65,16 +73,24 @@ window.handleLogin = async function(event) {
             if (window.app.uiController) {
                 window.app.uiController.showSuccess(`Добро пожаловать, ${result.user.username}!`);
             }
+
+            // Load conversations
+            if (window.app.conversationsManager) {
+                await window.app.conversationsManager.loadConversations();
+            }
         } else {
             errorDiv.textContent = result.error || 'Ошибка входа. Проверьте данные.';
             errorDiv.style.display = 'block';
         }
     } catch (error) {
+        console.error('Login error:', error);
         errorDiv.textContent = 'Ошибка подключения к серверу';
         errorDiv.style.display = 'block';
     } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Войти';
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Войти';
+        }
     }
 };
 
@@ -86,13 +102,20 @@ window.handleRegister = async function(event) {
     const fullName = document.getElementById('registerFullName').value;
     const password = document.getElementById('registerPassword').value;
     const errorDiv = document.getElementById('registerError');
-    const submitBtn = document.getElementById('registerSubmitBtn');
+    const submitBtn = event.target.querySelector('button[type="submit"]');
 
     errorDiv.style.display = 'none';
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Регистрация...';
+
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Регистрация...';
+    }
 
     try {
+        if (!window.app || !window.app.authManager) {
+            throw new Error('Application not initialized');
+        }
+
         const result = await window.app.authManager.register(username, email, password, fullName);
 
         if (result.success) {
@@ -101,16 +124,24 @@ window.handleRegister = async function(event) {
             if (window.app.uiController) {
                 window.app.uiController.showSuccess(`Добро пожаловать, ${result.user.username}!`);
             }
+
+            // Load conversations
+            if (window.app.conversationsManager) {
+                await window.app.conversationsManager.loadConversations();
+            }
         } else {
             errorDiv.textContent = result.error || 'Ошибка регистрации';
             errorDiv.style.display = 'block';
         }
     } catch (error) {
+        console.error('Registration error:', error);
         errorDiv.textContent = 'Ошибка подключения к серверу';
         errorDiv.style.display = 'block';
     } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Зарегистрироваться';
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Зарегистрироваться';
+        }
     }
 };
 
@@ -121,10 +152,12 @@ window.handleLogout = async function() {
             dropdown.style.display = 'none';
         }
 
-        await window.app.authManager.logout();
+        if (window.app && window.app.authManager) {
+            await window.app.authManager.logout();
 
-        if (window.app.uiController) {
-            window.app.uiController.showSuccess('Вы вышли из системы');
+            if (window.app.uiController) {
+                window.app.uiController.showSuccess('Вы вышли из системы');
+            }
         }
     }
 };
@@ -142,7 +175,24 @@ window.showProfile = function() {
         dropdown.style.display = 'none';
     }
 
-    alert('Профиль пользователя - в разработке');
+    if (window.app && window.app.uiController) {
+        window.app.uiController.showSuccess('Профиль пользователя - в разработке');
+    } else {
+        alert('Профиль пользователя - в разработке');
+    }
+};
+
+window.showSettings = function() {
+    const dropdown = document.getElementById('userMenuDropdown');
+    if (dropdown) {
+        dropdown.style.display = 'none';
+    }
+
+    if (window.app && window.app.uiController) {
+        window.app.uiController.showSuccess('Настройки - в разработке');
+    } else {
+        alert('Настройки - в разработке');
+    }
 };
 
 // Close dropdown when clicking outside

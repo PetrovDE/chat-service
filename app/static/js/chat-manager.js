@@ -5,6 +5,7 @@ export class ChatManager {
         this.uiController = uiController;
         this.currentConversationId = null;
         this.isGenerating = false;
+        this.abortController = null; // For stopping generation
     }
 
     async sendMessage(message, conversationId = null) {
@@ -36,12 +37,12 @@ export class ChatManager {
             // Создать placeholder для ответа ассистента
             const assistantMessageId = this.uiController.addMessage('assistant', '', true);
 
-            // Использовать EventSource для SSE
+            // Использовать streaming
             await this.streamResponse(message, conversationId, assistantMessageId);
 
         } catch (error) {
             console.error('Error sending message:', error);
-            this.uiController.showError('Ошибка отправки сообщения');
+            this.uiController.showError('Ошибка отправки сообщения: ' + error.message);
         } finally {
             this.isGenerating = false;
             if (sendButton) {
@@ -52,20 +53,17 @@ export class ChatManager {
     }
 
     async streamResponse(message, conversationId, assistantMessageId) {
-        return new Promise((resolve, reject) => {
-            const token = localStorage.getItem('token');
-            const url = new URL('/chat/stream', window.location.origin);
-
-            // EventSource не поддерживает custom headers и POST,
-            // поэтому используем fetch с ReadableStream
-            this.fetchStreamingResponse(message, conversationId, assistantMessageId)
-                .then(resolve)
-                .catch(reject);
-        });
-    }
-
-    async fetchStreamingResponse(message, conversationId, assistantMessageId) {
-        const token = localStorage.getItem('token');
+        // Получить токен из localStorage
+        const tokenData = localStorage.getItem('auth_token');
+        let token = null;
+        if (tokenData) {
+            try {
+                const parsed = JSON.parse(tokenData);
+                token = parsed.token;
+            } catch (e) {
+                console.error('Error parsing token:', e);
+            }
+        }
 
         const payload = {
             message: message,
@@ -97,43 +95,47 @@ export class ChatManager {
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n\n');
-            buffer = lines.pop(); // Сохранить неполную строку
+            buffer = lines.pop() || ''; // Сохранить неполную строку
 
             for (const line of lines) {
                 if (line.startsWith('data: ')) {
-                    const data = JSON.parse(line.substring(6));
+                    try {
+                        const data = JSON.parse(line.substring(6));
 
-                    switch (data.type) {
-                        case 'start':
-                            // Сохранить conversation_id
-                            if (data.conversation_id) {
-                                this.currentConversationId = data.conversation_id;
-                            }
-                            break;
+                        switch (data.type) {
+                            case 'start':
+                                // Сохранить conversation_id
+                                if (data.conversation_id) {
+                                    this.currentConversationId = data.conversation_id;
+                                }
+                                break;
 
-                        case 'chunk':
-                            // Добавить chunk к ответу
-                            fullResponse += data.content;
-                            this.uiController.updateMessageContent(
-                                assistantMessageId,
-                                fullResponse
-                            );
-                            break;
+                            case 'chunk':
+                                // Добавить chunk к ответу
+                                fullResponse += data.content;
+                                this.uiController.updateMessageContent(
+                                    assistantMessageId,
+                                    fullResponse
+                                );
+                                break;
 
-                        case 'done':
-                            // Генерация завершена
-                            console.log(`Generation completed in ${data.generation_time}s`);
-                            this.uiController.finalizeMessage(assistantMessageId);
+                            case 'done':
+                                // Генерация завершена
+                                console.log(`✅ Generation completed in ${data.generation_time}s`);
+                                this.uiController.finalizeMessage(assistantMessageId);
 
-                            // Обновить sidebar с беседами
-                            if (window.app && window.app.conversationsManager) {
-                                window.app.conversationsManager.loadConversations();
-                            }
-                            break;
+                                // Обновить sidebar с беседами
+                                if (window.app && window.app.conversationsManager) {
+                                    window.app.conversationsManager.loadConversations();
+                                }
+                                break;
 
-                        case 'error':
-                            this.uiController.showError(data.message);
-                            throw new Error(data.message);
+                            case 'error':
+                                this.uiController.showError(data.message);
+                                throw new Error(data.message);
+                        }
+                    } catch (parseError) {
+                        console.error('Error parsing SSE data:', parseError);
                     }
                 }
             }

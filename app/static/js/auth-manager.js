@@ -1,4 +1,4 @@
-// Authentication manager
+// app/static/js/auth-manager.js
 export class AuthManager {
     constructor(apiService, uiController) {
         this.apiService = apiService;
@@ -58,12 +58,7 @@ export class AuthManager {
 
     async register(username, email, password, fullName) {
         try {
-            const response = await this.apiService.post('/auth/register', {
-                username,
-                email,
-                password,
-                full_name: fullName || null
-            });
+            const response = await this.apiService.register(username, email, password, fullName);
 
             this.saveToken(response.access_token, response.user);
             this.updateUIAfterAuth();
@@ -77,10 +72,7 @@ export class AuthManager {
 
     async login(username, password) {
         try {
-            const response = await this.apiService.post('/auth/login', {
-                username,
-                password
-            });
+            const response = await this.apiService.login(username, password);
 
             this.saveToken(response.access_token, response.user);
             this.updateUIAfterAuth();
@@ -95,7 +87,7 @@ export class AuthManager {
     async logout() {
         try {
             if (this.isAuthenticated()) {
-                await this.apiService.post('/auth/logout', {});
+                await this.apiService.logout();
             }
         } catch (error) {
             console.error('Logout error:', error);
@@ -105,29 +97,32 @@ export class AuthManager {
         }
     }
 
-    async getCurrentUserInfo() {
+    async checkAuthStatus() {
         if (!this.isAuthenticated()) {
-            return null;
+            this.updateUIAfterLogout();
+            return false;
         }
 
         try {
-            const user = await this.apiService.get('/auth/me');
+            const user = await this.apiService.getCurrentUser();
             this.currentUser = user;
 
             if (this.token) {
                 this.saveToken(this.token, user);
             }
 
-            return user;
+            this.updateUIAfterAuth();
+            return true;
+
         } catch (error) {
-            console.error('Error getting user info:', error);
+            console.error('Error checking auth status:', error);
 
             if (error.message.includes('401') || error.message.includes('Unauthorized')) {
                 this.clearToken();
                 this.updateUIAfterLogout();
             }
 
-            return null;
+            return false;
         }
     }
 
@@ -145,21 +140,34 @@ export class AuthManager {
                         <polyline points="6 9 12 15 18 9"></polyline>
                     </svg>
                 </div>
+                <div class="user-menu-dropdown" id="userMenuDropdown" style="display: none;">
+                    <div class="user-menu-header">
+                        <div class="user-avatar">
+                            ${this.currentUser.username.charAt(0).toUpperCase()}
+                        </div>
+                        <div class="user-info">
+                            <div class="user-name">${this.currentUser.full_name || this.currentUser.username}</div>
+                            <div class="user-email">${this.currentUser.email}</div>
+                        </div>
+                    </div>
+                    <div class="user-menu-divider"></div>
+                    <button class="user-menu-item" onclick="showProfile()">
+                        👤 Профиль
+                    </button>
+                    <button class="user-menu-item" onclick="showSettings()">
+                        ⚙️ Настройки
+                    </button>
+                    <div class="user-menu-divider"></div>
+                    <button class="user-menu-item" onclick="handleLogout()">
+                        🚪 Выйти
+                    </button>
+                </div>
             `;
-
-            const dropdownName = document.getElementById('dropdownUserName');
-            const dropdownEmail = document.getElementById('dropdownUserEmail');
-
-            if (dropdownName) {
-                dropdownName.textContent = this.currentUser.full_name || this.currentUser.username;
-            }
-            if (dropdownEmail) {
-                dropdownEmail.textContent = this.currentUser.email;
-            }
         }
 
-        if (typeof window.loadConversations === 'function') {
-            window.loadConversations();
+        // Load conversations if available
+        if (window.app && window.app.conversationsManager) {
+            window.app.conversationsManager.loadConversations();
         }
     }
 
@@ -177,8 +185,9 @@ export class AuthManager {
             conversationsList.innerHTML = '<div class="conversations-loading">Войдите для просмотра истории</div>';
         }
 
-        setTimeout(() => {
-            window.location.reload();
-        }, 1000);
+        // Clear messages
+        if (this.uiController) {
+            this.uiController.clearMessages();
+        }
     }
 }

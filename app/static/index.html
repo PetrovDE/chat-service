@@ -18,6 +18,11 @@
             <div class="status-indicator" id="healthIndicator"></div>
             <span id="healthStatus">Проверка...</span>
 
+            <!-- Settings Button -->
+            <button class="icon-btn header-btn" onclick="openSettings()" title="Настройки">
+                ⚙️
+            </button>
+
             <div id="authSection">
                 <button class="login-btn" onclick="showLogin()">Войти</button>
             </div>
@@ -56,6 +61,11 @@
     <!-- Main Container -->
     <div class="main-container">
         <div class="chat-container">
+            <!-- Attached Files Panel -->
+            <div class="attached-files-container" id="attachedFilesContainer" style="display: none;">
+                <!-- Files will be rendered here by FileManager -->
+            </div>
+
             <div class="chat-messages" id="chatMessages">
                 <div class="message assistant">
                     <div class="message-bubble">
@@ -67,14 +77,26 @@
 
             <div class="input-area">
                 <div class="input-container">
+                    <!-- File Upload Button -->
+                    <button class="icon-btn attach-btn" onclick="openFileUpload()" title="Прикрепить файл">
+                        📎
+                    </button>
+
                     <textarea
                         id="messageInput"
                         class="message-input"
                         placeholder="Напишите сообщение..."
                         rows="1"
                     ></textarea>
+
+                    <!-- Send Button -->
                     <button id="sendMessage" class="send-button">
                         Отправить
+                    </button>
+
+                    <!-- Stop Generation Button (hidden by default) -->
+                    <button id="stopGeneration" class="stop-button" style="display: none;" onclick="stopGeneration()">
+                        ⏹️ Остановить
                     </button>
                 </div>
             </div>
@@ -166,7 +188,10 @@
         </div>
     </div>
 
-    <!-- Scripts -->
-    <script src="/static/js/app-simple.js"></script>
+    <!-- Scripts - МОДУЛЬНАЯ ВЕРСИЯ -->
+    <script type="module" src="../static/js/app.js"></script>
+    <script src="../static/js/auth-ui.js"></script>
+    <script src="../static/js/conversations-ui.js"></script>
+    <script src="../static/js/settings-ui.js"></script>
 </body>
 </html>

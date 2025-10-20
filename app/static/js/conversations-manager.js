@@ -1,18 +1,17 @@
-// Conversations history manager
-import { formatTime } from './utils.js';
-
+// app/static/js/conversations-manager.js
 export class ConversationsManager {
-    constructor(apiService, uiController, authManager) {
+    constructor(apiService, uiController, chatManager) {
         this.apiService = apiService;
         this.uiController = uiController;
-        this.authManager = authManager;
+        this.chatManager = chatManager;
         this.conversations = [];
         this.currentConversationId = null;
     }
 
     async loadConversations() {
         try {
-            if (!this.authManager.isAuthenticated()) {
+            // Check if user is authenticated
+            if (!window.app || !window.app.authManager || !window.app.authManager.isAuthenticated()) {
                 this.showEmptyState('Войдите для просмотра истории бесед');
                 return;
             }
@@ -22,8 +21,8 @@ export class ConversationsManager {
 
             conversationsList.innerHTML = '<div class="conversations-loading">Загрузка...</div>';
 
-            const data = await this.apiService.get('/conversations?limit=50');
-            this.conversations = data.conversations || [];
+            const data = await this.apiService.getConversations();
+            this.conversations = Array.isArray(data) ? data : [];
 
             if (this.conversations.length === 0) {
                 this.showEmptyState('У вас пока нет бесед');
@@ -109,14 +108,27 @@ export class ConversationsManager {
         });
     }
 
+    formatTime(date) {
+        if (!(date instanceof Date)) {
+            date = new Date(date);
+        }
+
+        const hours = date.getHours().toString().padStart(2, '0');
+        const minutes = date.getMinutes().toString().padStart(2, '0');
+
+        return `${hours}:${minutes}`;
+    }
+
     async loadConversation(conversationId) {
         try {
             this.uiController.showLoading('Загрузка беседы...');
 
-            const data = await this.apiService.get(`/conversations/${conversationId}`);
+            const data = await this.apiService.getConversation(conversationId);
 
             this.currentConversationId = conversationId;
+            this.chatManager.setCurrentConversation(conversationId);
 
+            // Update active state
             document.querySelectorAll('.conversation-item').forEach(item => {
                 item.classList.remove('active');
             });
@@ -125,7 +137,7 @@ export class ConversationsManager {
                 activeItem.classList.add('active');
             }
 
-            this.loadMessagesIntoChat(data.messages);
+            this.loadMessagesIntoChat(data.messages || []);
 
             this.uiController.hideLoading();
 
@@ -156,13 +168,13 @@ export class ConversationsManager {
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${role}`;
 
-        const formattedContent = content
+        const formattedContent = this.escapeHtml(content)
             .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
             .replace(/\n/g, '<br>');
 
         messageDiv.innerHTML = `
             <div class="message-bubble">${formattedContent}</div>
-            <div class="message-time">${formatTime(timestamp)}</div>
+            <div class="message-time">${this.formatTime(timestamp)}</div>
         `;
 
         chatMessages.appendChild(messageDiv);
@@ -171,6 +183,7 @@ export class ConversationsManager {
     async createNewConversation() {
         try {
             this.currentConversationId = null;
+            this.chatManager.setCurrentConversation(null);
 
             const chatMessages = document.getElementById('chatMessages');
             if (chatMessages) {
@@ -184,6 +197,7 @@ export class ConversationsManager {
                 `;
             }
 
+            // Remove active state from all conversations
             document.querySelectorAll('.conversation-item').forEach(item => {
                 item.classList.remove('active');
             });
@@ -204,7 +218,7 @@ export class ConversationsManager {
         if (!newTitle || newTitle === conversation.title) return;
 
         try {
-            await this.apiService.patch(`/conversations/${conversationId}`, {
+            await this.apiService.updateConversation(conversationId, {
                 title: newTitle
             });
 
@@ -225,12 +239,14 @@ export class ConversationsManager {
         }
 
         try {
-            await this.apiService.delete(`/conversations/${conversationId}`);
+            await this.apiService.deleteConversation(conversationId);
 
             this.conversations = this.conversations.filter(c => c.id !== conversationId);
 
             if (this.currentConversationId === conversationId) {
                 this.currentConversationId = null;
+                this.chatManager.setCurrentConversation(null);
+
                 const chatMessages = document.getElementById('chatMessages');
                 if (chatMessages) {
                     chatMessages.innerHTML = `

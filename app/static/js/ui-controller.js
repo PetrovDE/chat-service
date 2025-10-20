@@ -75,14 +75,79 @@ export class UIController {
         }
     }
 
+    showLoading(text = 'Загрузка...') {
+        const overlay = document.getElementById('loadingOverlay');
+        const loadingText = document.getElementById('loadingText');
+
+        if (overlay) {
+            overlay.style.display = 'flex';
+        }
+
+        if (loadingText) {
+            loadingText.textContent = text;
+        }
+    }
+
+    hideLoading() {
+        const overlay = document.getElementById('loadingOverlay');
+        if (overlay) {
+            overlay.style.display = 'none';
+        }
+    }
+
     showError(message) {
-        // Можно использовать toast notifications или alert
         console.error(message);
-        alert(message);
+
+        // Create toast notification
+        const toast = document.createElement('div');
+        toast.className = 'toast-notification error';
+        toast.innerHTML = `
+            <div class="toast-content">
+                <span class="toast-icon">❌</span>
+                <span class="toast-message">${this.escapeHtml(message)}</span>
+            </div>
+        `;
+
+        document.body.appendChild(toast);
+
+        // Animate in
+        setTimeout(() => toast.classList.add('show'), 10);
+
+        // Remove after 5 seconds
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => toast.remove(), 300);
+        }, 5000);
     }
 
     showSuccess(message) {
         console.log(message);
-        // Можно добавить toast notification
+
+        // Create toast notification
+        const toast = document.createElement('div');
+        toast.className = 'toast-notification success';
+        toast.innerHTML = `
+            <div class="toast-content">
+                <span class="toast-icon">✅</span>
+                <span class="toast-message">${this.escapeHtml(message)}</span>
+            </div>
+        `;
+
+        document.body.appendChild(toast);
+
+        // Animate in
+        setTimeout(() => toast.classList.add('show'), 10);
+
+        // Remove after 3 seconds
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 }

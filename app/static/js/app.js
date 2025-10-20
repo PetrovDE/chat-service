@@ -5,6 +5,16 @@ import { ChatManager } from './chat-manager.js';
 import { ConversationsManager } from './conversations-manager.js';
 import { UIController } from './ui-controller.js';
 import { FileManager } from './file-manager.js';
+import { SettingsManager } from './settings-manager.js';
+
+console.log('✓ All modules imported successfully');
+console.log('  ApiService:', typeof ApiService);
+console.log('  AuthManager:', typeof AuthManager);
+console.log('  ChatManager:', typeof ChatManager);
+console.log('  ConversationsManager:', typeof ConversationsManager);
+console.log('  UIController:', typeof UIController);
+console.log('  FileManager:', typeof FileManager);
+console.log('  SettingsManager:', typeof SettingsManager);
 
 class App {
     constructor() {
@@ -14,6 +24,7 @@ class App {
         this.conversationsManager = null;
         this.uiController = null;
         this.fileManager = null;
+        this.settingsManager = null;
         this.initialized = false;
     }
 
@@ -33,11 +44,19 @@ class App {
             this.authManager = new AuthManager(this.apiService, this.uiController);
             console.log('✓ Auth Manager initialized');
 
-            // 4. Initialize Chat Manager
+            // 4. Initialize Settings Manager
+            console.log('Attempting to initialize Settings Manager...');
+            console.log('  SettingsManager constructor:', SettingsManager);
+            this.settingsManager = new SettingsManager(this.apiService, this.uiController);
+            console.log('✓ Settings Manager initialized');
+            console.log('  settingsManager instance:', this.settingsManager);
+
+            // 5. Initialize Chat Manager
+            console.log('Attempting to initialize Chat Manager...');
             this.chatManager = new ChatManager(this.apiService, this.uiController);
             console.log('✓ Chat Manager initialized');
 
-            // 5. Initialize Conversations Manager
+            // 6. Initialize Conversations Manager
             this.conversationsManager = new ConversationsManager(
                 this.apiService,
                 this.uiController,
@@ -45,25 +64,36 @@ class App {
             );
             console.log('✓ Conversations Manager initialized');
 
-            // 6. Initialize File Manager
-            this.fileManager = new FileManager(this.apiService, this.uiController);
+            // 7. Initialize File Manager
+            this.fileManager = new FileManager(this.apiService, this.uiController, this.chatManager);
             console.log('✓ File Manager initialized');
+            console.log('  fileManager instance:', this.fileManager);
+            console.log('  fileManager.openFileDialog:', typeof this.fileManager.openFileDialog);
 
-            // 7. Setup event listeners
+            // Initialize file input after a short delay to ensure DOM is ready
+            setTimeout(() => {
+                this.fileManager.initializeFileInput();
+            }, 100);
+
+            // 8. Setup event listeners
             this.setupEventListeners();
             console.log('✓ Event listeners setup');
 
-            // 8. Check authentication status
+            // 9. Check authentication status
             await this.authManager.checkAuthStatus();
             console.log('✓ Auth status checked');
 
-            // 9. Load conversations if authenticated
+            // 10. Load conversations if authenticated
             if (this.authManager.isAuthenticated()) {
                 await this.conversationsManager.loadConversations();
                 console.log('✓ Conversations loaded');
             }
 
-            // 10. Check system health
+            // 11. Load available models
+            await this.settingsManager.loadAvailableModels();
+            console.log('✓ Models loaded');
+
+            // 12. Check system health
             await this.checkSystemHealth();
             console.log('✓ System health checked');
 
@@ -96,6 +126,12 @@ class App {
         const sendButton = document.getElementById('sendMessage');
         if (sendButton) {
             sendButton.addEventListener('click', () => this.handleSendMessage());
+        }
+
+        // Stop generation button
+        const stopButton = document.getElementById('stopGeneration');
+        if (stopButton) {
+            stopButton.addEventListener('click', () => this.handleStopGeneration());
         }
 
         // Message input (Enter to send)
@@ -133,7 +169,15 @@ class App {
         if (!message) return;
 
         const conversationId = this.chatManager.getCurrentConversation();
-        await this.chatManager.sendMessage(message, conversationId);
+        const settings = this.settingsManager.getSettings();
+
+        await this.chatManager.sendMessage(message, conversationId, settings);
+    }
+
+    handleStopGeneration() {
+        if (this.chatManager) {
+            this.chatManager.stopGeneration();
+        }
     }
 
     async checkSystemHealth() {

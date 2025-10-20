@@ -1,0 +1,215 @@
+# /etc/nginx/sites-available/jupyterhub-airflow
+# 
+# Инструкции по установке:
+# 1. Сохраните этот файл в /etc/nginx/sites-available/jupyterhub-airflow
+# 2. Создайте симлинк: sudo ln -s /etc/nginx/sites-available/jupyterhub-airflow /etc/nginx/sites-enabled/
+# 3. Проверьте конфигурацию: sudo nginx -t
+# 4. Перезагрузите nginx: sudo systemctl reload nginx
+#
+# Требования:
+# - JupyterHub должен работать на порту 8000
+# - Airflow должен работать на порту 8080
+# - Замените "your-domain.com" на ваш домен
+
+# Upstream серверы
+upstream jupyterhub {
+    server 127.0.0.1:8000;
+}
+
+upstream airflow {
+    server 127.0.0.1:8080;
+}
+
+# Основной сервер блок
+server {
+    listen 80;
+    server_name your-domain.com;  # Замените на ваш домен
+    
+    # Общие настройки безопасности
+    add_header X-Frame-Options SAMEORIGIN;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+    
+    # Увеличенные таймауты для долгих запросов
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    
+    # Размер буферов
+    client_max_body_size 1G;
+    proxy_buffering off;
+    
+    # JupyterHub конфигурация
+    location /jupyterhub/ {
+        proxy_pass http://jupyterhub;
+        proxy_redirect off;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # WebSocket поддержка для Jupyter notebooks
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        
+        # Специальные заголовки для JupyterHub
+        proxy_set_header X-Scheme $scheme;
+        proxy_set_header X-Script-Name /jupyterhub;
+    }
+    
+    # Статические файлы JupyterHub
+    location /jupyterhub/static/ {
+        proxy_pass http://jupyterhub;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Кеширование статики
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+    
+    # API эндпоинты JupyterHub
+    location ~ ^/jupyterhub/api/ {
+        proxy_pass http://jupyterhub;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # API может требовать WebSocket
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+    
+    # Пользовательские notebook серверы
+    location ~ ^/jupyterhub/user/([^/]+)/(api/kernels/[^/]+/channels|terminals/websocket)/?$ {
+        proxy_pass http://jupyterhub;
+        
+        # WebSocket конфигурация
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        proxy_read_timeout 86400;
+    }
+    
+    # Airflow конфигурация
+    location /airflow/ {
+        proxy_pass http://airflow/;
+        proxy_redirect off;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Заголовки для Airflow
+        proxy_set_header X-Script-Name /airflow;
+        
+        # Увеличенные таймауты для Airflow
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+    
+    # Статические файлы Airflow
+    location /airflow/static/ {
+        proxy_pass http://airflow/static/;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        
+        # Кеширование статики Airflow
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+    
+    # API Airflow
+    location /airflow/api/ {
+        proxy_pass http://airflow/api/;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Увеличенный таймаут для API запросов
+        proxy_read_timeout 300s;
+    }
+    
+    # Редирект с корня на выбор сервиса
+    location = / {
+        return 200 '
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Data Science Services</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 50px; }
+                .service { display: inline-block; margin: 20px; padding: 20px; 
+                          border: 1px solid #ccc; border-radius: 5px; text-align: center; }
+                .service a { text-decoration: none; color: #333; font-size: 18px; }
+                .service a:hover { color: #007bff; }
+            </style>
+        </head>
+        <body>
+            <h1>Data Science Services</h1>
+            <div class="service">
+                <a href="/jupyterhub/">JupyterHub</a>
+                <p>Jupyter Notebooks Environment</p>
+            </div>
+            <div class="service">
+                <a href="/airflow/">Apache Airflow</a>
+                <p>Workflow Management</p>
+            </div>
+        </body>
+        </html>';
+        add_header Content-Type text/html;
+    }
+    
+    # Основные логи
+    access_log /var/log/nginx/jupyterhub-airflow.access.log;
+    error_log /var/log/nginx/jupyterhub-airflow.error.log;
+}
+
+# Конфигурация для WebSocket connections
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+# HTTPS версия (раскомментируйте и настройте SSL)
+# server {
+#     listen 443 ssl http2;
+#     server_name your-domain.com;
+#     
+#     ssl_certificate /path/to/your/certificate.crt;
+#     ssl_certificate_key /path/to/your/private.key;
+#     
+#     # SSL настройки
+#     ssl_protocols TLSv1.2 TLSv1.3;
+#     ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+#     ssl_prefer_server_ciphers off;
+#     ssl_session_cache shared:SSL:10m;
+#     ssl_session_timeout 10m;
+#     
+#     # Включить HSTS
+#     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+#     
+#     # Остальная конфигурация такая же как в HTTP блоке
+#     # ... (скопируйте все location блоки сюда)
+# }
+
+# Редирект с HTTP на HTTPS (раскомментируйте при использовании SSL)
+# server {
+#     listen 80;
+#     server_name your-domain.com;
+#     return 301 https://$server_name$request_uri;
+# }

@@ -39,6 +39,7 @@ chromadb>=1.2.0
 
 # === Document Loaders ===
 pypdf2>=3.0.1
+pypdf
 python-docx>=1.1.2
 openpyxl>=3.1.5
 python-pptx>=1.0.2
@@ -46,3 +47,13 @@ markdown>=3.7
 
 # === Text Processing ===
 tiktoken>=0.8.0
+
+# === Advanced RAG & Vector Stores ===
+redis>=4.5.0
+aioredis>=2.0.1
+
+# Параллелизм и кэширование
+celery>=5.3.0
+
+# Для корпоративных коннекторов
+beautifulsoup4>=4.12.0

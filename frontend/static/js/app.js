@@ -59,6 +59,7 @@ class App {
 
             await this.authManager.checkAuthStatus();
             console.log('✓ Auth status checked');
+            this.authManager.setupForms();
 
             if (this.authManager.isAuthenticated()) {
                 await this.conversationsManager.loadConversations();

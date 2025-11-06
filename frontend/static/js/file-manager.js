@@ -80,8 +80,16 @@ class FileManager {
                 }
             }
 
-            const response = await fetch('/api/v1/documents/upload', {
+            // Get auth token from localStorage
+            const token = localStorage.getItem('auth_token');
+            const headers = {};
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+
+            const response = await fetch('/api/v1/files/upload', {
                 method: 'POST',
+                headers: headers,
                 body: formData
             });
 
@@ -104,13 +112,11 @@ class FileManager {
 
         } catch (error) {
             console.error('❌ Upload error:', error);
-
             // Hide loading
             const container = document.getElementById('attachedFilesContainer');
             if (container) {
                 container.style.display = 'none';
             }
-
             throw error;
         }
     }

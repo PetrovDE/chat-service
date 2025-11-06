@@ -46,11 +46,117 @@ class AuthManager {
         }
     }
 
+    async register(username, password, email) {
+        console.log('📝 Registering new user...');
+        try {
+            const response = await this.apiService.post('/auth/register', {
+                username,
+                password,
+                email
+            });
+            console.log('✅ Registration successful');
+            return response;
+        } catch (error) {
+            console.error('❌ Registration error:', error);
+            throw error;
+        }
+    }
+
     logout() {
         localStorage.removeItem('auth_token');
         this.authenticated = false;
         this.currentUser = null;
         console.log('👋 Logged out');
+    }
+
+    setupForms() {
+        this.setupLoginForm();
+        this.setupRegisterForm();
+        console.log('✓ Auth forms setup complete');
+    }
+
+    setupLoginForm() {
+        const loginForm = document.getElementById('loginForm');
+        if (!loginForm) return;
+
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const username = document.getElementById('loginUsername').value;
+            const password = document.getElementById('loginPassword').value;
+            const errorDiv = document.getElementById('loginError');
+
+            try {
+                await this.login(username, password);
+                this.closeAuthModals();
+                location.reload(); // Reload to load conversations
+            } catch (error) {
+                errorDiv.textContent = error.message || 'Ошибка входа';
+                errorDiv.style.display = 'block';
+            }
+        });
+
+        console.log('✓ Login form initialized');
+    }
+
+    setupRegisterForm() {
+        const registerForm = document.getElementById('registerForm');
+        if (!registerForm) return;
+
+        registerForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const username = document.getElementById('registerUsername').value;
+            const password = document.getElementById('registerPassword').value;
+            const passwordConfirm = document.getElementById('registerPasswordConfirm').value;
+            const errorDiv = document.getElementById('registerError');
+
+            // Validate password match
+            if (password !== passwordConfirm) {
+                errorDiv.textContent = 'Пароли не совпадают';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            // Validate password length
+            if (password.length < 8) {
+                errorDiv.textContent = 'Пароль должен быть минимум 8 символов';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            // Validate username length
+            if (username.length < 3) {
+                errorDiv.textContent = 'Имя пользователя должно быть минимум 3 символа';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            try {
+                await this.register(username, password, `${username}@example.com`);
+                alert('Регистрация успешна! Войдите с вашими данными.');
+                this.closeAuthModals();
+                this.showLogin();
+            } catch (error) {
+                errorDiv.textContent = error.message || 'Ошибка регистрации';
+                errorDiv.style.display = 'block';
+            }
+        });
+
+        console.log('✓ Register form initialized');
+    }
+
+    closeAuthModals() {
+        const loginModal = document.getElementById('loginModal');
+        const registerModal = document.getElementById('registerModal');
+
+        if (loginModal) loginModal.style.display = 'none';
+        if (registerModal) registerModal.style.display = 'none';
+    }
+
+    showLogin() {
+        const loginModal = document.getElementById('loginModal');
+        if (loginModal) loginModal.style.display = 'flex';
     }
 }
 

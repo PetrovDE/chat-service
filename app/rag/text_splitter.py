@@ -7,33 +7,51 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+MIN_CHUNK_SIZE = 50  # защита от слишком маленьких значений
+DEFAULT_CHUNK_SIZE = getattr(settings, "CHUNK_SIZE", 1000) or 1000
+DEFAULT_CHUNK_OVERLAP = getattr(settings, "CHUNK_OVERLAP", 200) or 200
 
 class SmartTextSplitter:
-    """
-    Умная разбивка текста на chunks с сохранением контекста
-    Использует RecursiveCharacterTextSplitter для структурированной разбивки
-    """
-
     def __init__(
-            self,
-            chunk_size: int = None,
-            chunk_overlap: int = None,
-            separators: List[str] = None
+        self,
+        chunk_size: int = None,
+        chunk_overlap: int = None,
+        separators: List[str] = None
     ):
-        """
-        Инициализация text splitter
+        # 1) Забираем значения из аргументов или конфига
+        raw_chunk_size = chunk_size if chunk_size is not None else DEFAULT_CHUNK_SIZE
+        raw_chunk_overlap = chunk_overlap if chunk_overlap is not None else DEFAULT_CHUNK_OVERLAP
 
-        Args:
-            chunk_size: Размер chunk в символах (из config по умолчанию)
-            chunk_overlap: Перекрытие между chunks (из config по умолчанию)
-            separators: Список разделителей в порядке приоритета
-        """
-        # ИСПРАВЛЕНО: используем правильные названия параметров
-        self.chunk_size = chunk_size or settings.CHUNK_SIZE
-        self.chunk_overlap = chunk_overlap or settings.CHUNK_OVERLAP
+        # 2) Нормализуем chunk_size (не даем слишком маленькие/некорректные)
+        try:
+            raw_chunk_size = int(raw_chunk_size)
+        except Exception:
+            logger.warning(f"chunk_size={raw_chunk_size} is not int, fallback to {DEFAULT_CHUNK_SIZE}")
+            raw_chunk_size = DEFAULT_CHUNK_SIZE
+
+        if raw_chunk_size < MIN_CHUNK_SIZE:
+            logger.warning(f"chunk_size={raw_chunk_size} < {MIN_CHUNK_SIZE}, bumping to {MIN_CHUNK_SIZE}")
+            raw_chunk_size = MIN_CHUNK_SIZE
+
+        # 3) Нормализуем overlap: он должен быть < chunk_size
+        try:
+            raw_chunk_overlap = int(raw_chunk_overlap)
+        except Exception:
+            logger.warning(f"chunk_overlap={raw_chunk_overlap} is not int, fallback to {DEFAULT_CHUNK_OVERLAP}")
+            raw_chunk_overlap = DEFAULT_CHUNK_OVERLAP
+
+        if raw_chunk_overlap >= raw_chunk_size:
+            adjusted = max(0, raw_chunk_size // 4)
+            logger.warning(
+                f"chunk_overlap={raw_chunk_overlap} >= chunk_size={raw_chunk_size}, "
+                f"reducing overlap to {adjusted}"
+            )
+            raw_chunk_overlap = adjusted
+
+        self.chunk_size = raw_chunk_size
+        self.chunk_overlap = raw_chunk_overlap
         self.separators = separators or ["\n\n", "\n", ". ", " ", ""]
 
-        # Создать основной splitter
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,

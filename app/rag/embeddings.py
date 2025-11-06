@@ -1,190 +1,73 @@
 # app/rag/embeddings.py
+
 import logging
-from typing import List
-from langchain_ollama import OllamaEmbeddings
-from app.rag.config import rag_config
+from typing import List, Optional
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+class EmbeddingsManager:
+    def __init__(self, mode: str = "local", ollama_url: Optional[str] = None, hub_url: Optional[str] = None,
+                 keycloak_token: Optional[str] = None, system_user: Optional[str] = None):
+        self.mode = mode
+        self.ollama_url = ollama_url or settings.EMBEDDINGS_BASEURL
+        self.hub_url = hub_url or settings.CORPORATE_API_URL
+        self.keycloak_token = keycloak_token or settings.CORPORATE_API_TOKEN
+        self.system_user = system_user or settings.CORPORATE_API_USERNAME
+        self.model = settings.EMBEDDINGS_MODEL
 
-class OllamaEmbeddingsManager:
-    """
-    Менеджер для создания векторных представлений (embeddings) через Ollama
-    Использует локальную модель Llama для генерации embeddings
-    """
+    def switch_mode(self, mode: str):
+        if mode not in ["local", "corporate"]:
+            raise ValueError("Incorrect mode: must be 'local' or 'corporate'")
+        self.mode = mode
 
-    def __init__(
-            self,
-            model: str = None,
-            base_url: str = None
-    ):
-        """
-        Инициализация менеджера embeddings
+    def switch_model(self, model: str):
+        self.model = model
 
-        Args:
-            model: Название модели Ollama (по умолчанию из config)
-            base_url: URL Ollama сервера (по умолчанию из config)
-        """
-        self.model = model or rag_config.embeddings_model
-        self.base_url = base_url or rag_config.embeddings_base_url
+    def update_token(self, keycloak_token: str):
+        self.keycloak_token = keycloak_token
 
-        # Инициализация Ollama Embeddings
-        try:
-            self.embeddings = OllamaEmbeddings(
-                model=self.model,
-                base_url=self.base_url
-            )
-            logger.info(f"✅ OllamaEmbeddings initialized: model={self.model}, base_url={self.base_url}")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize OllamaEmbeddings: {e}")
-            raise
+    def get_available_models(self) -> List[str]:
+        # Переиспользовать логику получения доступных моделей из LLMManager!
+        from app.services.llm.manager import llm_manager
+        prev_mode = llm_manager.mode
+        llm_manager.switch_mode(self.mode)
+        models = llm_manager.get_available_models()
+        llm_manager.switch_mode(prev_mode)
+        return models
 
-        self._embedding_cache = {} if rag_config.enable_cache else None
+    def embedd_documents(self, texts: List[str]) -> List[List[float]]:
+        """Получить эмбеддинги через выбранный источник."""
+        if self.mode == "local":
+            import requests
+            endpoint = f"{self.ollama_url}/api/embeddings"
+            payload = {
+                "model": self.model,
+                "input": texts
+            }
+            resp = requests.post(endpoint, json=payload, timeout=30)
+            if resp.status_code != 200:
+                logger.error(f"Ollama embeddings error: {resp.text}")
+                raise RuntimeError(f"Ollama embeddings error: {resp.text}")
+            return resp.json()["embeddings"]
+        elif self.mode == "corporate":
+            import requests
+            endpoint = f"{self.hub_url}/llm/embeddings"
+            headers = {
+                "Authorization": f"Bearer {self.keycloak_token}",
+                "X-System-User": self.system_user,
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": self.model,
+                "input": texts
+            }
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=30)
+            if resp.status_code != 200:
+                logger.error(f"HUB embeddings error: {resp.text}")
+                raise RuntimeError(f"HUB embeddings error: {resp.text}")
+            return resp.json()["embeddings"]
+        else:
+            raise RuntimeError(f"Unknown mode: {self.mode}")
 
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """
-        Создать embeddings для списка документов
-
-        Args:
-            texts: Список текстов для векторизации
-
-        Returns:
-            Список векторов (каждый вектор - список float)
-        """
-        try:
-            if not texts:
-                logger.warning("⚠️ Empty text list provided for embedding")
-                return []
-
-            logger.info(f"🔄 Creating embeddings for {len(texts)} documents...")
-
-            # Проверка кэша
-            if self._embedding_cache is not None:
-                cached_results = []
-                uncached_texts = []
-                uncached_indices = []
-
-                for i, text in enumerate(texts):
-                    cache_key = hash(text)
-                    if cache_key in self._embedding_cache:
-                        cached_results.append((i, self._embedding_cache[cache_key]))
-                    else:
-                        uncached_texts.append(text)
-                        uncached_indices.append(i)
-
-                if cached_results:
-                    logger.info(f"📦 Found {len(cached_results)} embeddings in cache")
-
-                # Создать embeddings только для некэшированных текстов
-                if uncached_texts:
-                    new_embeddings = self.embeddings.embed_documents(uncached_texts)
-
-                    # Сохранить в кэш
-                    for text, embedding in zip(uncached_texts, new_embeddings):
-                        self._embedding_cache[hash(text)] = embedding
-
-                    # Объединить результаты
-                    all_embeddings = [None] * len(texts)
-                    for i, embedding in cached_results:
-                        all_embeddings[i] = embedding
-                    for i, embedding in zip(uncached_indices, new_embeddings):
-                        all_embeddings[i] = embedding
-
-                    return all_embeddings
-                else:
-                    # Все из кэша
-                    return [emb for _, emb in sorted(cached_results)]
-
-            # Без кэша - просто создаем embeddings
-            embeddings = self.embeddings.embed_documents(texts)
-            logger.info(f"✅ Created {len(embeddings)} embeddings successfully")
-            return embeddings
-
-        except Exception as e:
-            logger.error(f"❌ Error creating embeddings: {e}")
-            raise
-
-    def embed_query(self, text: str) -> List[float]:
-        """
-        Создать embedding для поискового запроса
-
-        Args:
-            text: Текст запроса
-
-        Returns:
-            Вектор запроса (список float)
-        """
-        try:
-            if not text or not text.strip():
-                logger.warning("⚠️ Empty query text provided")
-                return []
-
-            logger.debug(f"🔍 Creating embedding for query: {text[:50]}...")
-
-            # Проверка кэша
-            if self._embedding_cache is not None:
-                cache_key = hash(text)
-                if cache_key in self._embedding_cache:
-                    logger.debug("📦 Query embedding found in cache")
-                    return self._embedding_cache[cache_key]
-
-            # Создать embedding
-            embedding = self.embeddings.embed_query(text)
-
-            # Сохранить в кэш
-            if self._embedding_cache is not None:
-                self._embedding_cache[hash(text)] = embedding
-
-            logger.debug(f"✅ Query embedding created (dimension: {len(embedding)})")
-            return embedding
-
-        except Exception as e:
-            logger.error(f"❌ Error creating query embedding: {e}")
-            raise
-
-    def get_embedding_dimension(self) -> int:
-        """
-        Получить размерность векторов для текущей модели
-
-        Returns:
-            Размерность embedding вектора
-        """
-        try:
-            # Создать тестовый embedding для определения размерности
-            test_embedding = self.embed_query("test")
-            dimension = len(test_embedding)
-            logger.info(f"📏 Embedding dimension: {dimension}")
-            return dimension
-        except Exception as e:
-            logger.error(f"❌ Error getting embedding dimension: {e}")
-            # Для llama3.1:8b размерность обычно 4096
-            return 4096
-
-    def clear_cache(self):
-        """Очистить кэш embeddings"""
-        if self._embedding_cache is not None:
-            cache_size = len(self._embedding_cache)
-            self._embedding_cache.clear()
-            logger.info(f"🗑️ Cleared embedding cache ({cache_size} items)")
-
-    def get_cache_size(self) -> int:
-        """Получить размер кэша"""
-        if self._embedding_cache is not None:
-            return len(self._embedding_cache)
-        return 0
-
-    def is_available(self) -> bool:
-        """
-        Проверить доступность Ollama сервера
-
-        Returns:
-            True если сервер доступен
-        """
-        try:
-            # Попытка создать простой embedding
-            self.embed_query("test")
-            logger.info("✅ Ollama embeddings service is available")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Ollama embeddings service unavailable: {e}")
-            return False
+embeddings_manager = EmbeddingsManager()

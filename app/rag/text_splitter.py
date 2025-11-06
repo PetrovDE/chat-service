@@ -3,7 +3,7 @@ import logging
 from typing import List, Dict, Any
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from app.rag.config import rag_config
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,8 @@ class SmartTextSplitter:
             chunk_overlap: Перекрытие между chunks (из config по умолчанию)
             separators: Список разделителей в порядке приоритета
         """
-        self.chunk_size = chunk_size or rag_config.chunk_size
-        self.chunk_overlap = chunk_overlap or rag_config.chunk_overlap
+        self.chunk_size = chunk_size or settings.chunk_size
+        self.chunk_overlap = chunk_overlap or settings.chunk_overlap
         self.separators = separators or ["\n\n", "\n", ". ", " ", ""]
 
         # Создать основной splitter

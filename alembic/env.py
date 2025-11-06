@@ -1,36 +1,21 @@
-# -*- coding: utf-8 -*-
-import sys
-import io
-
-# Настройка UTF-8 для Windows
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
-
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
+from app.database.models import Base
 import os
-from dotenv import load_dotenv
 
-# Load environment variables
+from dotenv import load_dotenv
 load_dotenv()
 
-# this is the Alembic Config object
 config = context.config
-
-# Get database URL from environment
 database_url = os.getenv("ALEMBIC_DATABASE_URL")
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 
-# Interpret the config file for Python logging
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# ВАЖНО: Импорт Base ПОСЛЕ всех остальных импортов
 try:
-    from app.database.models import Base
     target_metadata = Base.metadata
 except ImportError:
     target_metadata = None

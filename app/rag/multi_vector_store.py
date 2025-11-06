@@ -23,8 +23,6 @@ class MultiVectorStore:
     1. Redis (быстрый кэш - поиск < 100ms)
     2. PostgreSQL + pgvector (долгосрочное хранилище)
     3. ChromaDB (локальный RAG)
-
-    ✅ Все импорты в правильных местах - NO LAZY LOADING в основных блоках!
     """
 
     def __init__(self):
@@ -157,12 +155,12 @@ class MultiVectorStore:
     async def _search_postgresql(self, query: str, k: int) -> List[Dict]:
         """Поиск в PostgreSQL + pgvector"""
         from sqlalchemy import text
-        from app.database.database import async_session_maker
+        from app.db.session import AsyncSessionLocal
 
-        async with async_session_maker() as session:
+        async with AsyncSessionLocal() as session:
             # Генерируем embedding для query
-            from app.rag.embeddings import OllamaEmbeddingsManager
-            embeddings_manager = OllamaEmbeddingsManager()
+            from app.rag.embeddings import EmbeddingsManager
+            embeddings_manager = EmbeddingsManager()
             query_embedding = await asyncio.to_thread(
                 embeddings_manager.embeddings.embed_query,
                 query

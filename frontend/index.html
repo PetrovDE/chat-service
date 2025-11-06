@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>AI HUB / Ollama RAG Chat</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="settings-panel">
+    <label for="mode-selector"><b>Источник модели:</b></label>
+    <select id="mode-selector">
+      <option value="local">Локальные модели (Ollama)</option>
+      <option value="corporate">Корпоративный HUB</option>
+    </select>
+    <label for="model-selector"><b>Модель:</b></label>
+    <select id="model-selector">
+      <!-- Динамически заполняется js -->
+    </select>
+  </div>
+
+  <div class="chat-panel">
+    <div id="chat-history" class="chat-history"></div>
+    <div class="chat-controls">
+      <input type="text" id="prompt" placeholder="Введите сообщение..." />
+      <button id="send-btn">Отправить</button>
+    </div>
+  </div>
+
+  <div class="file-panel">
+    <input type="file" id="file-upload" />
+    <button id="upload-btn">Загрузить файл</button>
+  </div>
+
+  <script type="module">
+    import uiController from './ui-controller.js';
+    import fileManager from './file-manager.js';
+
+    document.getElementById('upload-btn').addEventListener('click', async () => {
+      const fileInput = document.getElementById('file-upload');
+      const file = fileInput.files[0];
+      if (!file) return;
+      try {
+        await fileManager.uploadAndProcess(file);
+        alert('Файл загружен и обработан!');
+      } catch (e) {
+        alert('Ошибка загрузки: ' + e.message);
+      }
+    });
+
+    // Остальные скрипты (chat, settings, UI) автоматически запускаются через imports
+  </script>
+</body>
+</html>

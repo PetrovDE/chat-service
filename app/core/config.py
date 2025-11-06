@@ -1,8 +1,9 @@
-﻿# app/config.py
+﻿# app/core/config.py
 
 from pydantic import Field, AnyUrl
 from pydantic_settings import BaseSettings
 from pathlib import Path
+
 
 class Settings(BaseSettings):
     # Основные
@@ -19,9 +20,12 @@ class Settings(BaseSettings):
     host: str = Field("0.0.0.0", env="HOST")
     port: int = Field(8080, env="PORT")
     supported_filetypes: str = Field("pdf,docx,txt,md", env="SUPPORTED_FILETYPES")
-    corporate_api_url: str = Field("", env="CORPORATE_API_URL")
-    corporate_api_username: str = Field("", env="CORPORATE_API_USERNAME")
-    corporate_api_token: str = Field("", env="CORPORATE_API_TOKEN")
+
+    # Исправлены названия в верхний регистр
+    CORPORATE_API_URL: str = Field("", env="CORPORATE_API_URL")
+    CORPORATE_API_USERNAME: str = Field("", env="CORPORATE_API_USERNAME")
+    CORPORATE_API_TOKEN: str = Field("", env="CORPORATE_API_TOKEN")
+
     default_llm_mode: str = Field("local", env="DEFAULT_LLM_MODE")
     default_rag_model: str = Field("llama3", env="DEFAULT_RAG_MODEL")
     max_chunks_per_file: int = Field(100, env="MAX_CHUNKS_PER_FILE")
@@ -59,5 +63,6 @@ class Settings(BaseSettings):
     def is_file_supported(self, filename: str) -> bool:
         allowed = (".pdf", ".docx", ".txt", ".csv", ".xlsx", ".json", ".md")
         return filename.lower().endswith(allowed)
+
 
 settings = Settings()

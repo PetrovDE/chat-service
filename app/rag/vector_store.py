@@ -1,12 +1,10 @@
-# app/rag/vector_store.py
-
 import logging
 from app.core.config import settings
 
 try:
-    from chromadb import Client
+    from chromadb import PersistentClient
 except ImportError:
-    Client = None  # Для валидных ошибок при отсутствии библиотеки
+    PersistentClient = None  # Для валидных ошибок при отсутствии библиотеки
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +14,10 @@ class VectorStoreManager:
                  persist_directory: str = None):
         self.collection_name = collection_name or settings.COLLECTION_NAME
         self.persist_directory = persist_directory or str(settings.get_vectordb_path())
-        if not Client:
+        if not PersistentClient:
             raise ImportError("chromadb library not installed")
-        self.client = Client(path=self.persist_directory)
+        # Используем PersistentClient вместо Client с параметром path
+        self.client = PersistentClient(path=self.persist_directory)
         self.collection = self.client.get_or_create_collection(self.collection_name)
         logger.info(f"VectorStoreManager — {self.collection_name} — {self.persist_directory}")
 

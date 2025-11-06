@@ -1,299 +1,55 @@
 // app/static/js/conversations-manager.js
-export class ConversationsManager {
+
+class ConversationsManager {
     constructor(apiService, uiController, chatManager) {
         this.apiService = apiService;
         this.uiController = uiController;
         this.chatManager = chatManager;
         this.conversations = [];
-        this.currentConversationId = null;
+        console.log('✓ ConversationsManager initialized');
     }
 
     async loadConversations() {
+        console.log('📋 Loading conversations');
         try {
-            // Check if user is authenticated
-            if (!window.app || !window.app.authManager || !window.app.authManager.isAuthenticated()) {
-                this.showEmptyState('Войдите для просмотра истории бесед');
-                return;
-            }
-
-            const conversationsList = document.getElementById('conversationsList');
-            if (!conversationsList) return;
-
-            conversationsList.innerHTML = '<div class="conversations-loading">Загрузка...</div>';
-
-            const data = await this.apiService.getConversations();
-            this.conversations = Array.isArray(data) ? data : [];
-
-            if (this.conversations.length === 0) {
-                this.showEmptyState('У вас пока нет бесед');
-                return;
-            }
-
+            const response = await this.apiService.get('/conversations');
+            this.conversations = response.conversations || [];
+            console.log(`✓ Loaded ${this.conversations.length} conversations`);
             this.renderConversations();
-
         } catch (error) {
-            console.error('Error loading conversations:', error);
-            this.showEmptyState('Ошибка загрузки бесед');
+            console.error('❌ Load conversations error:', error);
+            this.conversations = [];
+            this.renderConversations();
         }
     }
 
     renderConversations() {
-        const conversationsList = document.getElementById('conversationsList');
-        if (!conversationsList) return;
+        const container = document.getElementById('conversationsList');
+        if (!container) return;
 
-        conversationsList.innerHTML = '';
-
-        this.conversations.forEach(conv => {
-            const item = this.createConversationItem(conv);
-            conversationsList.appendChild(item);
-        });
-    }
-
-    createConversationItem(conversation) {
-        const div = document.createElement('div');
-        div.className = 'conversation-item';
-        div.dataset.conversationId = conversation.id;
-
-        if (this.currentConversationId === conversation.id) {
-            div.classList.add('active');
-        }
-
-        const date = new Date(conversation.updated_at);
-        const dateStr = this.formatConversationDate(date);
-
-        div.innerHTML = `
-            <div class="conversation-title">
-                <span class="conv-title-text">${this.escapeHtml(conversation.title)}</span>
-                <div class="conversation-actions">
-                    <button class="icon-btn" onclick="window.renameConversation('${conversation.id}')" title="Переименовать">
-                        ✏️
-                    </button>
-                    <button class="icon-btn" onclick="window.deleteConversation('${conversation.id}')" title="Удалить">
-                        🗑️
-                    </button>
+        if (this.conversations.length === 0) {
+            container.innerHTML = '<div class="conversations-loading">Нет разговоров</div>';
+        } else {
+            container.innerHTML = this.conversations.map(conv => `
+                <div class="conversation-item" onclick="loadConversation('${conv.id}')">
+                    <div class="conversation-title">${conv.title || 'Разговор'}</div>
                 </div>
-            </div>
-            <div class="conversation-meta">
-                <span>${conversation.message_count || 0} сообщений</span>
-                <span>•</span>
-                <span>${dateStr}</span>
-            </div>
-        `;
-
-        div.addEventListener('click', (e) => {
-            if (e.target.closest('.conversation-actions')) {
-                return;
-            }
-            this.loadConversation(conversation.id);
-        });
-
-        return div;
-    }
-
-    formatConversationDate(date) {
-        const now = new Date();
-        const diff = now - date;
-        const minutes = Math.floor(diff / 60000);
-        const hours = Math.floor(diff / 3600000);
-        const days = Math.floor(diff / 86400000);
-
-        if (minutes < 1) return 'Только что';
-        if (minutes < 60) return `${minutes} мин назад`;
-        if (hours < 24) return `${hours} ч назад`;
-        if (days < 7) return `${days} д назад`;
-
-        return date.toLocaleDateString('ru-RU', {
-            day: 'numeric',
-            month: 'short'
-        });
-    }
-
-    formatTime(date) {
-        if (!(date instanceof Date)) {
-            date = new Date(date);
+            `).join('');
         }
-
-        const hours = date.getHours().toString().padStart(2, '0');
-        const minutes = date.getMinutes().toString().padStart(2, '0');
-
-        return `${hours}:${minutes}`;
-    }
-
-    async loadConversation(conversationId) {
-        try {
-            this.uiController.showLoading('Загрузка беседы...');
-
-            const data = await this.apiService.getConversation(conversationId);
-
-            this.currentConversationId = conversationId;
-            this.chatManager.setCurrentConversation(conversationId);
-
-            // Update active state
-            document.querySelectorAll('.conversation-item').forEach(item => {
-                item.classList.remove('active');
-            });
-            const activeItem = document.querySelector(`[data-conversation-id="${conversationId}"]`);
-            if (activeItem) {
-                activeItem.classList.add('active');
-            }
-
-            this.loadMessagesIntoChat(data.messages || []);
-
-            this.uiController.hideLoading();
-
-        } catch (error) {
-            console.error('Error loading conversation:', error);
-            this.uiController.hideLoading();
-            this.uiController.showError('Ошибка загрузки беседы');
-        }
-    }
-
-    loadMessagesIntoChat(messages) {
-        const chatMessages = document.getElementById('chatMessages');
-        if (!chatMessages) return;
-
-        chatMessages.innerHTML = '';
-
-        messages.forEach(msg => {
-            this.addMessageToChat(msg.role, msg.content, new Date(msg.created_at));
-        });
-
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-    }
-
-    addMessageToChat(role, content, timestamp) {
-        const chatMessages = document.getElementById('chatMessages');
-        if (!chatMessages) return;
-
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${role}`;
-
-        const formattedContent = this.escapeHtml(content)
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\n/g, '<br>');
-
-        messageDiv.innerHTML = `
-            <div class="message-bubble">${formattedContent}</div>
-            <div class="message-time">${this.formatTime(timestamp)}</div>
-        `;
-
-        chatMessages.appendChild(messageDiv);
     }
 
     async createNewConversation() {
+        console.log('➕ Creating new conversation');
         try {
-            this.currentConversationId = null;
-            this.chatManager.setCurrentConversation(null);
-
-            const chatMessages = document.getElementById('chatMessages');
-            if (chatMessages) {
-                chatMessages.innerHTML = `
-                    <div class="message assistant">
-                        <div class="message-bubble">
-                            Привет! Я Llama 3.1 8B. Чем могу помочь?
-                        </div>
-                        <div class="message-time">Сейчас</div>
-                    </div>
-                `;
-            }
-
-            // Remove active state from all conversations
-            document.querySelectorAll('.conversation-item').forEach(item => {
-                item.classList.remove('active');
-            });
-
-            this.uiController.showSuccess('Новая беседа начата');
-
+            const response = await this.apiService.post('/conversations', { title: 'Новый разговор' });
+            console.log('✓ Conversation created:', response);
+            await this.loadConversations();
+            return response;
         } catch (error) {
-            console.error('Error creating conversation:', error);
-            this.uiController.showError('Ошибка создания беседы');
+            console.error('❌ Create conversation error:', error);
+            throw error;
         }
-    }
-
-    async renameConversation(conversationId) {
-        const conversation = this.conversations.find(c => c.id === conversationId);
-        if (!conversation) return;
-
-        const newTitle = prompt('Новое название беседы:', conversation.title);
-        if (!newTitle || newTitle === conversation.title) return;
-
-        try {
-            await this.apiService.updateConversation(conversationId, {
-                title: newTitle
-            });
-
-            conversation.title = newTitle;
-            this.renderConversations();
-
-            this.uiController.showSuccess('Беседа переименована');
-
-        } catch (error) {
-            console.error('Error renaming conversation:', error);
-            this.uiController.showError('Ошибка переименования');
-        }
-    }
-
-    async deleteConversation(conversationId) {
-        if (!confirm('Удалить эту беседу? Это действие необратимо.')) {
-            return;
-        }
-
-        try {
-            await this.apiService.deleteConversation(conversationId);
-
-            this.conversations = this.conversations.filter(c => c.id !== conversationId);
-
-            if (this.currentConversationId === conversationId) {
-                this.currentConversationId = null;
-                this.chatManager.setCurrentConversation(null);
-
-                const chatMessages = document.getElementById('chatMessages');
-                if (chatMessages) {
-                    chatMessages.innerHTML = `
-                        <div class="message assistant">
-                            <div class="message-bubble">
-                                Беседа удалена. Начните новую беседу!
-                            </div>
-                            <div class="message-time">Сейчас</div>
-                        </div>
-                    `;
-                }
-            }
-
-            this.renderConversations();
-            this.uiController.showSuccess('Беседа удалена');
-
-        } catch (error) {
-            console.error('Error deleting conversation:', error);
-            this.uiController.showError('Ошибка удаления беседы');
-        }
-    }
-
-    showEmptyState(message) {
-        const conversationsList = document.getElementById('conversationsList');
-        if (!conversationsList) return;
-
-        conversationsList.innerHTML = `
-            <div class="empty-conversations">
-                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                </svg>
-                <p>${message}</p>
-            </div>
-        `;
-    }
-
-    getCurrentConversationId() {
-        return this.currentConversationId;
-    }
-
-    setCurrentConversationId(id) {
-        this.currentConversationId = id;
-    }
-
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
     }
 }
+
+export { ConversationsManager };

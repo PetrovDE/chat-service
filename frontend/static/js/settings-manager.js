@@ -1,67 +1,67 @@
-// settings-manager.js
+// app/static/js/settings-manager.js
 
 class SettingsManager {
-  constructor() {
-    this.mode = 'local'; // "local" (Ollama) или "corporate" (HUB)
-    this.model = null;
-    this.models = [];
-    this.listeners = [];
-    this._fetchModels();
-  }
-
-  setMode(newMode) {
-    if (newMode !== 'local' && newMode !== 'corporate') {
-      throw new Error('Invalid mode');
+    constructor(apiService, uiController) {
+        this.apiService = apiService;
+        this.uiController = uiController;
+        this.settings = {
+            mode: 'local',
+            model: null,
+            temperature: 0.7,
+            max_tokens: 2048
+        };
+        this.availableModels = [];
+        console.log('✓ SettingsManager initialized');
     }
-    this.mode = newMode;
-    this.model = null; // Сброс выбранной модели при смене режима
-    this._fetchModels();
-    this._notifyListeners();
-  }
 
-  async _fetchModels() {
-    try {
-      const resp = await fetch(`/api/models?mode=${this.mode}`);
-      if (!resp.ok) {
-        throw new Error('Failed to fetch models');
-      }
-      this.models = await resp.json();
-      this.model = this.models.length > 0 ? this.models[0] : null;
-      this._notifyListeners();
-    } catch (e) {
-      this.models = [];
-      this.model = null;
-      this._notifyListeners();
-      console.error(`Error loading models for ${this.mode}:`, e);
+    async loadAvailableModels() {
+        console.log('📋 Loading models...');
+        try {
+            const mode = this.settings.mode || 'local';
+            const response = await this.apiService.get(`/models/list?mode=${mode}`);
+            console.log('✓ Models response:', response);
+
+            if (response.models && response.models.length > 0) {
+                this.availableModels = response.models;
+                this.updateModelSelector();
+                console.log(`✅ Loaded ${response.models.length} models`);
+            } else {
+                console.warn('⚠️ No models found:', response.error || 'Unknown error');
+                this.availableModels = [];
+                this.updateModelSelector();
+            }
+        } catch (error) {
+            console.error('❌ Failed to load models:', error);
+            this.availableModels = [];
+            this.updateModelSelector();
+        }
     }
-  }
 
-  setModel(modelName) {
-    if (!this.models.includes(modelName)) {
-      throw new Error('Model not found in current mode');
+    updateModelSelector() {
+        const selector = document.getElementById('model-selector');
+        if (!selector) return;
+
+        if (this.availableModels.length === 0) {
+            selector.innerHTML = '<option value="">Модели не найдены</option>';
+        } else {
+            selector.innerHTML = this.availableModels.map(model =>
+                `<option value="${model.name}">${model.name}</option>`
+            ).join('');
+        }
     }
-    this.model = modelName;
-    this._notifyListeners();
-  }
 
-  onChange(listener) {
-    this.listeners.push(listener);
-  }
-
-  _notifyListeners() {
-    for (const cb of this.listeners) {
-      cb(this.mode, this.model, this.models);
+    getSettings() {
+        return this.settings;
     }
-  }
 
-  // getCurrentSettings() {
-  //   return {
-  //     mode: this.mode,
-  //     model: this.model,
-  //     models: this.models,
-  //   };
-  // }
+    setMode(mode) {
+        this.settings.mode = mode;
+        this.loadAvailableModels();
+    }
+
+    setModel(model) {
+        this.settings.model = model;
+    }
 }
 
-const settingsManager = new SettingsManager();
-export default settingsManager;
+export { SettingsManager };

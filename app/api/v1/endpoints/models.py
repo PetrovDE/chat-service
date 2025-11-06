@@ -1,38 +1,46 @@
 ﻿# app/api/v1/endpoints/models.py
-from fastapi import APIRouter, Depends
-from typing import List, Dict, Any
-
-from app.api.dependencies import get_current_user
-from app.db.models import User
-from app.services.llm.manager import llm_manager
+from fastapi import APIRouter, HTTPException
+from typing import Dict, Any
+import requests
+from app.core.config import settings
 
 router = APIRouter()
 
 
-@router.get("/available")
-async def get_available_models(
-    source: str = "ollama",
-    current_user: User = Depends(get_current_user)
-) -> Dict[str, Any]:
-    """Get available models from source"""
-    models = await llm_manager.get_available_models(source)
+@router.get("/list")
+async def list_models(mode: str = "local") -> Dict[str, Any]:
+    """Список доступных моделей"""
+    try:
+        if mode == "local":
+            ollama_url = str(settings.EMBEDDINGS_BASEURL).rstrip('/')
+            response = requests.get(f"{ollama_url}/api/tags", timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            models = data.get("models", [])
+
+            return {
+                "mode": "local",
+                "models": [{"name": m.get("name"), "size": m.get("size", 0)} for m in models],
+                "count": len(models)
+            }
+        else:
+            return {"mode": mode, "models": [], "count": 0}
+    except Exception as e:
+        return {"mode": mode, "models": [], "count": 0, "error": str(e)}
+
+
+@router.get("/status")
+async def models_status() -> Dict[str, Any]:
+    """Статус доступности моделей"""
+    ollama_available = False
+    try:
+        ollama_url = str(settings.EMBEDDINGS_BASEURL).rstrip('/')
+        response = requests.get(f"{ollama_url}/api/tags", timeout=3)
+        ollama_available = response.status_code == 200
+    except:
+        pass
+
     return {
-        "source": source,
-        "models": models,
-        "current_model": llm_manager.ollama_model if source == "ollama" else llm_manager.openai_model
-    }
-
-
-@router.get("/sources")
-async def get_model_sources() -> List[str]:
-    """Get available model sources"""
-    return ["ollama", "openai"]
-
-
-@router.get("/current")
-async def get_current_model() -> Dict[str, str]:
-    """Get current default model"""
-    return {
-        "source": llm_manager.default_source,
-        "model": llm_manager.ollama_model if llm_manager.default_source == "ollama" else llm_manager.openai_model
+        "ollama": {"available": ollama_available, "url": str(settings.EMBEDDINGS_BASEURL)},
+        "corporate": {"available": bool(settings.CORPORATE_API_URL)}
     }

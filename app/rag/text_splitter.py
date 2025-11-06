@@ -28,8 +28,9 @@ class SmartTextSplitter:
             chunk_overlap: Перекрытие между chunks (из config по умолчанию)
             separators: Список разделителей в порядке приоритета
         """
-        self.chunk_size = chunk_size or settings.chunk_size
-        self.chunk_overlap = chunk_overlap or settings.chunk_overlap
+        # ИСПРАВЛЕНО: используем правильные названия параметров
+        self.chunk_size = chunk_size or settings.CHUNK_SIZE
+        self.chunk_overlap = chunk_overlap or settings.CHUNK_OVERLAP
         self.separators = separators or ["\n\n", "\n", ". ", " ", ""]
 
         # Создать основной splitter

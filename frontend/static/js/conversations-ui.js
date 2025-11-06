@@ -1,12 +1,7 @@
-// Global functions for conversations UI
+// app/static/js/conversations-ui.js
 
 window.toggleSidebar = function() {
     document.body.classList.toggle('sidebar-collapsed');
-
-    const toggle = document.getElementById('sidebarToggle');
-    if (toggle) {
-        toggle.style.display = document.body.classList.contains('sidebar-collapsed') ? 'block' : 'none';
-    }
 };
 
 window.startNewConversation = function() {
@@ -15,20 +10,9 @@ window.startNewConversation = function() {
     }
 };
 
-window.loadConversations = function() {
-    if (window.app && window.app.conversationsManager) {
-        window.app.conversationsManager.loadConversations();
-    }
-};
-
-window.renameConversation = function(conversationId) {
-    if (window.app && window.app.conversationsManager) {
-        window.app.conversationsManager.renameConversation(conversationId);
-    }
-};
-
-window.deleteConversation = function(conversationId) {
-    if (window.app && window.app.conversationsManager) {
-        window.app.conversationsManager.deleteConversation(conversationId);
+window.loadConversation = function(conversationId) {
+    console.log('📂 Loading conversation:', conversationId);
+    if (window.app && window.app.chatManager) {
+        window.app.chatManager.setCurrentConversation(conversationId);
     }
 };

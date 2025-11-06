@@ -1315,3 +1315,48 @@ body.sidebar-collapsed .sidebar-toggle {
     background: rgba(0, 0, 0, 0.05);
     font-weight: 600;
 }
+
+/* Typing indicator animation */
+.typing-indicator {
+    display: inline-block;
+    color: #8e8e93;
+    animation: typing-blink 1.4s infinite;
+}
+
+@keyframes typing-blink {
+    0%, 100% { opacity: 0.2; }
+    50% { opacity: 1; }
+}
+
+/* Message formatting */
+.message-bubble code {
+    background: rgba(0, 0, 0, 0.1);
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.9em;
+}
+
+.message-bubble pre {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 1em;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 0.5em 0;
+}
+
+.message-bubble pre code {
+    background: none;
+    padding: 0;
+    color: inherit;
+}
+
+.message-bubble strong {
+    font-weight: 600;
+}
+
+.message-bubble em {
+    font-style: italic;
+    color: #666;
+}

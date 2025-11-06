@@ -133,6 +133,9 @@ async def chat_stream(
                 }
                 yield f"data: {json.dumps(metadata)}\n\n"
 
+                logger.info(f"🔧 DEBUG chat.py: model_source={chat_data.model_source}, model_name={chat_data.model_name}")
+                logger.info(f"🔧 DEBUG chat.py: llm_manager.ollama_model={llm_manager.ollama_model}")
+
                 # Generate response
                 async for chunk in llm_manager.generate_response_stream(
                         prompt=final_prompt,

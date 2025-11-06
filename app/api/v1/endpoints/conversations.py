@@ -9,6 +9,14 @@ from app.db.models import User
 from app.schemas import ConversationResponse, ConversationUpdate
 from app.api.dependencies import get_current_user
 from app.crud import crud_conversation, crud_message
+from app.api.dependencies import get_current_user_optional
+from app.schemas import ConversationCreate
+
+import logging
+from app.core.logging import setup_logging
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -52,6 +60,41 @@ async def get_conversation(
         )
 
     return conversation
+
+
+@router.post("/", response_model=ConversationResponse)
+async def create_conversation(
+        conversation_data: ConversationCreate,
+        db: AsyncSession = Depends(get_db),
+        current_user: User = Depends(get_current_user_optional)
+):
+    """
+    Create new conversation (works for authenticated and anonymous users)
+    Создать новый разговор (работает для авторизованных и анонимных пользователей)
+    """
+    user_id = current_user.id if current_user else None
+    username = current_user.username if current_user else "anonymous"
+
+    logger.info(f"➕ Creating conversation for {username}: {conversation_data.title}")
+
+    try:
+        # Create conversation
+        conversation = await crud_conversation.create_for_user(
+            db=db,
+            obj_in=conversation_data,
+            user_id=user_id
+        )
+
+        logger.info(f"✅ Created conversation {conversation.id}")
+
+        return conversation
+
+    except Exception as e:
+        logger.error(f"❌ Create conversation error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create conversation: {str(e)}"
+        )
 
 
 @router.put("/{conversation_id}", response_model=ConversationResponse)

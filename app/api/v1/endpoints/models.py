@@ -11,7 +11,8 @@ router = APIRouter()
 async def list_models(mode: str = "local") -> Dict[str, Any]:
     """Список доступных моделей"""
     try:
-        if mode == "local":
+        # ИСПРАВЛЕНО: поддержка 'local' и 'ollama'
+        if mode in ["local", "ollama"]:
             ollama_url = str(settings.EMBEDDINGS_BASEURL).rstrip('/')
             response = requests.get(f"{ollama_url}/api/tags", timeout=5)
             response.raise_for_status()
@@ -19,7 +20,7 @@ async def list_models(mode: str = "local") -> Dict[str, Any]:
             models = data.get("models", [])
 
             return {
-                "mode": "local",
+                "mode": mode,
                 "models": [{"name": m.get("name"), "size": m.get("size", 0)} for m in models],
                 "count": len(models)
             }

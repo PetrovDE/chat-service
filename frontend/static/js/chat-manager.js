@@ -25,30 +25,25 @@ class ChatManager {
             // Add user message to UI
             this.addMessageToUI('user', message);
 
-            // Prepare request
+            // Prepare request with correct mapping
+            // ИСПРАВЛЕНО: mode маппинг 'local' -> 'ollama' для backend совместимости
+            const modelSource = settings.mode === 'local' ? 'ollama' : settings.mode || 'ollama';
+
             const payload = {
                 message: message,
-                conversation_id: conversationId,
-                model: settings.model || 'llama3',
+                conversation_id: conversationId || null,  // null или валидный UUID
+                model_source: modelSource,  // 'ollama', 'openai', 'corporate'
+                model_name: settings.model || 'llama3',
                 temperature: settings.temperature || 0.7,
                 max_tokens: settings.max_tokens || 2048
             };
 
             console.log('📡 Request payload:', payload);
 
-            // Send to API
-            const response = await this.apiService.post('/chat/send', payload);
-            console.log('✓ Response received:', response);
+            // Send to streaming endpoint
+            await this.streamResponse(payload);
 
-            // Add assistant response to UI
-            if (response.response) {
-                this.addMessageToUI('assistant', response.response);
-            }
-
-            this.isGenerating = false;
-            this.showGenerating(false);
-
-            return response;
+            return { success: true };
         } catch (error) {
             console.error('❌ Send message error:', error);
             this.isGenerating = false;
@@ -56,6 +51,106 @@ class ChatManager {
             this.addMessageToUI('assistant', `Ошибка: ${error.message}`);
             throw error;
         }
+    }
+
+    async streamResponse(payload) {
+        this.abortController = new AbortController();
+
+        try {
+            const response = await fetch(`${this.apiService.baseURL}/chat/stream`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload),
+                signal: this.abortController.signal
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let assistantMessageDiv = null;
+            let assistantBubble = null;
+
+            while (true) {
+                const { done, value } = await reader.read();
+
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.trim() || !line.startsWith('data: ')) continue;
+
+                    const data = line.slice(6);
+                    if (data === '[DONE]') continue;
+
+                    try {
+                        const chunk = JSON.parse(data);
+
+                        if (chunk.type === 'start') {
+                            console.log('🔄 Stream started');
+                            if (chunk.conversation_id) {
+                                this.setCurrentConversation(chunk.conversation_id);
+                            }
+
+                            // Create assistant message element
+                            assistantMessageDiv = this.createAssistantMessageElement();
+                            assistantBubble = assistantMessageDiv.querySelector('.message-bubble');
+
+                        } else if (chunk.type === 'chunk' && chunk.content) {
+                            if (assistantBubble) {
+                                assistantBubble.textContent += chunk.content;
+                                this.scrollToBottom();
+                            }
+
+                        } else if (chunk.type === 'done') {
+                            console.log('✅ Stream completed');
+                            this.isGenerating = false;
+                            this.showGenerating(false);
+
+                        } else if (chunk.type === 'error') {
+                            console.error('❌ Stream error:', chunk.error);
+                            throw new Error(chunk.error);
+                        }
+                    } catch (parseError) {
+                        console.error('Parse error:', parseError, 'Line:', data);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('❌ Stream error:', error);
+            throw error;
+        } finally {
+            this.abortController = null;
+        }
+    }
+
+    createAssistantMessageElement() {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return null;
+
+        // Remove welcome message if exists
+        const welcome = chatMessages.querySelector('[style*="text-align: center"]');
+        if (welcome) {
+            welcome.remove();
+        }
+
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message assistant';
+        messageDiv.innerHTML = `
+            <div class="message-bubble"></div>
+            <div class="message-time">${new Date().toLocaleTimeString()}</div>
+        `;
+
+        chatMessages.appendChild(messageDiv);
+        return messageDiv;
     }
 
     addMessageToUI(role, content) {
@@ -117,6 +212,13 @@ class ChatManager {
         if (this.abortController) {
             this.abortController.abort();
             this.abortController = null;
+        }
+    }
+
+    scrollToBottom() {
+        const chatMessages = document.getElementById('chatMessages');
+        if (chatMessages) {
+            chatMessages.scrollTop = chatMessages.scrollHeight;
         }
     }
 }

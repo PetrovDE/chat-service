@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class LLMManager:
     def __init__(self):
-        self.ollama_url = str(settings.EMBEDDINGS_BASEURL)
+        self.ollama_url = str(settings.EMBEDDINGS_BASEURL).rstrip('/')
         self.ollama_model = settings.EMBEDDINGS_MODEL
         self.openai_api_key = settings.OPENAI_API_KEY
         self.openai_model = settings.OPENAI_MODEL
@@ -161,9 +161,11 @@ class LLMManager:
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
+                url = f"{self.ollama_url}/api/chat"
+
                 async with client.stream(
                         "POST",
-                        f"{self.ollama_url}/api/chat",
+                        url,  # Используем переменную
                         json=payload
                 ) as response:
                     response.raise_for_status()

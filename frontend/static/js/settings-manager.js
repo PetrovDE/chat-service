@@ -5,8 +5,8 @@ class SettingsManager {
         this.apiService = apiService;
         this.uiController = uiController;
         this.settings = {
-            mode: 'local',
-            model: null,
+            mode: 'ollama',  // ИСПРАВЛЕНО: было 'local', теперь 'ollama' (соответствует backend)
+            model: 'llama3.1:8b',
             temperature: 0.7,
             max_tokens: 2048
         };
@@ -17,7 +17,7 @@ class SettingsManager {
     async loadAvailableModels() {
         console.log('📋 Loading models...');
         try {
-            const mode = this.settings.mode || 'local';
+            const mode = this.settings.mode || 'ollama';
             const response = await this.apiService.get(`/models/list?mode=${mode}`);
             console.log('✓ Models response:', response);
 
@@ -47,6 +47,11 @@ class SettingsManager {
             selector.innerHTML = this.availableModels.map(model =>
                 `<option value="${model.name}">${model.name}</option>`
             ).join('');
+
+            if (!this.settings.model && this.availableModels.length > 0) {
+                this.settings.model = this.availableModels[0].name;
+                selector.value = this.settings.model;
+            }
         }
     }
 

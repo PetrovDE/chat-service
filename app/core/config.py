@@ -21,20 +21,21 @@ class Settings(BaseSettings):
     port: int = Field(8080, env="PORT")
     supported_filetypes: str = Field("pdf,docx,txt,md", env="SUPPORTED_FILETYPES")
 
-    # Исправлены названия в верхний регистр
+    # Corporate API
     CORPORATE_API_URL: str = Field("", env="CORPORATE_API_URL")
     CORPORATE_API_USERNAME: str = Field("", env="CORPORATE_API_USERNAME")
     CORPORATE_API_TOKEN: str = Field("", env="CORPORATE_API_TOKEN")
 
+    # LLM/RAG defaults - ИСПРАВЛЕНО: llama3.1:8b вместо llama3.18b
     default_llm_mode: str = Field("local", env="DEFAULT_LLM_MODE")
-    default_rag_model: str = Field("llama3", env="DEFAULT_RAG_MODEL")
+    default_rag_model: str = Field("llama3.1:8b", env="DEFAULT_RAG_MODEL")  # ИСПРАВЛЕНО
     max_chunks_per_file: int = Field(100, env="MAX_CHUNKS_PER_FILE")
     splitter_type: str = Field("smart", env="SPLITTER_TYPE")
 
-    # VectorStore / RAG / LLM
+    # VectorStore / RAG / LLM - ИСПРАВЛЕНО: llama3.1:8b вместо llama3.18b
     VECTORDB_PATH: str = Field(".chromadb", env="VECTORDB_PATH")
     COLLECTION_NAME: str = Field("documents", env="COLLECTION_NAME")
-    EMBEDDINGS_MODEL: str = Field("llama3.18b", env="EMBEDDINGS_MODEL")
+    EMBEDDINGS_MODEL: str = Field("llama3.1:8b", env="EMBEDDINGS_MODEL")  # ИСПРАВЛЕНО
     EMBEDDINGS_BASEURL: AnyUrl = Field("http://localhost:11434", env="EMBEDDINGS_BASEURL")
     CHUNK_SIZE: int = Field(1000, env="CHUNK_SIZE")
     CHUNK_OVERLAP: int = Field(200, env="CHUNK_OVERLAP")

@@ -38,17 +38,25 @@ class ConversationsManager {
         }
     }
 
-    async createNewConversation() {
+    // ИСПРАВЛЕНО: не вызываем POST, просто очищаем чат
+    createNewConversation() {
         console.log('➕ Creating new conversation');
-        try {
-            const response = await this.apiService.post('/conversations', { title: 'Новый разговор' });
-            console.log('✓ Conversation created:', response);
-            await this.loadConversations();
-            return response;
-        } catch (error) {
-            console.error('❌ Create conversation error:', error);
-            throw error;
+
+        // Очищаем текущий разговор - новый создастся автоматически при первом сообщении
+        this.chatManager.setCurrentConversation(null);
+
+        // Очищаем чат
+        const chatMessages = document.getElementById('chatMessages');
+        if (chatMessages) {
+            chatMessages.innerHTML = `
+                <div style="text-align: center; padding: 4rem 2rem; color: #8e8e93;">
+                    <h2 style="font-size: 2rem; margin-bottom: 1rem; color: #1f2937;">💬 Новый разговор</h2>
+                    <p>Напишите сообщение чтобы начать</p>
+                </div>
+            `;
         }
+
+        console.log('✅ Ready for new conversation');
     }
 }
 

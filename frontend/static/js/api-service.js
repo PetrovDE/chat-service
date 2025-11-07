@@ -10,10 +10,19 @@ class ApiService {
         console.log(`📡 ${method} ${url}`, data || '');
 
         try {
+            // ИЗМЕНЕНО: Добавлен заголовок Authorization с токеном
+            const headers = {'Content-Type': 'application/json'};
+
+            const token = localStorage.getItem('auth_token');
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+
             const options = {
                 method,
-                headers: {'Content-Type': 'application/json'}
+                headers: headers
             };
+
             if (data) options.body = JSON.stringify(data);
 
             const response = await fetch(url, options);
@@ -30,6 +39,7 @@ class ApiService {
             throw error;
         }
     }
+
 
     async get(endpoint) { return this.request('GET', endpoint); }
     async post(endpoint, data) { return this.request('POST', endpoint, data); }

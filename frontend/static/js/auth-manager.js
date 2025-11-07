@@ -8,21 +8,71 @@ class AuthManager {
         console.log('✓ AuthManager initialized');
     }
 
+    // НОВЫЙ МЕТОД: Получение информации о текущем пользователе
+    async loadCurrentUser() {
+        try {
+            const user = await this.apiService.get('/auth/me');
+            this.currentUser = user;
+            this.updateLoginButton(true, user.username);
+        } catch (error) {
+            console.warn('⚠️ Could not load current user:', error);
+            // Если не удалось загрузить - токен невалидный
+            localStorage.removeItem('auth_token');
+            this.authenticated = false;
+            this.updateLoginButton(false);
+        }
+    }
+
+    // НОВЫЙ МЕТОД: Обновление кнопки логина/профиля
+    updateLoginButton(isAuthenticated, username = '') {
+        const loginBtn = document.getElementById('loginBtn');
+        if (!loginBtn) return;
+
+        if (isAuthenticated && username) {
+            loginBtn.textContent = `👤 ${username}`;
+            loginBtn.onclick = (e) => {
+                e.preventDefault();
+                this.showUserMenu();
+            };
+        } else {
+            loginBtn.textContent = 'Войти';
+            loginBtn.onclick = (e) => {
+                e.preventDefault();
+                this.showLogin();
+            };
+        }
+    }
+
+    // НОВЫЙ МЕТОД: Показать меню пользователя
+    showUserMenu() {
+        if (confirm('Выйти из системы?')) {
+            this.logout();
+            location.reload();
+        }
+    }
+
+
     async checkAuthStatus() {
         console.log('🔐 Checking auth status');
         try {
             const token = localStorage.getItem('auth_token');
             if (token) {
                 this.authenticated = true;
+                // ИЗМЕНЕНО: Получаем информацию о пользователе
+                await this.loadCurrentUser();
                 console.log('✓ User authenticated');
             } else {
                 this.authenticated = false;
+                this.updateLoginButton(false);
                 console.log('⚠️ User not authenticated');
             }
         } catch (error) {
             console.error('❌ Auth check error:', error);
+            this.authenticated = false;
+            this.updateLoginButton(false);
         }
     }
+
 
     isAuthenticated() {
         return this.authenticated;

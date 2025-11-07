@@ -32,7 +32,7 @@ class SettingsManager {
                 }).join('');
                 console.log('✅ Loaded', response.models.length, 'models');
 
-                // ДОБАВЛЕНО: Установить текущую модель если она есть
+                // Установить текущую модель если она есть
                 if (this.settings.model) {
                     modelSelector.value = this.settings.model;
                 }
@@ -74,7 +74,7 @@ class SettingsManager {
         const tempValue = document.getElementById('temperatureValue');
         const maxTokensInput = document.getElementById('maxTokensInput');
 
-        // ИСПРАВЛЕНО: получение модели из селектора
+        // Получение модели из селектора
         if (modelSelector && modelSelector.value) {
             this.settings.model = modelSelector.value;
         }
@@ -98,7 +98,7 @@ class SettingsManager {
         const tempValue = document.getElementById('temperatureValue');
         const maxTokensInput = document.getElementById('maxTokensInput');
 
-        // ДОБАВЛЕНО: обработчик изменения модели
+        // Обработчик изменения модели
         if (modelSelector) {
             modelSelector.addEventListener('change', (e) => {
                 this.setModel(e.target.value);

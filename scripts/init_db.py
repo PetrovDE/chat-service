@@ -1,31 +1,27 @@
-#!/usr/bin/env python3
-# scripts/init_db.py
 import asyncio
-import sys
-from pathlib import Path
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from app.db.session import engine
-from app.db.base import Base
-from app.db.models import *  # Import all models
+from sqlalchemy.ext.asyncio import create_async_engine
+from app.core.config import settings
+from app.db.base import Base  # ИСПРАВЛЕНО
+# Импортируем модели
+import app.db.models  # Это загрузит все модели из __init__.py
 
 
 async def init_db():
-    """Initialize database with all tables"""
+    """Инициализация базы данных"""
+    print(f"🔗 Подключение к БД: {settings.DATABASE_URL}")
+
+    engine = create_async_engine(settings.DATABASE_URL, echo=True)
+
     async with engine.begin() as conn:
-        # Drop all tables (BE CAREFUL!)
-        # await conn.run_sync(Base.metadata.drop_all)
-        
-        # Create all tables
+        print("🗑️  Удаление старых таблиц...")
+        await conn.run_sync(Base.metadata.drop_all)
+
+        print("📦 Создание новых таблиц...")
         await conn.run_sync(Base.metadata.create_all)
-        print("✅ Database tables created successfully!")
 
-
-async def main():
-    await init_db()
+    await engine.dispose()
+    print("✅ База данных инициализирована успешно!")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(init_db())

@@ -1361,8 +1361,11 @@ body.sidebar-collapsed .sidebar-toggle {
     color: #666;
 }
 
-/* Auth Modal Styles */
-/* Auth Overlay - затемнённый фон */
+/* ========================================
+   AUTH MODALS - ИСПРАВЛЕННАЯ ВЕРСИЯ
+   ======================================== */
+
+/* Auth Overlay - затемнённый фон за модальными окнами */
 .auth-overlay {
     position: fixed;
     top: 0;
@@ -1371,16 +1374,17 @@ body.sidebar-collapsed .sidebar-toggle {
     bottom: 0;
     background: rgba(0, 0, 0, 0.5);
     z-index: 9998;
-    display: none;
+    display: none; /* По умолчанию скрыто */
     justify-content: center;
     align-items: center;
 }
 
+/* Показываем overlay когда добавлен класс show */
 .auth-overlay.show {
-    display: flex;
+    display: flex !important;
 }
 
-/* Auth Modal - контейнер модального окна */
+/* Auth Modal - контейнер для центрирования */
 .auth-modal {
     display: none; /* По умолчанию скрыто */
     justify-content: center;
@@ -1390,13 +1394,13 @@ body.sidebar-collapsed .sidebar-toggle {
     position: relative;
 }
 
-/* Когда JavaScript устанавливает display: flex */
+/* Показываем модальное окно когда установлен display: flex */
 .auth-modal[style*="display: flex"],
 .auth-modal[style*="display:flex"] {
     display: flex !important;
 }
 
-/* Auth Modal Content - само окно */
+/* Auth Modal Content - само окно с формой */
 .auth-modal-content {
     background: white;
     border-radius: 16px;
@@ -1406,8 +1410,6 @@ body.sidebar-collapsed .sidebar-toggle {
     animation: slideIn 0.3s ease;
     position: relative;
     z-index: 10001;
-    /* КРИТИЧНО: Убираем fixed позиционирование */
-    /* position: static или relative, не fixed */
 }
 
 @keyframes slideIn {
@@ -1500,6 +1502,7 @@ body.sidebar-collapsed .sidebar-toggle {
     border-radius: 8px;
     margin-bottom: 1rem;
     font-size: 0.9rem;
+    display: none; /* По умолчанию скрыто */
 }
 
 .auth-submit-btn {

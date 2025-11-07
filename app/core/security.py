@@ -1,13 +1,20 @@
 ﻿# app/core/security.py
 from datetime import datetime, timedelta
 from typing import Any, Optional, Union
-from passlib.context import CryptContext
+from argon2 import PasswordHasher  # НОВОЕ
+from argon2.exceptions import VerifyMismatchError, InvalidHash  # НОВОЕ
 from jose import JWTError, jwt
 
 from app.core.config import settings
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing - ИЗМЕНЕНО с bcrypt на Argon2
+ph = PasswordHasher(
+    time_cost=2,  # Количество итераций
+    memory_cost=65536,  # 64 MB памяти
+    parallelism=1,  # Количество потоков
+    hash_len=32,  # Длина хеша
+    salt_len=16  # Длина соли
+)
 
 # JWT settings
 ALGORITHM = settings.JWT_ALGORITHM
@@ -46,12 +53,18 @@ def decode_access_token(token: str) -> Optional[dict]:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     Verify a plain password against a hashed password
+    ИЗМЕНЕНО: теперь использует Argon2 вместо bcrypt
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        ph.verify(hashed_password, plain_password)
+        return True
+    except (VerifyMismatchError, InvalidHash):
+        return False
 
 
 def get_password_hash(password: str) -> str:
     """
     Hash a password
+    ИЗМЕНЕНО: теперь использует Argon2 вместо bcrypt
     """
-    return pwd_context.hash(password)
+    return ph.hash(password)

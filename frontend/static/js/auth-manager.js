@@ -1,5 +1,4 @@
 // app/static/js/auth-manager.js
-
 class AuthManager {
     constructor(apiService, uiController) {
         this.apiService = apiService;
@@ -82,7 +81,6 @@ class AuthManager {
 
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-
             const username = document.getElementById('loginUsername').value;
             const password = document.getElementById('loginPassword').value;
             const errorDiv = document.getElementById('loginError');
@@ -106,7 +104,6 @@ class AuthManager {
 
         registerForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-
             const username = document.getElementById('registerUsername').value;
             const password = document.getElementById('registerPassword').value;
             const passwordConfirm = document.getElementById('registerPasswordConfirm').value;
@@ -147,15 +144,20 @@ class AuthManager {
     closeAuthModals() {
         const loginModal = document.getElementById('loginModal');
         const registerModal = document.getElementById('registerModal');
+        const authOverlay = document.getElementById('authOverlay');
 
         if (loginModal) loginModal.style.display = 'none';
         if (registerModal) registerModal.style.display = 'none';
+        if (authOverlay) authOverlay.classList.remove('show');
     }
 
     showLogin() {
         this.closeAuthModals();
         const loginModal = document.getElementById('loginModal');
-        if (loginModal) {
+        const authOverlay = document.getElementById('authOverlay');
+
+        if (loginModal && authOverlay) {
+            authOverlay.classList.add('show');
             loginModal.style.display = 'flex';
             console.log('✓ Login modal opened');
         }
@@ -164,21 +166,24 @@ class AuthManager {
     showRegister() {
         this.closeAuthModals();
         const registerModal = document.getElementById('registerModal');
-        if (registerModal) {
+        const authOverlay = document.getElementById('authOverlay');
+
+        if (registerModal && authOverlay) {
+            authOverlay.classList.add('show');
             registerModal.style.display = 'flex';
             console.log('✓ Register modal opened');
         }
     }
 
     setupGlobalHelpers() {
-        // Auth functions
+        // КРИТИЧНО: Глобальные функции для onclick в HTML
         window.showLogin = () => this.showLogin();
         window.showRegister = () => this.showRegister();
         window.switchToRegister = () => this.showRegister();
         window.switchToLogin = () => this.showLogin();
         window.closeAuthModals = () => this.closeAuthModals();
 
-        // Bind login button
+        // Привязка кнопок через addEventListener
         const loginBtn = document.getElementById('loginBtn');
         if (loginBtn) {
             loginBtn.addEventListener('click', (e) => {
@@ -188,12 +193,13 @@ class AuthManager {
             console.log('✓ Login button bound');
         }
 
-        // Bind settings button
         const settingsBtn = document.getElementById('settingsBtn');
         if (settingsBtn) {
             settingsBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                window.toggleSettings();
+                if (window.toggleSettings) {
+                    window.toggleSettings();
+                }
             });
             console.log('✓ Settings button bound');
         }

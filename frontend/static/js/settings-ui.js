@@ -1,11 +1,14 @@
 // app/static/js/settings-ui.js
 
-// Global settings UI functions
+// Глобальные функции для работы с настройками
 window.toggleSettings = function() {
     const settingsPanel = document.getElementById('settingsPanel');
     if (settingsPanel) {
-        settingsPanel.classList.toggle('show');
-        console.log('⚙️ Settings toggled');
+        if (settingsPanel.classList.contains('show')) {
+            settingsPanel.classList.remove('show');
+        } else {
+            settingsPanel.classList.add('show');
+        }
     }
 };
 
@@ -13,7 +16,6 @@ window.closeSettings = function() {
     const settingsPanel = document.getElementById('settingsPanel');
     if (settingsPanel) {
         settingsPanel.classList.remove('show');
-        console.log('✓ Settings closed');
     }
 };
 
@@ -22,8 +24,31 @@ window.saveSettings = function() {
         window.app.settingsManager.applySettings();
         window.closeSettings();
         console.log('✅ Settings saved');
-    } else {
-        console.error('❌ SettingsManager not found');
+    }
+};
+
+window.handleLogout = function() {
+    if (window.app && window.app.authManager) {
+        window.app.authManager.logout();
+        window.closeSettings();
+        location.reload();
+    }
+};
+
+// Глобальные функции для разговоров
+window.startNewConversation = function() {
+    if (window.app && window.app.conversationsManager) {
+        window.app.conversationsManager.createNewConversation();
+    }
+};
+
+window.toggleSidebar = function() {
+    document.body.classList.toggle('sidebar-collapsed');
+};
+
+window.clearAttachedFiles = function() {
+    if (window.app && window.app.fileManager) {
+        window.app.fileManager.clearAttachedFiles();
     }
 };
 

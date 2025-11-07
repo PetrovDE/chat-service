@@ -12,8 +12,8 @@ class ConversationsManager {
     async loadConversations() {
         console.log('📋 Loading conversations');
         try {
-            const response = await this.apiService.get('/conversations');
-            this.conversations = response.conversations || [];
+            const response = await this.apiService.get('/api/v1/conversations');
+            this.conversations = response || [];
             console.log(`✓ Loaded ${this.conversations.length} conversations`);
             this.renderConversations();
         } catch (error) {

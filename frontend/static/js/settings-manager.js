@@ -1,5 +1,4 @@
 // app/static/js/settings-manager.js
-
 class SettingsManager {
     constructor(apiService, uiController) {
         this.apiService = apiService;
@@ -22,10 +21,21 @@ class SettingsManager {
 
             const modelSelector = document.getElementById('model-selector');
             if (modelSelector && response.models) {
-                modelSelector.innerHTML = response.models.map(model =>
-                    `<option value="${model}">${model}</option>`
-                ).join('');
+                // ИСПРАВЛЕНО: правильная обработка массива моделей
+                modelSelector.innerHTML = response.models.map(model => {
+                    // Если model - строка, используем как есть
+                    // Если model - объект, извлекаем name или id
+                    const modelValue = typeof model === 'string' ? model : (model.name || model.id || model);
+                    const modelLabel = typeof model === 'string' ? model : (model.name || model.id || model);
+
+                    return `<option value="${modelValue}">${modelLabel}</option>`;
+                }).join('');
                 console.log('✅ Loaded', response.models.length, 'models');
+
+                // ДОБАВЛЕНО: Установить текущую модель если она есть
+                if (this.settings.model) {
+                    modelSelector.value = this.settings.model;
+                }
             }
         } catch (error) {
             console.error('❌ Load models error:', error);
@@ -59,9 +69,15 @@ class SettingsManager {
 
     applySettings() {
         // Apply UI settings
+        const modelSelector = document.getElementById('model-selector');
         const tempSlider = document.getElementById('temperatureSlider');
         const tempValue = document.getElementById('temperatureValue');
         const maxTokensInput = document.getElementById('maxTokensInput');
+
+        // ИСПРАВЛЕНО: получение модели из селектора
+        if (modelSelector && modelSelector.value) {
+            this.settings.model = modelSelector.value;
+        }
 
         if (tempSlider && tempValue) {
             this.settings.temperature = parseFloat(tempSlider.value);
@@ -77,9 +93,17 @@ class SettingsManager {
     }
 
     setupUI() {
+        const modelSelector = document.getElementById('model-selector');
         const tempSlider = document.getElementById('temperatureSlider');
         const tempValue = document.getElementById('temperatureValue');
         const maxTokensInput = document.getElementById('maxTokensInput');
+
+        // ДОБАВЛЕНО: обработчик изменения модели
+        if (modelSelector) {
+            modelSelector.addEventListener('change', (e) => {
+                this.setModel(e.target.value);
+            });
+        }
 
         if (tempSlider && tempValue) {
             tempSlider.addEventListener('input', (e) => {

@@ -1362,19 +1362,41 @@ body.sidebar-collapsed .sidebar-toggle {
 }
 
 /* Auth Modal Styles */
-.auth-modal {
-    display: none;
+/* Auth Overlay - затемнённый фон */
+.auth-overlay {
     position: fixed;
     top: 0;
     left: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0, 0, 0, 0.5);
-    z-index: 10000;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 9998;
+    display: none;
     justify-content: center;
     align-items: center;
 }
 
+.auth-overlay.show {
+    display: flex;
+}
+
+/* Auth Modal - контейнер модального окна */
+.auth-modal {
+    display: none; /* По умолчанию скрыто */
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
+
+/* Когда JavaScript устанавливает display: flex */
+.auth-modal[style*="display: flex"],
+.auth-modal[style*="display:flex"] {
+    display: flex !important;
+}
+
+/* Auth Modal Content - само окно */
 .auth-modal-content {
     background: white;
     border-radius: 16px;
@@ -1382,6 +1404,10 @@ body.sidebar-collapsed .sidebar-toggle {
     max-width: 450px;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
     animation: slideIn 0.3s ease;
+    position: relative;
+    z-index: 10001;
+    /* КРИТИЧНО: Убираем fixed позиционирование */
+    /* position: static или relative, не fixed */
 }
 
 @keyframes slideIn {
@@ -1443,6 +1469,13 @@ body.sidebar-collapsed .sidebar-toggle {
     margin-bottom: 0.5rem;
     color: #1f2937;
     font-weight: 500;
+}
+
+.form-group small {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.75rem;
+    color: #8e8e93;
 }
 
 .auth-input {

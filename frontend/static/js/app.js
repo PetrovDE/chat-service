@@ -6,6 +6,7 @@ import { ConversationsManager } from './conversations-manager.js';
 import { UIController } from './ui-controller.js';
 import { FileManager } from './file-manager.js';
 import { SettingsManager } from './settings-manager.js';
+import './settings-ui.js';
 
 console.log('✓ All modules imported successfully');
 
@@ -36,6 +37,7 @@ class App {
 
             this.settingsManager = new SettingsManager(this.apiService, this.uiController);
             console.log('✓ Settings Manager initialized');
+            this.settingsManager.setupUI();
 
             this.chatManager = new ChatManager(this.apiService, this.uiController);
             console.log('✓ Chat Manager initialized');
@@ -62,8 +64,13 @@ class App {
             this.authManager.setupForms();
 
             if (this.authManager.isAuthenticated()) {
-                await this.conversationsManager.loadConversations();
-                console.log('✓ Conversations loaded');
+                try {
+                    await this.conversationsManager.loadConversations();
+                    console.log('✓ Conversations loaded');
+                } catch (error) {
+                    console.warn('⚠️ Could not load conversations:', error.message);
+                    // Ignore error if endpoint doesn't exist
+                }
             }
 
             await this.settingsManager.loadAvailableModels();

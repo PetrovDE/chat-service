@@ -5,12 +5,11 @@ class SettingsManager {
         this.apiService = apiService;
         this.uiController = uiController;
         this.settings = {
-            mode: 'ollama',  // ИСПРАВЛЕНО: было 'local', теперь 'ollama' (соответствует backend)
+            mode: 'local',
             model: 'llama3.1:8b',
             temperature: 0.7,
             max_tokens: 2048
         };
-        this.availableModels = [];
         console.log('✓ SettingsManager initialized');
     }
 
@@ -21,51 +20,81 @@ class SettingsManager {
             const response = await this.apiService.get(`/models/list?mode=${mode}`);
             console.log('✓ Models response:', response);
 
-            if (response.models && response.models.length > 0) {
-                this.availableModels = response.models;
-                this.updateModelSelector();
-                console.log(`✅ Loaded ${response.models.length} models`);
-            } else {
-                console.warn('⚠️ No models found:', response.error || 'Unknown error');
-                this.availableModels = [];
-                this.updateModelSelector();
+            const modelSelector = document.getElementById('model-selector');
+            if (modelSelector && response.models) {
+                modelSelector.innerHTML = response.models.map(model =>
+                    `<option value="${model}">${model}</option>`
+                ).join('');
+                console.log('✅ Loaded', response.models.length, 'models');
             }
         } catch (error) {
-            console.error('❌ Failed to load models:', error);
-            this.availableModels = [];
-            this.updateModelSelector();
+            console.error('❌ Load models error:', error);
         }
-    }
-
-    updateModelSelector() {
-        const selector = document.getElementById('model-selector');
-        if (!selector) return;
-
-        if (this.availableModels.length === 0) {
-            selector.innerHTML = '<option value="">Модели не найдены</option>';
-        } else {
-            selector.innerHTML = this.availableModels.map(model =>
-                `<option value="${model.name}">${model.name}</option>`
-            ).join('');
-
-            if (!this.settings.model && this.availableModels.length > 0) {
-                this.settings.model = this.availableModels[0].name;
-                selector.value = this.settings.model;
-            }
-        }
-    }
-
-    getSettings() {
-        return this.settings;
     }
 
     setMode(mode) {
         this.settings.mode = mode;
+        console.log('🔧 Mode set to:', mode);
         this.loadAvailableModels();
     }
 
     setModel(model) {
         this.settings.model = model;
+        console.log('🤖 Model set to:', model);
+    }
+
+    setTemperature(temperature) {
+        this.settings.temperature = parseFloat(temperature);
+        console.log('🌡️ Temperature set to:', temperature);
+    }
+
+    setMaxTokens(tokens) {
+        this.settings.max_tokens = parseInt(tokens);
+        console.log('📊 Max tokens set to:', tokens);
+    }
+
+    getSettings() {
+        return { ...this.settings };
+    }
+
+    applySettings() {
+        // Apply UI settings
+        const tempSlider = document.getElementById('temperatureSlider');
+        const tempValue = document.getElementById('temperatureValue');
+        const maxTokensInput = document.getElementById('maxTokensInput');
+
+        if (tempSlider && tempValue) {
+            this.settings.temperature = parseFloat(tempSlider.value);
+            tempValue.textContent = tempSlider.value;
+        }
+
+        if (maxTokensInput) {
+            this.settings.max_tokens = parseInt(maxTokensInput.value);
+        }
+
+        console.log('✅ Settings applied:', this.settings);
+        return this.settings;
+    }
+
+    setupUI() {
+        const tempSlider = document.getElementById('temperatureSlider');
+        const tempValue = document.getElementById('temperatureValue');
+        const maxTokensInput = document.getElementById('maxTokensInput');
+
+        if (tempSlider && tempValue) {
+            tempSlider.addEventListener('input', (e) => {
+                tempValue.textContent = e.target.value;
+                this.setTemperature(e.target.value);
+            });
+        }
+
+        if (maxTokensInput) {
+            maxTokensInput.addEventListener('change', (e) => {
+                this.setMaxTokens(e.target.value);
+            });
+        }
+
+        console.log('✓ Settings UI setup complete');
     }
 }
 

@@ -72,6 +72,7 @@ class AuthManager {
     setupForms() {
         this.setupLoginForm();
         this.setupRegisterForm();
+        this.setupGlobalHelpers();
         console.log('✓ Auth forms setup complete');
     }
 
@@ -89,7 +90,7 @@ class AuthManager {
             try {
                 await this.login(username, password);
                 this.closeAuthModals();
-                location.reload(); // Reload to load conversations
+                location.reload();
             } catch (error) {
                 errorDiv.textContent = error.message || 'Ошибка входа';
                 errorDiv.style.display = 'block';
@@ -111,21 +112,18 @@ class AuthManager {
             const passwordConfirm = document.getElementById('registerPasswordConfirm').value;
             const errorDiv = document.getElementById('registerError');
 
-            // Validate password match
             if (password !== passwordConfirm) {
                 errorDiv.textContent = 'Пароли не совпадают';
                 errorDiv.style.display = 'block';
                 return;
             }
 
-            // Validate password length
             if (password.length < 8) {
                 errorDiv.textContent = 'Пароль должен быть минимум 8 символов';
                 errorDiv.style.display = 'block';
                 return;
             }
 
-            // Validate username length
             if (username.length < 3) {
                 errorDiv.textContent = 'Имя пользователя должно быть минимум 3 символа';
                 errorDiv.style.display = 'block';
@@ -155,8 +153,52 @@ class AuthManager {
     }
 
     showLogin() {
+        this.closeAuthModals();
         const loginModal = document.getElementById('loginModal');
-        if (loginModal) loginModal.style.display = 'flex';
+        if (loginModal) {
+            loginModal.style.display = 'flex';
+            console.log('✓ Login modal opened');
+        }
+    }
+
+    showRegister() {
+        this.closeAuthModals();
+        const registerModal = document.getElementById('registerModal');
+        if (registerModal) {
+            registerModal.style.display = 'flex';
+            console.log('✓ Register modal opened');
+        }
+    }
+
+    setupGlobalHelpers() {
+        // Auth functions
+        window.showLogin = () => this.showLogin();
+        window.showRegister = () => this.showRegister();
+        window.switchToRegister = () => this.showRegister();
+        window.switchToLogin = () => this.showLogin();
+        window.closeAuthModals = () => this.closeAuthModals();
+
+        // Bind login button
+        const loginBtn = document.getElementById('loginBtn');
+        if (loginBtn) {
+            loginBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.showLogin();
+            });
+            console.log('✓ Login button bound');
+        }
+
+        // Bind settings button
+        const settingsBtn = document.getElementById('settingsBtn');
+        if (settingsBtn) {
+            settingsBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                window.toggleSettings();
+            });
+            console.log('✓ Settings button bound');
+        }
+
+        console.log('✓ Global auth helpers initialized');
     }
 }
 

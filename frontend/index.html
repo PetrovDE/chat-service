@@ -23,7 +23,7 @@
 
             <!-- User Profile / Login -->
             <div id="userProfileContainer">
-                <button id="loginBtn" class="login-btn" onclick="showLogin()">Войти</button>
+                <button id="loginBtn" class="login-btn">Войти</button>
             </div>
         </div>
     </header>
@@ -155,7 +155,7 @@
                         <div id="loginError" class="auth-error" style="display: none;"></div>
                         <button type="submit" class="auth-submit-btn">Войти</button>
                         <div class="auth-switch">
-                            Нет аккаунта? <a href="#" onclick="switchToRegister(); return false;">Зарегистрироваться</a>
+                            Нет аккаунта? <a href="javascript:void(0);" onclick="switchToRegister()">Зарегистрироваться</a>
                         </div>
                     </form>
                 </div>
@@ -188,7 +188,7 @@
                         <div id="registerError" class="auth-error" style="display: none;"></div>
                         <button type="submit" class="auth-submit-btn">Зарегистрироваться</button>
                         <div class="auth-switch">
-                            Уже есть аккаунт? <a href="#" onclick="switchToLogin(); return false;">Войти</a>
+                            Уже есть аккаунт? <a href="javascript:void(0);" onclick="switchToLogin()">Войти</a>
                         </div>
                     </form>
                 </div>
@@ -250,6 +250,7 @@
     <div id="toastContainer"></div>
 
     <!-- Scripts -->
+    <script type="module" src="/static/js/settings-ui.js"></script>
     <script type="module" src="/static/js/app.js"></script>
     <script src="/static/js/auth-ui.js"></script>
     <script src="/static/js/conversations-ui.js"></script>

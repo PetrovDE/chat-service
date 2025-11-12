@@ -49,9 +49,11 @@ async def get_current_user(
     # Get user from database
     user = await crud_user.get_by_username(db, username=username)
     if user is None:
+        # ИСПРАВЛЕНО: 401 вместо 404 для консистентности
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     if not user.is_active:
@@ -90,4 +92,5 @@ async def get_current_admin_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions"
         )
+
     return current_user

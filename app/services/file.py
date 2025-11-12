@@ -38,9 +38,7 @@ async def _process_file(file_id: UUID, file_path: Path) -> None:
             )
 
             # Load document
-            content = await asyncio.to_thread(
-                document_loader.load, str(file_path)
-            )
+            content = await document_loader.load_file(str(file_path))
 
             # Split into chunks
             chunks = await asyncio.to_thread(

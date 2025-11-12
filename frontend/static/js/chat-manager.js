@@ -6,11 +6,10 @@ class ChatManager {
         this.currentConversation = null;
         this.isGenerating = false;
         this.abortController = null;
-        this.conversationsManager = null; // ДОБАВЛЕНО
+        this.conversationsManager = null;
         console.log('✓ ChatManager initialized');
     }
 
-    // ДОБАВЛЕНО: Метод для связи с ConversationsManager
     setConversationsManager(conversationsManager) {
         this.conversationsManager = conversationsManager;
         console.log('✓ ConversationsManager linked to ChatManager');
@@ -61,15 +60,24 @@ class ChatManager {
 
     async streamResponse(payload) {
         this.abortController = new AbortController();
-        const wasNewConversation = !payload.conversation_id; // ДОБАВЛЕНО: отслеживаем новый разговор
-        let newConversationId = null; // ДОБАВЛЕНО
+        const wasNewConversation = !payload.conversation_id;
+        let newConversationId = null;
 
         try {
+            // ИСПРАВЛЕНО: Добавляем токен авторизации
+            const token = localStorage.getItem('auth_token');
+            const headers = {
+                'Content-Type': 'application/json',
+            };
+
+            // Добавляем токен если он есть
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+
             const response = await fetch(`${this.apiService.baseURL}/chat/stream`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: headers,
                 body: JSON.stringify(payload),
                 signal: this.abortController.signal
             });
@@ -104,7 +112,7 @@ class ChatManager {
                         if (chunk.type === 'start') {
                             console.log('🔄 Stream started');
                             if (chunk.conversation_id) {
-                                newConversationId = chunk.conversation_id; // СОХРАНЯЕМ ID
+                                newConversationId = chunk.conversation_id;
                                 this.setCurrentConversation(chunk.conversation_id);
                                 console.log('✅ Conversation ID set:', chunk.conversation_id);
                             }
@@ -123,10 +131,9 @@ class ChatManager {
                             this.isGenerating = false;
                             this.showGenerating(false);
 
-                            // ДОБАВЛЕНО: Обновляем список разговоров если был создан новый
+                            // Обновляем список разговоров если был создан новый
                             if (wasNewConversation && newConversationId && this.conversationsManager) {
                                 console.log('🔄 Reloading conversations list after creating new conversation');
-                                // Небольшая задержка чтобы БД успела обновиться
                                 setTimeout(() => {
                                     this.conversationsManager.loadConversations();
                                 }, 300);
@@ -154,7 +161,6 @@ class ChatManager {
         const chatMessages = document.getElementById('chatMessages');
         if (!chatMessages) return null;
 
-        // Remove welcome message if exists
         const welcome = chatMessages.querySelector('[style*="text-align: center"]');
         if (welcome) {
             welcome.remove();
@@ -175,7 +181,6 @@ class ChatManager {
         const chatMessages = document.getElementById('chatMessages');
         if (!chatMessages) return;
 
-        // Remove welcome message if exists
         const welcome = chatMessages.querySelector('[style*="text-align: center"]');
         if (welcome) {
             welcome.remove();
@@ -193,7 +198,6 @@ class ChatManager {
     }
 
     formatMessage(text) {
-        // Simple formatting - can be enhanced with markdown parser
         return text
             .replace(/\n/g, '<br>')
             .replace(/``````/gs, '<pre><code>$1</code></pre>')

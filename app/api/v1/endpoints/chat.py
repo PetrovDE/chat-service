@@ -35,6 +35,7 @@ async def chat_stream(
         username = current_user.username if current_user else "anonymous"
 
         logger.info(f"📨 Chat request from {username}: {chat_data.message[:50]}...")
+        logger.info(f"🔧 Request details: model_source={chat_data.model_source}, model_name={chat_data.model_name}")
 
         # Get or create conversation
         if chat_data.conversation_id:
@@ -52,7 +53,6 @@ async def chat_stream(
                 model_source=chat_data.model_source or "ollama",
                 model_name=chat_data.model_name or llm_manager.ollama_model
             )
-
             conversation = await crud_conversation.create_for_user(
                 db=db,
                 obj_in=conv_data,
@@ -92,8 +92,6 @@ async def chat_stream(
         if user_files and any(f.is_processed == "completed" for f in user_files):
             try:
                 logger.info("🤖 Retrieving RAG context...")
-
-                # Use asyncio.to_thread for synchronous RAG methods
                 context_docs = await asyncio.to_thread(
                     rag_retriever.retrieve_context,
                     query=chat_data.message,
@@ -111,7 +109,6 @@ async def chat_stream(
                     logger.info(f"✅ Using RAG with {len(context_docs)} documents")
                 else:
                     logger.info("ℹ️ No relevant context found")
-
             except Exception as e:
                 logger.warning(f"⚠️ RAG retrieval failed: {e}")
 
@@ -133,8 +130,8 @@ async def chat_stream(
                 }
                 yield f"data: {json.dumps(metadata)}\n\n"
 
-                logger.info(f"🔧 DEBUG chat.py: model_source={chat_data.model_source}, model_name={chat_data.model_name}")
-                logger.info(f"🔧 DEBUG chat.py: llm_manager.ollama_model={llm_manager.ollama_model}")
+                logger.info(
+                    f"🔧 Starting LLM generation: model_source={chat_data.model_source}, model_name={chat_data.model_name}")
 
                 # Generate response
                 async for chunk in llm_manager.generate_response_stream(
@@ -178,8 +175,13 @@ async def chat_stream(
                 )
 
             except Exception as e:
-                logger.error(f"❌ Streaming error: {e}")
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                logger.error(f"❌ Streaming error: {type(e).__name__}: {str(e)}", exc_info=True)
+                error_data = {
+                    'type': 'error',
+                    'message': str(e),
+                    'error_type': type(e).__name__
+                }
+                yield f"data: {json.dumps(error_data)}\n\n"
 
         return StreamingResponse(
             event_stream(),
@@ -194,7 +196,7 @@ async def chat_stream(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Chat stream error: {e}")
+        logger.error(f"❌ Chat stream error: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
 
 
@@ -229,7 +231,6 @@ async def chat(
                 model_source=chat_data.model_source or "ollama",
                 model_name=chat_data.model_name or llm_manager.ollama_model
             )
-
             conversation = await crud_conversation.create_for_user(
                 db=db,
                 obj_in=conv_data,
@@ -284,6 +285,7 @@ async def chat(
 
         # Generate response
         start_time = datetime.utcnow()
+
         result = await llm_manager.generate_response(
             prompt=final_prompt,
             model_source=chat_data.model_source,
@@ -292,6 +294,7 @@ async def chat(
             max_tokens=chat_data.max_tokens or 2000,
             conversation_history=conversation_history if not rag_context_used else None
         )
+
         end_time = datetime.utcnow()
         generation_time = (end_time - start_time).total_seconds()
 
@@ -322,5 +325,5 @@ async def chat(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Chat error: {e}")
+        logger.error(f"❌ Chat error: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")

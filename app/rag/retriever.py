@@ -10,6 +10,7 @@ from app.rag.embeddings import embeddings_manager
 
 logger = logging.getLogger(__name__)
 
+
 class RAGRetriever:
     def __init__(self,
                  vectorstore: Optional[VectorStoreManager] = None,
@@ -33,26 +34,41 @@ class RAGRetriever:
         embedding_query = embeddings_manager.embedd_documents([query_content])[0]
         results = self.vectorstore.query(embedding_query, top_k=top_k)
         logger.info(f"🔍 Vector store returned {len(results)} results")
+
         if user_id:
             filtered_results = [r for r in results if r.get('metadata', {}).get('user_id') == user_id]
             logger.info(f"🔍 After user_id filter: {len(filtered_results)} results")
             results = filtered_results
+
         documents = []
         for result in results:
-            doc = Document(page_content=result.get('content', ''), metadata=result.get('metadata', {}))
+            # FIX: Ensure content is never None
+            content = result.get('content') or result.get('metadata', {}).get('content', '')
+            if not content:
+                logger.warning(f"⚠️ Empty content for doc {result.get('id')}, skipping")
+                continue
+
+            doc = Document(
+                page_content=content,
+                metadata=result.get('metadata', {})
+            )
             documents.append(doc)
+
         logger.info(f"✅ Returning {len(documents)} documents for RAG")
         return documents
 
     def build_context_prompt(self, query: str, context_documents: List[Document]) -> str:
         if not context_documents:
             return query
+
         context_chunks = []
         for i, doc in enumerate(context_documents, 1):
             content = doc.page_content
             filename = doc.metadata.get('filename', 'Unknown')
             context_chunks.append(f"[Документ {i} - {filename}]\n{content}")
+
         context_text = "\n\n---\n\n".join(context_chunks)
+
         prompt = f"""Используя следующий контекст из загруженных файлов, ответь на вопрос пользователя.
 
 КОНТЕКСТ:
@@ -62,7 +78,9 @@ class RAGRetriever:
 {query}
 
 ОТВЕТ:"""
+
         logger.info(f"📝 Built prompt with {len(context_documents)} documents ({len(prompt)} chars)")
         return prompt
+
 
 rag_retriever = RAGRetriever()

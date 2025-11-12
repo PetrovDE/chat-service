@@ -1,0 +1,59 @@
+# FastAPI and server
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# Database
+sqlalchemy>=2.0.23
+asyncpg>=0.29.0
+alembic>=1.12.1
+psycopg2-binary>=2.9.9
+pgvector>=0.2.4
+
+# Authentication
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+argon2-cffi>=23.1.0
+
+# HTTP client
+httpx>=0.25.2
+aiofiles>=23.2.1
+
+# Configuration
+python-dotenv>=1.0.0
+pydantic>=2.5.2
+pydantic-settings>=2.1.0
+pydantic[email]
+
+# === RAG & LangChain ===
+langchain>=1.0.0
+langchain-core>=1.0.0
+langchain-community>=0.4
+langchain-ollama>=1.0.0
+langchain-text-splitters>=1.0.0
+langchain-chroma>=1.0.0
+langchain-classic>=1.0.0
+
+# === Vector Store ===
+chromadb>=1.2.0
+
+# === Document Loaders ===
+pypdf2>=3.0.1
+pypdf
+python-docx>=1.1.2
+openpyxl>=3.1.5
+python-pptx>=1.0.2
+markdown>=3.7
+
+# === Text Processing ===
+tiktoken>=0.8.0
+
+# === Advanced RAG & Vector Stores ===
+redis>=4.5.0
+aioredis>=2.0.1
+
+# Параллелизм и кэширование
+celery>=5.3.0
+
+# Для корпоративных коннекторов
+beautifulsoup4>=4.12.0

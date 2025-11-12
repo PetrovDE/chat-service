@@ -1,3 +1,6 @@
+# app/rag/vector_store.py
+
+
 import logging
 from typing import List, Dict, Any
 from app.core.config import settings
@@ -8,6 +11,7 @@ except ImportError:
     PersistentClient = None
 
 logger = logging.getLogger(__name__)
+
 
 class VectorStoreManager:
     def __init__(self, collection_name: str = None, persist_directory: str = None):
@@ -36,19 +40,29 @@ class VectorStoreManager:
             query_embeddings=[embedding_query],
             n_results=topk
         )
+
         parsed_results = []
         if results and 'ids' in results and len(results['ids']) > 0:
             ids = results['ids'][0]
             metadatas = results.get('metadatas', [[]])[0]
             documents = results.get('documents', [[]])[0]
             distances = results.get('distances', [[]])[0]
+
             for i, doc_id in enumerate(ids):
+                # FIX: Get content from documents field first, fallback to metadata
+                content = None
+                if i < len(documents):
+                    content = documents[i]
+                if not content and i < len(metadatas):
+                    content = metadatas[i].get('content', '')
+
                 parsed_results.append({
                     'id': doc_id,
                     'metadata': metadatas[i] if i < len(metadatas) else {},
-                    'content': documents[i] if i < len(documents) else metadatas[i].get('content', ''),
+                    'content': content or '',  # FIX: Ensure never None
                     'distance': distances[i] if i < len(distances) else 0.0
                 })
+
         logger.info(f"✅ Found {len(parsed_results)} documents")
         return parsed_results
 
@@ -62,5 +76,6 @@ class VectorStoreManager:
         self.client.delete_collection(self.collection_name)
         self.collection = self.client.get_or_create_collection(self.collection_name)
         logger.info(f"Recreated collection {self.collection_name}")
+
 
 vectorstore_manager = VectorStoreManager()

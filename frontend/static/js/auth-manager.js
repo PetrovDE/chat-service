@@ -228,15 +228,6 @@ class AuthManager {
         window.switchToLogin = () => this.showLogin();
         window.closeAuthModals = () => this.closeAuthModals();
 
-        const loginBtn = document.getElementById('loginBtn');
-        if (loginBtn) {
-            loginBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                this.showLogin();
-            });
-            console.log('✓ Login button bound');
-        }
-
         const settingsBtn = document.getElementById('settingsBtn');
         if (settingsBtn) {
             settingsBtn.addEventListener('click', (e) => {

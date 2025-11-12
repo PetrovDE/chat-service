@@ -39,7 +39,7 @@ class ConversationResponse(BaseModel):
     message_count: int
     created_at: datetime
     updated_at: datetime
-    messages: Optional[List[MessageResponse]] = None
+
 
     class Config:
         from_attributes = True

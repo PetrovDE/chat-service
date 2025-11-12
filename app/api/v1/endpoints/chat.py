@@ -46,7 +46,6 @@ async def chat_stream(
                 raise HTTPException(status_code=403, detail="Access denied")
             conversation_id = conversation.id
         else:
-            # Create new conversation
             from app.schemas.conversation import ConversationCreate
             conv_data = ConversationCreate(
                 title=chat_data.message[:100] if len(chat_data.message) <= 100 else chat_data.message[:97] + "...",
@@ -73,7 +72,7 @@ async def chat_stream(
         messages = await crud_message.get_conversation_messages(db, conversation_id=conversation_id)
         conversation_history = [
             {"role": msg.role, "content": msg.content}
-            for msg in messages[:-1]  # Exclude the last message we just added
+            for msg in messages[:-1]
         ]
 
         # Check for RAG context
@@ -92,13 +91,8 @@ async def chat_stream(
         if user_files and any(f.is_processed == "completed" for f in user_files):
             try:
                 logger.info("🤖 Retrieving RAG context...")
-                context_docs = await asyncio.to_thread(
-                    rag_retriever.retrieve_context,
-                    query=chat_data.message,
-                    k=3,
-                    filter={'user_id': str(user_id)} if user_id else None
-                )
-
+                # FIX: заменить на query_rag (синхронный метод)
+                context_docs = rag_retriever.query_rag(chat_data.message, top_k=3)
                 if context_docs:
                     final_prompt = await asyncio.to_thread(
                         rag_retriever.build_context_prompt,
@@ -112,16 +106,13 @@ async def chat_stream(
             except Exception as e:
                 logger.warning(f"⚠️ RAG retrieval failed: {e}")
 
-        # Generate response ID
         assistant_message_id = uuid.uuid4()
 
-        # Stream generator function
         async def event_stream():
             full_response = ""
             start_time = datetime.utcnow()
 
             try:
-                # Send metadata
                 metadata = {
                     'type': 'start',
                     'conversation_id': str(conversation_id),
@@ -133,7 +124,6 @@ async def chat_stream(
                 logger.info(
                     f"🔧 Starting LLM generation: model_source={chat_data.model_source}, model_name={chat_data.model_name}")
 
-                # Generate response
                 async for chunk in llm_manager.generate_response_stream(
                         prompt=final_prompt,
                         model_source=chat_data.model_source,
@@ -145,11 +135,9 @@ async def chat_stream(
                     full_response += chunk
                     yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
 
-                # Calculate generation time
                 end_time = datetime.utcnow()
                 generation_time = (end_time - start_time).total_seconds()
 
-                # Save assistant response
                 await crud_message.create_message(
                     db=db,
                     conversation_id=conversation_id,
@@ -161,7 +149,6 @@ async def chat_stream(
                     generation_time=generation_time
                 )
 
-                # Send completion
                 completion_data = {
                     'type': 'done',
                     'generation_time': generation_time,
@@ -215,7 +202,6 @@ async def chat(
 
         logger.info(f"📨 Chat request (non-stream) from {username}")
 
-        # Get or create conversation
         if chat_data.conversation_id:
             conversation = await crud_conversation.get(db, id=chat_data.conversation_id)
             if not conversation:
@@ -224,7 +210,6 @@ async def chat(
                 raise HTTPException(status_code=403, detail="Access denied")
             conversation_id = conversation.id
         else:
-            # Create new conversation
             from app.schemas.conversation import ConversationCreate
             conv_data = ConversationCreate(
                 title=chat_data.message[:100] if len(chat_data.message) <= 100 else chat_data.message[:97] + "...",
@@ -238,7 +223,6 @@ async def chat(
             )
             conversation_id = conversation.id
 
-        # Save user message
         await crud_message.create_message(
             db=db,
             conversation_id=conversation_id,
@@ -246,14 +230,12 @@ async def chat(
             content=chat_data.message
         )
 
-        # Get history
         messages = await crud_message.get_conversation_messages(db, conversation_id=conversation_id)
         conversation_history = [
             {"role": msg.role, "content": msg.content}
             for msg in messages[:-1]
         ]
 
-        # RAG
         user_files = []
         rag_context_used = False
         final_prompt = chat_data.message
@@ -266,13 +248,8 @@ async def chat(
 
         if user_files and any(f.is_processed == "completed" for f in user_files):
             try:
-                context_docs = await asyncio.to_thread(
-                    rag_retriever.retrieve_context,
-                    query=chat_data.message,
-                    k=3,
-                    filter={'user_id': str(user_id)} if user_id else None
-                )
-
+                # FIX: заменить на query_rag (синхронный метод)
+                context_docs = rag_retriever.query_rag(chat_data.message, top_k=3)
                 if context_docs:
                     final_prompt = await asyncio.to_thread(
                         rag_retriever.build_context_prompt,
@@ -283,7 +260,6 @@ async def chat(
             except Exception as e:
                 logger.warning(f"RAG error: {e}")
 
-        # Generate response
         start_time = datetime.utcnow()
 
         result = await llm_manager.generate_response(
@@ -298,7 +274,6 @@ async def chat(
         end_time = datetime.utcnow()
         generation_time = (end_time - start_time).total_seconds()
 
-        # Save assistant response
         assistant_message = await crud_message.create_message(
             db=db,
             conversation_id=conversation_id,

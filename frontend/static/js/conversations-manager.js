@@ -11,8 +11,8 @@ class ConversationsManager {
     async loadConversations() {
         console.log('📋 Loading conversations');
         try {
-            // ИСПРАВЛЕНО: убрали /api/v1 из пути - он уже в baseURL
-            const response = await this.apiService.get('/conversations');
+            // ИСПРАВЛЕНО: Добавлен слэш в конце
+            const response = await this.apiService.get('/conversations/');
             this.conversations = response || [];
             console.log(`✓ Loaded ${this.conversations.length} conversations`);
             this.renderConversations();
@@ -42,7 +42,6 @@ class ConversationsManager {
     async loadConversation(conversationId) {
         console.log('📖 Loading conversation:', conversationId);
         try {
-            // ИСПРАВЛЕНО: убрали /api/v1 из пути
             const messages = await this.apiService.get(`/conversations/${conversationId}/messages`);
 
             // Установить текущий разговор
@@ -66,7 +65,7 @@ class ConversationsManager {
 
     createNewConversation() {
         console.log('➕ Creating new conversation');
-        // Очищаем текущий разговор - новый создастся автоматически при первом сообщении
+        // Очищаем текущий разговор
         this.chatManager.setCurrentConversation(null);
 
         // Очищаем чат

@@ -21,33 +21,42 @@ class RAGRetriever:
         logger.info("RAGRetriever initialized")
 
     async def process_and_store_file(self, filepath: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Загрузить и разложить документ, сгенерировать эмбеддинги для RAG."""
         docs = await self.documentloader.load_file(filepath, metadata)
-        chunks = []
-        for doc in docs:
-            parts = self.textsplitter.split(doc)
-            chunks.extend(parts)
+        chunk_docs = self.textsplitter.split_documents(docs)
 
-        # Эмбеддинги через текущий embeddings_manager — учитывается mode/model!
-        embeddings = embeddings_manager.embedd_documents([chunk.content for chunk in chunks])
-
-        # Сохранять в vectorstore, использовать DI/объекты с нужным mode!
-        for chunk, emb in zip(chunks, embeddings):
-            chunk_id = chunk.metadata.get("id", None) or chunk.content[:40]
+        embeddings = embeddings_manager.embedd_documents([doc.page_content for doc in chunk_docs])
+        for doc, emb in zip(chunk_docs, embeddings):
+            chunk_id = doc.metadata.get("id", None) or doc.page_content[:40]
             self.vectorstore.add_document(
                 doc_id=chunk_id,
                 embedding=emb,
-                metadata=chunk.metadata
+                metadata=doc.metadata
             )
-        return {"count_stored_chunks": len(chunks)}
+        return {"count_stored_chunks": len(chunk_docs)}
 
-    def query_rag(self, query_content: str, top_k: int = 5) -> List[Document]:
-        """Запрос к RAG через vectorstore + эмбеддинг текущей модели/режима."""
+    def query_rag(self, query_content: str, top_k: int = 5, user_id: Optional[str] = None) -> List[Document]:
         embedding_query = embeddings_manager.embedd_documents([query_content])[0]
+
+        # Получить результаты из векторного хранилища
         results = self.vectorstore.query(embedding_query, top_k=top_k)
+
+        # Фильтрация по user_id
+        if user_id is not None:
+            results = [
+                doc for doc in results
+                if hasattr(doc, "metadata") and (
+                    doc.metadata.get("user_id") == user_id
+                )
+            ]
         return results
 
-rag_retriever = RAGRetriever()
+    def build_context_prompt(self, query: str, context_documents: List[Document]) -> str:
+        """
+        Собирает финальный prompt с добавленным контекстом RAG из chunks.
+        """
+        context_chunks = [doc.page_content for doc in context_documents] if context_documents else []
+        context_text = "\n---\n".join(context_chunks)
+        prompt = f"{query}\n\nКонтекст:\n{context_text}"
+        return prompt
 
-# Create retriever instance
 rag_retriever = RAGRetriever()

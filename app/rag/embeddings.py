@@ -29,7 +29,6 @@ class EmbeddingsManager:
         self.keycloak_token = keycloak_token
 
     def get_available_models(self) -> List[str]:
-        # Переиспользовать логику получения доступных моделей из LLMManager!
         from app.services.llm.manager import llm_manager
         prev_mode = llm_manager.mode
         llm_manager.switch_mode(self.mode)
@@ -38,42 +37,61 @@ class EmbeddingsManager:
         return models
 
     def embedd_documents(self, texts: List[str]) -> List[List[float]]:
-        """Получить эмбеддинги через выбранный источник."""
+        """
+        Получить эмбеддинги для списка текстов.
+
+        Важно: Ollama API >= v0.3 возвращает "embedding" (единственное число),
+        поэтому для каждого текста делаем отдельный запрос.
+        """
         if self.mode == "local":
             import requests
             endpoint = f"{self.ollama_url}/api/embeddings"
-            payload = {
-                "model": self.model,
-                "input": texts
-            }
 
-            try:
-                logger.info(f"🔌 Requesting embeddings from Ollama: {endpoint}")
-                resp = requests.post(endpoint, json=payload, timeout=30)
+            all_embeddings = []
 
-                # Проверка статуса
-                if resp.status_code != 200:
-                    logger.error(f"❌ Ollama API error (status {resp.status_code}): {resp.text}")
-                    raise RuntimeError(f"Ollama embeddings error: HTTP {resp.status_code} - {resp.text}")
+            for text in texts:
+                payload = {
+                    "model": self.model,
+                    "prompt": text  # Используем "prompt" вместо "input"
+                }
 
-                # Парсинг JSON
                 try:
-                    resp_json = resp.json()
-                except Exception as e:
-                    logger.error(f"❌ Ollama response is not valid JSON: {resp.text}")
-                    raise RuntimeError(f"Ollama non-JSON response: {resp.text}")
+                    logger.debug(f"🔌 Requesting embedding from Ollama for text ({len(text)} chars)")
+                    resp = requests.post(endpoint, json=payload, timeout=30)
 
-                # Проверка наличия ключа embeddings
-                if "embeddings" not in resp_json:
-                    logger.error(f"❌ Ollama response missing 'embeddings' key: {resp_json}")
-                    raise RuntimeError(f"Ollama response format error: {resp_json}")
+                    # Проверка статуса
+                    if resp.status_code != 200:
+                        logger.error(f"❌ Ollama API error (status {resp.status_code}): {resp.text}")
+                        raise RuntimeError(f"Ollama embeddings error: HTTP {resp.status_code} - {resp.text}")
 
-                logger.info(f"✅ Embeddings received: {len(resp_json['embeddings'])} vectors")
-                return resp_json["embeddings"]
+                    # Парсинг JSON
+                    try:
+                        resp_json = resp.json()
+                    except Exception as e:
+                        logger.error(f"❌ Ollama response is not valid JSON: {resp.text}")
+                        raise RuntimeError(f"Ollama non-JSON response: {resp.text}")
 
-            except requests.exceptions.RequestException as e:
-                logger.error(f"❌ Network error connecting to Ollama: {e}")
-                raise RuntimeError(f"Cannot connect to Ollama at {endpoint}: {e}")
+                    # Проверка наличия ключа embedding (единственное число!)
+                    if "embedding" not in resp_json:
+                        logger.error(f"❌ Ollama response missing 'embedding' key: {resp_json}")
+                        raise RuntimeError(f"Ollama response format error: {resp_json}")
+
+                    embedding = resp_json["embedding"]
+
+                    # Проверка, что embedding не пустой
+                    if not embedding or len(embedding) == 0:
+                        logger.error(f"❌ Empty embedding returned from Ollama")
+                        raise RuntimeError("Empty embedding returned from Ollama")
+
+                    all_embeddings.append(embedding)
+                    logger.debug(f"✅ Embedding received: {len(embedding)} dimensions")
+
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"❌ Network error connecting to Ollama: {e}")
+                    raise RuntimeError(f"Cannot connect to Ollama at {endpoint}: {e}")
+
+            logger.info(f"✅ Generated {len(all_embeddings)} embeddings")
+            return all_embeddings
 
         elif self.mode == "corporate":
             import requests

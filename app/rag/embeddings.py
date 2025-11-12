@@ -6,6 +6,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+
 class EmbeddingsManager:
     def __init__(self, mode: str = "local", ollama_url: Optional[str] = None, hub_url: Optional[str] = None,
                  keycloak_token: Optional[str] = None, system_user: Optional[str] = None):
@@ -45,11 +46,35 @@ class EmbeddingsManager:
                 "model": self.model,
                 "input": texts
             }
-            resp = requests.post(endpoint, json=payload, timeout=30)
-            if resp.status_code != 200:
-                logger.error(f"Ollama embeddings error: {resp.text}")
-                raise RuntimeError(f"Ollama embeddings error: {resp.text}")
-            return resp.json()["embeddings"]
+
+            try:
+                logger.info(f"🔌 Requesting embeddings from Ollama: {endpoint}")
+                resp = requests.post(endpoint, json=payload, timeout=30)
+
+                # Проверка статуса
+                if resp.status_code != 200:
+                    logger.error(f"❌ Ollama API error (status {resp.status_code}): {resp.text}")
+                    raise RuntimeError(f"Ollama embeddings error: HTTP {resp.status_code} - {resp.text}")
+
+                # Парсинг JSON
+                try:
+                    resp_json = resp.json()
+                except Exception as e:
+                    logger.error(f"❌ Ollama response is not valid JSON: {resp.text}")
+                    raise RuntimeError(f"Ollama non-JSON response: {resp.text}")
+
+                # Проверка наличия ключа embeddings
+                if "embeddings" not in resp_json:
+                    logger.error(f"❌ Ollama response missing 'embeddings' key: {resp_json}")
+                    raise RuntimeError(f"Ollama response format error: {resp_json}")
+
+                logger.info(f"✅ Embeddings received: {len(resp_json['embeddings'])} vectors")
+                return resp_json["embeddings"]
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"❌ Network error connecting to Ollama: {e}")
+                raise RuntimeError(f"Cannot connect to Ollama at {endpoint}: {e}")
+
         elif self.mode == "corporate":
             import requests
             endpoint = f"{self.hub_url}/llm/embeddings"
@@ -62,12 +87,33 @@ class EmbeddingsManager:
                 "model": self.model,
                 "input": texts
             }
-            resp = requests.post(endpoint, json=payload, headers=headers, timeout=30)
-            if resp.status_code != 200:
-                logger.error(f"HUB embeddings error: {resp.text}")
-                raise RuntimeError(f"HUB embeddings error: {resp.text}")
-            return resp.json()["embeddings"]
+
+            try:
+                logger.info(f"🔌 Requesting embeddings from Corporate API: {endpoint}")
+                resp = requests.post(endpoint, json=payload, headers=headers, timeout=30)
+
+                if resp.status_code != 200:
+                    logger.error(f"❌ HUB API error (status {resp.status_code}): {resp.text}")
+                    raise RuntimeError(f"HUB embeddings error: HTTP {resp.status_code} - {resp.text}")
+
+                try:
+                    resp_json = resp.json()
+                except Exception as e:
+                    logger.error(f"❌ HUB response is not valid JSON: {resp.text}")
+                    raise RuntimeError(f"HUB non-JSON response: {resp.text}")
+
+                if "embeddings" not in resp_json:
+                    logger.error(f"❌ HUB response missing 'embeddings' key: {resp_json}")
+                    raise RuntimeError(f"HUB response format error: {resp_json}")
+
+                logger.info(f"✅ Embeddings received from HUB: {len(resp_json['embeddings'])} vectors")
+                return resp_json["embeddings"]
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"❌ Network error connecting to HUB: {e}")
+                raise RuntimeError(f"Cannot connect to HUB at {endpoint}: {e}")
         else:
             raise RuntimeError(f"Unknown mode: {self.mode}")
+
 
 embeddings_manager = EmbeddingsManager()

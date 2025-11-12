@@ -1,4 +1,5 @@
 import logging
+from typing import List, Dict, Any
 from app.core.config import settings
 
 try:
@@ -20,19 +21,36 @@ class VectorStoreManager:
 
     def add_document(self, doc_id: str, embedding: list, metadata: dict):
         logger.info(f"Добавление документа {doc_id} в {self.collection_name}")
+        content = metadata.get('content', '')
         self.collection.add(
             ids=[doc_id],
             embeddings=[embedding],
-            metadatas=[metadata]
+            metadatas=[metadata],
+            documents=[content]
         )
 
-    def query(self, embedding_query: list, top_k: int = None):
-        topk = top_k or settings.CHUNK_SIZE
+    def query(self, embedding_query: list, top_k: int = None) -> List[Dict[str, Any]]:
+        topk = top_k or 5
         logger.info(f"Query top-{topk} {self.collection_name}")
-        return self.collection.query(
+        results = self.collection.query(
             query_embeddings=[embedding_query],
             n_results=topk
         )
+        parsed_results = []
+        if results and 'ids' in results and len(results['ids']) > 0:
+            ids = results['ids'][0]
+            metadatas = results.get('metadatas', [[]])[0]
+            documents = results.get('documents', [[]])[0]
+            distances = results.get('distances', [[]])[0]
+            for i, doc_id in enumerate(ids):
+                parsed_results.append({
+                    'id': doc_id,
+                    'metadata': metadatas[i] if i < len(metadatas) else {},
+                    'content': documents[i] if i < len(documents) else metadatas[i].get('content', ''),
+                    'distance': distances[i] if i < len(distances) else 0.0
+                })
+        logger.info(f"✅ Found {len(parsed_results)} documents")
+        return parsed_results
 
     def clear_collection(self):
         logger.info(f"Очистка коллекции {self.collection_name}")

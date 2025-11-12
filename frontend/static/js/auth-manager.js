@@ -1,4 +1,4 @@
-// app/static/js/auth-manager.js
+// frontend/static/js/auth-manager.js
 class AuthManager {
     constructor(apiService, uiController) {
         this.apiService = apiService;
@@ -8,7 +8,6 @@ class AuthManager {
         console.log('✓ AuthManager initialized');
     }
 
-    // НОВЫЙ МЕТОД: Получение информации о текущем пользователе
     async loadCurrentUser() {
         try {
             const user = await this.apiService.get('/auth/me');
@@ -16,14 +15,12 @@ class AuthManager {
             this.updateLoginButton(true, user.username);
         } catch (error) {
             console.warn('⚠️ Could not load current user:', error);
-            // Если не удалось загрузить - токен невалидный
             localStorage.removeItem('auth_token');
             this.authenticated = false;
             this.updateLoginButton(false);
         }
     }
 
-    // НОВЫЙ МЕТОД: Обновление кнопки логина/профиля
     updateLoginButton(isAuthenticated, username = '') {
         const loginBtn = document.getElementById('loginBtn');
         if (!loginBtn) return;
@@ -43,7 +40,6 @@ class AuthManager {
         }
     }
 
-    // НОВЫЙ МЕТОД: Показать меню пользователя
     showUserMenu() {
         if (confirm('Выйти из системы?')) {
             this.logout();
@@ -51,14 +47,12 @@ class AuthManager {
         }
     }
 
-
     async checkAuthStatus() {
         console.log('🔐 Checking auth status');
         try {
             const token = localStorage.getItem('auth_token');
             if (token) {
                 this.authenticated = true;
-                // ИЗМЕНЕНО: Получаем информацию о пользователе
                 await this.loadCurrentUser();
                 console.log('✓ User authenticated');
             } else {
@@ -73,7 +67,6 @@ class AuthManager {
         }
     }
 
-
     isAuthenticated() {
         return this.authenticated;
     }
@@ -85,13 +78,13 @@ class AuthManager {
             if (response.access_token) {
                 localStorage.setItem('auth_token', response.access_token);
                 this.authenticated = true;
-                this.currentUser = response.user;
                 console.log('✅ Login successful');
             }
             return response;
         } catch (error) {
             console.error('❌ Login error:', error);
-            throw error;
+            // ИСПРАВЛЕНО: Извлекаем правильное сообщение об ошибке
+            throw new Error('Неверное имя пользователя или пароль');
         }
     }
 
@@ -131,6 +124,7 @@ class AuthManager {
 
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
+
             const username = document.getElementById('loginUsername').value;
             const password = document.getElementById('loginPassword').value;
             const errorDiv = document.getElementById('loginError');
@@ -140,6 +134,7 @@ class AuthManager {
                 this.closeAuthModals();
                 location.reload();
             } catch (error) {
+                // ИСПРАВЛЕНО: Показываем понятное сообщение об ошибке
                 errorDiv.textContent = error.message || 'Ошибка входа';
                 errorDiv.style.display = 'block';
             }
@@ -154,6 +149,7 @@ class AuthManager {
 
         registerForm.addEventListener('submit', async (e) => {
             e.preventDefault();
+
             const username = document.getElementById('registerUsername').value;
             const password = document.getElementById('registerPassword').value;
             const passwordConfirm = document.getElementById('registerPasswordConfirm').value;
@@ -226,14 +222,12 @@ class AuthManager {
     }
 
     setupGlobalHelpers() {
-        // КРИТИЧНО: Глобальные функции для onclick в HTML
         window.showLogin = () => this.showLogin();
         window.showRegister = () => this.showRegister();
         window.switchToRegister = () => this.showRegister();
         window.switchToLogin = () => this.showLogin();
         window.closeAuthModals = () => this.closeAuthModals();
 
-        // Привязка кнопок через addEventListener
         const loginBtn = document.getElementById('loginBtn');
         if (loginBtn) {
             loginBtn.addEventListener('click', (e) => {

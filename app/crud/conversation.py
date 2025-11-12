@@ -1,7 +1,7 @@
 # app/crud/conversation.py
 from typing import List, Optional
 from uuid import UUID
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -11,16 +11,21 @@ from app.schemas.conversation import ConversationCreate, ConversationUpdate
 
 
 class CRUDConversation(CRUDBase[Conversation, ConversationCreate, ConversationUpdate]):
+
     async def get_user_conversations(
             self,
             db: AsyncSession,
             *,
-            user_id: UUID,
+            user_id: Optional[UUID],  # ИЗМЕНЕНО: Optional для анонимных
             skip: int = 0,
             limit: int = 100,
             include_archived: bool = False
     ) -> List[Conversation]:
         """Get conversations for a specific user"""
+        if user_id is None:
+            # Для анонимных пользователей возвращаем пустой список
+            return []
+
         query = select(Conversation).where(
             Conversation.user_id == user_id
         )
@@ -46,7 +51,7 @@ class CRUDConversation(CRUDBase[Conversation, ConversationCreate, ConversationUp
             Conversation.id == conversation_id
         ).options(selectinload(Conversation.messages))
 
-        if user_id:
+        if user_id is not None:
             query = query.where(Conversation.user_id == user_id)
 
         result = await db.execute(query)
@@ -57,11 +62,11 @@ class CRUDConversation(CRUDBase[Conversation, ConversationCreate, ConversationUp
             db: AsyncSession,
             *,
             obj_in: ConversationCreate,
-            user_id: UUID
+            user_id: Optional[UUID]  # ИЗМЕНЕНО: Optional для анонимных
     ) -> Conversation:
-        """Create a new conversation for a user"""
+        """Create a new conversation for a user (or anonymous)"""
         db_obj = Conversation(
-            user_id=user_id,
+            user_id=user_id,  # Может быть None для анонимных
             title=obj_in.title,
             model_source=obj_in.model_source,
             model_name=obj_in.model_name
@@ -76,16 +81,18 @@ class CRUDConversation(CRUDBase[Conversation, ConversationCreate, ConversationUp
             db: AsyncSession,
             *,
             conversation_id: UUID,
-            user_id: UUID
+            user_id: Optional[UUID]  # ИЗМЕНЕНО: Optional
     ) -> Optional[Conversation]:
         """Archive a conversation"""
         conversation = await self.get_with_messages(
             db, conversation_id=conversation_id, user_id=user_id
         )
+
         if conversation:
             conversation.is_archived = True
             await db.commit()
             await db.refresh(conversation)
+
         return conversation
 
     async def update_message_count(

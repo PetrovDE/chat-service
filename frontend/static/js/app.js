@@ -1,4 +1,4 @@
-// app/static/js/app.js
+// frontend/static/js/app.js
 import { ApiService } from './api-service.js';
 import { AuthManager } from './auth-manager.js';
 import { ChatManager } from './chat-manager.js';
@@ -49,6 +49,10 @@ class App {
             );
             console.log('✓ Conversations Manager initialized');
 
+            // КРИТИЧНО: Связываем ChatManager с ConversationsManager
+            this.chatManager.setConversationsManager(this.conversationsManager);
+            console.log('✓ ChatManager <-> ConversationsManager linked');
+
             this.fileManager = new FileManager(this.apiService, this.uiController, this.chatManager);
             console.log('✓ File Manager initialized');
 
@@ -61,16 +65,19 @@ class App {
 
             await this.authManager.checkAuthStatus();
             console.log('✓ Auth status checked');
+
             this.authManager.setupForms();
 
+            // ИСПРАВЛЕНО: Загружаем разговоры только для авторизованных пользователей
             if (this.authManager.isAuthenticated()) {
                 try {
                     await this.conversationsManager.loadConversations();
                     console.log('✓ Conversations loaded');
                 } catch (error) {
                     console.warn('⚠️ Could not load conversations:', error.message);
-                    // Ignore error if endpoint doesn't exist
                 }
+            } else {
+                console.log('ℹ️ User not authenticated, skipping conversation load');
             }
 
             await this.settingsManager.loadAvailableModels();
@@ -81,6 +88,7 @@ class App {
 
             this.initialized = true;
             console.log('✅ Application initialized successfully!');
+
         } catch (error) {
             console.error('❌ Failed to initialize application:', error);
 
@@ -170,7 +178,6 @@ class App {
 
     async checkSystemHealth() {
         try {
-            // ИСПРАВЛЕНО: используем специальный метод checkHealth()
             const health = await this.apiService.checkHealth();
             console.log('✓ System health:', health);
 
@@ -188,8 +195,10 @@ class App {
             }
         } catch (error) {
             console.error('❌ Health check failed:', error);
+
             const statusIndicator = document.getElementById('healthIndicator');
             const statusText = document.getElementById('healthStatus');
+
             if (statusIndicator && statusText) {
                 statusIndicator.style.background = '#ef4444';
                 statusText.textContent = 'Ошибка';

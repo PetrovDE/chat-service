@@ -1,5 +1,4 @@
-// app/static/js/chat-manager.js
-
+// frontend/static/js/chat-manager.js
 class ChatManager {
     constructor(apiService, uiController) {
         this.apiService = apiService;
@@ -7,7 +6,14 @@ class ChatManager {
         this.currentConversation = null;
         this.isGenerating = false;
         this.abortController = null;
+        this.conversationsManager = null; // ДОБАВЛЕНО
         console.log('✓ ChatManager initialized');
+    }
+
+    // ДОБАВЛЕНО: Метод для связи с ConversationsManager
+    setConversationsManager(conversationsManager) {
+        this.conversationsManager = conversationsManager;
+        console.log('✓ ConversationsManager linked to ChatManager');
     }
 
     async sendMessage(message, conversationId, settings) {
@@ -26,13 +32,12 @@ class ChatManager {
             this.addMessageToUI('user', message);
 
             // Prepare request with correct mapping
-            // ИСПРАВЛЕНО: mode маппинг 'local' -> 'ollama' для backend совместимости
             const modelSource = settings.mode === 'local' ? 'ollama' : settings.mode || 'ollama';
 
             const payload = {
                 message: message,
-                conversation_id: conversationId || null,  // null или валидный UUID
-                model_source: modelSource,  // 'ollama', 'openai', 'corporate'
+                conversation_id: conversationId || null,
+                model_source: modelSource,
                 model_name: settings.model || 'llama3',
                 temperature: settings.temperature || 0.7,
                 max_tokens: settings.max_tokens || 2048
@@ -44,6 +49,7 @@ class ChatManager {
             await this.streamResponse(payload);
 
             return { success: true };
+
         } catch (error) {
             console.error('❌ Send message error:', error);
             this.isGenerating = false;
@@ -55,6 +61,8 @@ class ChatManager {
 
     async streamResponse(payload) {
         this.abortController = new AbortController();
+        const wasNewConversation = !payload.conversation_id; // ДОБАВЛЕНО: отслеживаем новый разговор
+        let newConversationId = null; // ДОБАВЛЕНО
 
         try {
             const response = await fetch(`${this.apiService.baseURL}/chat/stream`, {
@@ -78,7 +86,6 @@ class ChatManager {
 
             while (true) {
                 const { done, value } = await reader.read();
-
                 if (done) break;
 
                 buffer += decoder.decode(value, { stream: true });
@@ -97,9 +104,10 @@ class ChatManager {
                         if (chunk.type === 'start') {
                             console.log('🔄 Stream started');
                             if (chunk.conversation_id) {
+                                newConversationId = chunk.conversation_id; // СОХРАНЯЕМ ID
                                 this.setCurrentConversation(chunk.conversation_id);
+                                console.log('✅ Conversation ID set:', chunk.conversation_id);
                             }
-
                             // Create assistant message element
                             assistantMessageDiv = this.createAssistantMessageElement();
                             assistantBubble = assistantMessageDiv.querySelector('.message-bubble');
@@ -115,15 +123,25 @@ class ChatManager {
                             this.isGenerating = false;
                             this.showGenerating(false);
 
+                            // ДОБАВЛЕНО: Обновляем список разговоров если был создан новый
+                            if (wasNewConversation && newConversationId && this.conversationsManager) {
+                                console.log('🔄 Reloading conversations list after creating new conversation');
+                                // Небольшая задержка чтобы БД успела обновиться
+                                setTimeout(() => {
+                                    this.conversationsManager.loadConversations();
+                                }, 300);
+                            }
+
                         } else if (chunk.type === 'error') {
-                            console.error('❌ Stream error:', chunk.error);
-                            throw new Error(chunk.error);
+                            console.error('❌ Stream error:', chunk.message);
+                            throw new Error(chunk.message || 'Stream error');
                         }
                     } catch (parseError) {
                         console.error('Parse error:', parseError, 'Line:', data);
                     }
                 }
             }
+
         } catch (error) {
             console.error('❌ Stream error:', error);
             throw error;
@@ -178,7 +196,7 @@ class ChatManager {
         // Simple formatting - can be enhanced with markdown parser
         return text
             .replace(/\n/g, '<br>')
-            .replace(/```(.*?)```/gs, '<pre><code>$1</code></pre>')
+            .replace(/``````/gs, '<pre><code>$1</code></pre>')
             .replace(/`([^`]+)`/g, '<code>$1</code>');
     }
 

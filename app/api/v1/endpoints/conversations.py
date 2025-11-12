@@ -30,14 +30,24 @@ async def get_conversations(
         current_user: User = Depends(get_current_user)
 ):
     """Get user conversations"""
-    conversations = await crud_conversation.get_user_conversations(
-        db,
-        user_id=current_user.id,
-        skip=skip,
-        limit=limit,
-        include_archived=include_archived
-    )
-    return conversations
+    logger.info(f"📋 Getting conversations for user {current_user.username} (ID: {current_user.id})")
+
+    try:
+        conversations = await crud_conversation.get_user_conversations(
+            db,
+            user_id=current_user.id,
+            skip=skip,
+            limit=limit,
+            include_archived=include_archived
+        )
+        logger.info(f"✅ Found {len(conversations)} conversations")
+        return conversations
+    except Exception as e:
+        logger.error(f"❌ Error getting conversations: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 
 @router.get("/{conversation_id}", response_model=ConversationResponse)

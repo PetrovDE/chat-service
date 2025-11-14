@@ -1,4 +1,8 @@
 // frontend/static/js/chat-manager.js
+
+// Импортируем функции для форматирования
+import { formatMessage } from './formatters.js';
+
 class ChatManager {
     constructor(apiService, uiController) {
         this.apiService = apiService;
@@ -48,7 +52,6 @@ class ChatManager {
             await this.streamResponse(payload);
 
             return { success: true };
-
         } catch (error) {
             console.error('❌ Send message error:', error);
             this.isGenerating = false;
@@ -116,20 +119,35 @@ class ChatManager {
                                 this.setCurrentConversation(chunk.conversation_id);
                                 console.log('✅ Conversation ID set:', chunk.conversation_id);
                             }
+
                             // Create assistant message element
                             assistantMessageDiv = this.createAssistantMessageElement();
                             assistantBubble = assistantMessageDiv.querySelector('.message-bubble');
-
-                        } else if (chunk.type === 'chunk' && chunk.content) {
+                        }
+                        // ===== ИСПРАВЛЕНО: НАКАПЛИВАЕМ ТЕКСТ, НЕ ФОРМАТИРУЯ =====
+                        else if (chunk.type === 'chunk' && chunk.content) {
                             if (assistantBubble) {
+                                // Добавляем текст как есть (без HTML)
                                 assistantBubble.textContent += chunk.content;
                                 this.scrollToBottom();
                             }
-
-                        } else if (chunk.type === 'done') {
+                        }
+                        // ===== ФОРМАТИРУЕМ ВЕСЬ ТЕКСТ ОДИН РАЗ КОГДА ГОТОВО =====
+                        else if (chunk.type === 'done') {
                             console.log('✅ Stream completed');
                             this.isGenerating = false;
                             this.showGenerating(false);
+
+                            // ФОРМАТИРУЕМ MARKDOWN И КОД ПОСЛЕ ПОЛУЧЕНИЯ ВСЕХ ДАННЫХ
+                            if (assistantBubble) {
+                                const rawText = assistantBubble.textContent;
+                                try {
+                                    assistantBubble.innerHTML = formatMessage(rawText);
+                                } catch (e) {
+                                    console.error('❌ Error formatting message:', e);
+                                    // Если ошибка, оставляем как текст
+                                }
+                            }
 
                             // Обновляем список разговоров если был создан новый
                             if (wasNewConversation && newConversationId && this.conversationsManager) {
@@ -138,8 +156,8 @@ class ChatManager {
                                     this.conversationsManager.loadConversations();
                                 }, 300);
                             }
-
-                        } else if (chunk.type === 'error') {
+                        }
+                        else if (chunk.type === 'error') {
                             console.error('❌ Stream error:', chunk.message);
                             throw new Error(chunk.message || 'Stream error');
                         }
@@ -148,7 +166,6 @@ class ChatManager {
                     }
                 }
             }
-
         } catch (error) {
             console.error('❌ Stream error:', error);
             throw error;
@@ -198,10 +215,13 @@ class ChatManager {
     }
 
     formatMessage(text) {
+        // Базовое форматирование для текстовых сообщений (без markdown)
         return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
             .replace(/\n/g, '<br>')
-            .replace(/``````/gs, '<pre><code>$1</code></pre>')
-            .replace(/`([^`]+)`/g, '<code>$1</code>');
+            .replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;');
     }
 
     showGenerating(show) {

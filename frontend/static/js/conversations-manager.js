@@ -53,7 +53,7 @@ class ConversationsManager {
                 chatMessages.innerHTML = '';
 
                 messages.forEach(msg => {
-                    this.chatManager.addMessageToUI(msg.role, msg.content);
+                    this.chatManager.addFormattedMessageToUI(msg.role, msg.content);
                 });
             }
 

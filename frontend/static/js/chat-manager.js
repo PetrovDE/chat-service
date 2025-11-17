@@ -124,7 +124,7 @@ class ChatManager {
                             assistantMessageDiv = this.createAssistantMessageElement();
                             assistantBubble = assistantMessageDiv.querySelector('.message-bubble');
                         }
-                        // ===== ИСПРАВЛЕНО: НАКАПЛИВАЕМ ТЕКСТ, НЕ ФОРМАТИРУЯ =====
+                        // ===== НАКАПЛИВАЕМ ТЕКСТ, НЕ ФОРМАТИРУЯ =====
                         else if (chunk.type === 'chunk' && chunk.content) {
                             if (assistantBubble) {
                                 // Добавляем текст как есть (без HTML)
@@ -194,6 +194,43 @@ class ChatManager {
         return messageDiv;
     }
 
+    // ===== НОВЫЙ МЕТОД: Для загрузки сохраненных сообщений с форматированием =====
+    addFormattedMessageToUI(role, content) {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return;
+
+        const welcome = chatMessages.querySelector('[style*="text-align: center"]');
+        if (welcome) {
+            welcome.remove();
+        }
+
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${role}`;
+
+        let formattedContent;
+        if (role === 'assistant') {
+            // Для ответов ассистента - используем полное форматирование markdown
+            try {
+                formattedContent = formatMessage(content);
+            } catch (e) {
+                console.error('❌ Error formatting assistant message:', e);
+                formattedContent = this.formatMessage(content);
+            }
+        } else {
+            // Для пользовательских сообщений - простое форматирование
+            formattedContent = this.formatMessage(content);
+        }
+
+        messageDiv.innerHTML = `
+            <div class="message-bubble">${formattedContent}</div>
+            <div class="message-time">${new Date().toLocaleTimeString()}</div>
+        `;
+
+        chatMessages.appendChild(messageDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    // ===== СТАРЫЙ МЕТОД: для новых сообщений (используется при отправке) =====
     addMessageToUI(role, content) {
         const chatMessages = document.getElementById('chatMessages');
         if (!chatMessages) return;

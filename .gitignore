@@ -50,3 +50,4 @@ uploaded_files/
 temp/
 *.db
 *.sqlite3
+uploads/

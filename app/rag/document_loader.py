@@ -33,11 +33,9 @@ class DocumentLoader:
         if path.stat().st_size > settings.MAX_FILESIZE_MB * 1024 * 1024:
             raise ValueError(f"File {filepath} exceeds max allowed size ({settings.MAX_FILESIZE_MB} MB)")
 
-        # Вызов нужного загрузчика
         return await self.supported_loaders[ext](filepath, metadata)
 
     async def load_pdf(self, filepath: str, metadata: Optional[Dict[str, Any]]) -> List[Document]:
-        # Импорт нужной библиотеки (например langchain PDFLoader)
         from langchain_community.document_loaders import PyPDFLoader
         loader = PyPDFLoader(filepath)
         return loader.load()
@@ -58,9 +56,55 @@ class DocumentLoader:
         return loader.load()
 
     async def load_excel(self, filepath: str, metadata: Optional[Dict[str, Any]]) -> List[Document]:
-        from langchain_community.document_loaders import UnstructuredExcelLoader
-        loader = UnstructuredExcelLoader(filepath)
-        return loader.load()
+        """
+        Быстрое и безопасное чтение Excel (xlsx) файлов с помощью pandas.
+        Решает проблему с undefined entity (&copy; и т.д.), подходит для многопользовательского режима.
+        """
+        try:
+            import pandas as pd
+            documents = []
+            excel_file = pd.ExcelFile(filepath)
+            for sheet_name in excel_file.sheet_names:
+                try:
+                    df = pd.read_excel(filepath, sheet_name=sheet_name)
+                    text_content = []
+                    headers = df.columns.tolist()
+                    text_content.append("Columns: " + ", ".join(str(h) for h in headers))
+                    text_content.append("\n")
+                    for idx, row in df.iterrows():
+                        row_text = []
+                        for col in df.columns:
+                            value = row[col]
+                            if pd.notna(value):
+                                row_text.append(f"{col}: {value}")
+                        if row_text:
+                            text_content.append(" | ".join(row_text))
+                    doc_metadata = {
+                        "source": filepath,
+                        "sheet_name": sheet_name,
+                        "row_count": len(df),
+                        "column_count": len(df.columns),
+                    }
+                    if metadata:
+                        doc_metadata.update(metadata)
+                    doc = Document(
+                        page_content="\n".join(text_content),
+                        metadata=doc_metadata
+                    )
+                    documents.append(doc)
+                except Exception as e:
+                    logger.warning(f"Error reading sheet '{sheet_name}' from {filepath}: {str(e)}")
+                    continue
+            if not documents:
+                raise ValueError(f"No readable sheets found in Excel file: {filepath}")
+            logger.info(f"Successfully loaded {len(documents)} sheets from {filepath}")
+            return documents
+        except ImportError:
+            logger.error("pandas library is required for Excel file loading")
+            raise ImportError("Please install pandas: pip install pandas openpyxl")
+        except Exception as e:
+            logger.error(f"Error loading Excel file {filepath}: {str(e)}")
+            raise
 
     async def load_json(self, filepath: str, metadata: Optional[Dict[str, Any]]) -> List[Document]:
         from langchain_community.document_loaders import JSONLoader

@@ -175,15 +175,19 @@ export class FilesSidebarManager {
     }
 
     attachFileEventListeners() {
-        // Delete buttons
-        document.querySelectorAll('[data-action="delete"]').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                const fileId = btn.dataset.fileId;
-                await this.handleDeleteFile(fileId);
-            });
-        });
+    // Use event delegation on the container for delete button clicks
+    const container = document.getElementById('filesSidebarList');
+    if (container) {
+      container.addEventListener('click', async (e) => {
+        const deleteBtn = e.target.closest('[data-action="delete"]');
+        if (!deleteBtn) return;
+        
+        e.stopPropagation();
+        const fileId = deleteBtn.dataset.fileId;
+        await this.handleDeleteFile(fileId);
+      });
     }
+  }
 
     async handleDeleteFile(fileId) {
         const file = this.files.find(f => f.file_id === fileId);

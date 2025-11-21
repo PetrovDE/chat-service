@@ -10,13 +10,54 @@ export class FilesSidebarManager {
 
     initialize() {
         console.log('📁 Initializing Files Sidebar Manager');
+
+        // Устанавливаем делегирование событий один раз
+        this.attachFileEventListeners();
+
+        // Загружаем файлы
         this.loadFiles();
-            this.attachFileEventListeners();
 
         // Auto-refresh every 10 seconds
         this.refreshInterval = setInterval(() => {
             this.loadFiles(true);
         }, 10000);
+    }
+
+    attachFileEventListeners() {
+        // Event delegation на контейнере для всех кликов
+        const container = document.getElementById('filesSidebarList');
+        if (!container) {
+            console.error('Files sidebar list container not found');
+            return;
+        }
+
+        console.log('📌 Attaching file event listeners via delegation');
+
+        // Используем делегирование событий
+        container.addEventListener('click', async (e) => {
+            console.log('🖱️ Click detected in files sidebar:', e.target);
+
+            // Ищем кнопку удаления
+            const deleteBtn = e.target.closest('[data-action="delete"]');
+
+            if (deleteBtn) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const fileId = deleteBtn.dataset.fileId;
+                console.log('🗑️ Delete button clicked for file:', fileId);
+
+                if (fileId) {
+                    await this.handleDeleteFile(fileId);
+                } else {
+                    console.error('File ID not found on delete button');
+                }
+
+                return;
+            }
+        });
+
+        console.log('✅ File event listeners attached successfully');
     }
 
     async loadFiles(silent = false) {
@@ -66,14 +107,17 @@ export class FilesSidebarManager {
 
     render() {
         const container = document.getElementById('filesSidebarList');
-        if (!container) return;
+        if (!container) {
+            console.error('Files sidebar list container not found');
+            return;
+        }
 
         if (this.files.length === 0) {
             container.innerHTML = `
                 <div class="files-empty">
                     <div class="files-empty-icon">📭</div>
                     <p>Нет загруженных файлов</p>
-                    <p style="font-size: 0.8rem; margin-top: 0.5rem;">
+                    <p style="font-size: 0.8rem; margin-top: 0.5rem; color: #6b7280;">
                         Загрузите документы для работы с RAG
                     </p>
                 </div>
@@ -82,8 +126,8 @@ export class FilesSidebarManager {
         }
 
         container.innerHTML = this.files.map(file => this.renderFileItem(file)).join('');
-
-   }
+        console.log(`✓ Rendered ${this.files.length} files in sidebar`);
+    }
 
     renderFileItem(file) {
         const icon = this.getFileIcon(file.file_type);
@@ -96,8 +140,8 @@ export class FilesSidebarManager {
                 <div class="file-item-header">
                     <div class="file-item-icon">${icon}</div>
                     <div class="file-item-info">
-                        <h4 class="file-item-name" title="${file.original_filename}">
-                            ${file.original_filename}
+                        <h4 class="file-item-name" title="${this.escapeHtml(file.original_filename)}">
+                            ${this.escapeHtml(file.original_filename)}
                         </h4>
                         <div class="file-item-meta">
                             <span>📊 ${fileSize}</span>
@@ -112,12 +156,22 @@ export class FilesSidebarManager {
                     </div>
                 </div>
                 <div class="file-item-actions">
-                    <button class="file-item-btn delete" data-action="delete" data-file-id="${file.file_id}">
+                    <button 
+                        class="file-item-btn delete" 
+                        data-action="delete" 
+                        data-file-id="${file.file_id}"
+                        type="button">
                         🗑️ Удалить
                     </button>
                 </div>
             </div>
         `;
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     getFileIcon(fileType) {
@@ -173,24 +227,15 @@ export class FilesSidebarManager {
         });
     }
 
-    attachFileEventListeners() {
-    // Use event delegation on the container for delete button clicks
-    const container = document.getElementById('filesSidebarList');
-    if (container) {
-      container.addEventListener('click', async (e) => {
-        const deleteBtn = e.target.closest('[data-action="delete"]');
-        if (!deleteBtn) return;
-        
-        e.stopPropagation();
-        const fileId = deleteBtn.dataset.fileId;
-        await this.handleDeleteFile(fileId);
-      });
-    }
-  }
-
     async handleDeleteFile(fileId) {
+        console.log('🗑️ Starting file deletion for ID:', fileId);
+
         const file = this.files.find(f => f.file_id === fileId);
-        if (!file) return;
+        if (!file) {
+            console.error('File not found:', fileId);
+            this.uiController.showToast('❌ Файл не найден', 'error');
+            return;
+        }
 
         const confirmed = confirm(
             `Вы уверены, что хотите удалить файл "${file.original_filename}"?\n\n` +
@@ -202,9 +247,13 @@ export class FilesSidebarManager {
             `Это действие нельзя отменить!`
         );
 
-        if (!confirmed) return;
+        if (!confirmed) {
+            console.log('Deletion cancelled by user');
+            return;
+        }
 
         try {
+            console.log('🔄 Deleting file via API...');
             this.uiController.showLoading('Удаление файла...');
 
             await this.apiService.deleteFile(fileId);
@@ -212,11 +261,13 @@ export class FilesSidebarManager {
             this.uiController.hideLoading();
             this.uiController.showToast('✅ Файл успешно удален', 'success');
 
+            console.log('✅ File deleted successfully');
+
             // Reload files list
             await this.loadFiles();
 
         } catch (error) {
-            console.error('Error deleting file:', error);
+            console.error('❌ Error deleting file:', error);
             this.uiController.hideLoading();
             this.uiController.showToast(
                 `❌ Ошибка удаления: ${error.message}`,
@@ -228,7 +279,9 @@ export class FilesSidebarManager {
     destroy() {
         if (this.refreshInterval) {
             clearInterval(this.refreshInterval);
+            this.refreshInterval = null;
         }
+        console.log('📁 Files Sidebar Manager destroyed');
     }
 }
 
@@ -237,5 +290,6 @@ window.toggleFilesSidebar = function() {
     const sidebar = document.getElementById('filesSidebar');
     if (sidebar) {
         sidebar.classList.toggle('active');
+        console.log('Files sidebar toggled:', sidebar.classList.contains('active'));
     }
 };

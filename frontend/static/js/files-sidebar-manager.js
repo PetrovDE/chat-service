@@ -47,7 +47,7 @@ export class FilesSidebarManager {
                 const fileId = deleteBtn.dataset.fileId;
                 console.log('🗑️ Delete button clicked for file:', fileId);
 
-                if (fileId) {
+                if (fileId && fileId !== 'undefined') {
                     await this.handleDeleteFile(fileId);
                 } else {
                     console.error('File ID not found on delete button');
@@ -68,6 +68,8 @@ export class FilesSidebarManager {
 
             const response = await this.apiService.getProcessedFiles();
             this.files = response || [];
+
+            console.log('📦 Loaded files:', this.files);
 
             this.render();
 
@@ -135,8 +137,9 @@ export class FilesSidebarManager {
         const fileSize = this.formatFileSize(file.file_size);
         const uploadDate = this.formatDate(file.uploaded_at);
 
+        // ВАЖНО: используем file.id, а не file.file_id
         return `
-            <div class="file-item" data-file-id="${file.file_id}">
+            <div class="file-item" data-file-id="${file.id}">
                 <div class="file-item-header">
                     <div class="file-item-icon">${icon}</div>
                     <div class="file-item-info">
@@ -159,7 +162,7 @@ export class FilesSidebarManager {
                     <button 
                         class="file-item-btn delete" 
                         data-action="delete" 
-                        data-file-id="${file.file_id}"
+                        data-file-id="${file.id}"
                         type="button">
                         🗑️ Удалить
                     </button>
@@ -230,9 +233,11 @@ export class FilesSidebarManager {
     async handleDeleteFile(fileId) {
         console.log('🗑️ Starting file deletion for ID:', fileId);
 
-        const file = this.files.find(f => f.file_id === fileId);
+        // ВАЖНО: используем file.id для поиска
+        const file = this.files.find(f => f.id === fileId);
         if (!file) {
             console.error('File not found:', fileId);
+            console.log('Available files:', this.files);
             this.uiController.showToast('❌ Файл не найден', 'error');
             return;
         }

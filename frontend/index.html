@@ -36,7 +36,7 @@
         </div>
     </header>
 
-    <!-- Sidebar Toggle Button -->
+    <!-- Sidebar Toggle Button (Conversations) -->
     <button class="sidebar-toggle" onclick="toggleSidebar()">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -45,7 +45,7 @@
         </svg>
     </button>
 
-    <!-- Sidebar -->
+    <!-- Sidebar (Conversations) -->
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <h3>💬 Разговоры</h3>
@@ -59,6 +59,30 @@
 
         <div id="conversationsList" class="conversations-list">
             <div class="conversations-loading">Загрузка разговоров...</div>
+        </div>
+    </aside>
+
+    <!-- Files Sidebar Toggle Button -->
+    <button class="files-sidebar-toggle" onclick="toggleFilesSidebar()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+            <polyline points="13 2 13 9 20 9"></polyline>
+        </svg>
+    </button>
+
+    <!-- Files Sidebar (Right) -->
+    <aside class="files-sidebar" id="filesSidebar">
+        <div class="sidebar-header">
+            <h3>📁 Мои файлы</h3>
+            <button class="close-files-sidebar" onclick="toggleFilesSidebar()">✕</button>
+        </div>
+
+        <div class="files-sidebar-info">
+            <p>Загруженные и обработанные документы</p>
+        </div>
+
+        <div id="filesSidebarList" class="files-sidebar-list">
+            <div class="files-loading">Загрузка файлов...</div>
         </div>
     </aside>
 

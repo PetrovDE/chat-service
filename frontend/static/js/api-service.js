@@ -1,4 +1,4 @@
-// app/static/js/api-service.js
+// frontend/static/js/api-service.js
 
 class ApiService {
     constructor() {
@@ -10,7 +10,6 @@ class ApiService {
         console.log(`📡 ${method} ${url}`, data || '');
 
         try {
-            // ИЗМЕНЕНО: Добавлен заголовок Authorization с токеном
             const headers = {'Content-Type': 'application/json'};
 
             const token = localStorage.getItem('auth_token');
@@ -40,7 +39,6 @@ class ApiService {
         }
     }
 
-
     async get(endpoint) { return this.request('GET', endpoint); }
     async post(endpoint, data) { return this.request('POST', endpoint, data); }
     async put(endpoint, data) { return this.request('PUT', endpoint, data); }
@@ -62,6 +60,15 @@ class ApiService {
             console.error('❌ GET /health → ERROR:', error);
             throw error;
         }
+    }
+
+    // Files API - только используемые методы
+    async getProcessedFiles() {
+        return this.get('/files/processed');
+    }
+
+    async deleteFile(fileId) {
+        return this.delete(`/files/${fileId}`);
     }
 }
 

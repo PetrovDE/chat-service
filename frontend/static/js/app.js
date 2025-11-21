@@ -6,6 +6,7 @@ import { ConversationsManager } from './conversations-manager.js';
 import { UIController } from './ui-controller.js';
 import { FileManager } from './file-manager.js';
 import { SettingsManager } from './settings-manager.js';
+import { FilesSidebarManager } from './files-sidebar-manager.js';
 import './settings-ui.js';
 
 console.log('✓ All modules imported successfully');
@@ -19,6 +20,7 @@ class App {
         this.uiController = null;
         this.fileManager = null;
         this.settingsManager = null;
+        this.filesSidebarManager = null;
         this.initialized = false;
     }
 
@@ -56,6 +58,10 @@ class App {
             this.fileManager = new FileManager(this.apiService, this.uiController, this.chatManager);
             console.log('✓ File Manager initialized');
 
+            // Инициализируем Files Sidebar Manager
+            this.filesSidebarManager = new FilesSidebarManager(this.apiService, this.uiController);
+            console.log('✓ Files Sidebar Manager initialized');
+
             setTimeout(() => {
                 this.fileManager.initializeFileInput();
             }, 100);
@@ -68,16 +74,20 @@ class App {
 
             this.authManager.setupForms();
 
-            // ИСПРАВЛЕНО: Загружаем разговоры только для авторизованных пользователей
+            // Загружаем разговоры и файлы только для авторизованных пользователей
             if (this.authManager.isAuthenticated()) {
                 try {
                     await this.conversationsManager.loadConversations();
                     console.log('✓ Conversations loaded');
+
+                    // Инициализируем сайдбар файлов
+                    this.filesSidebarManager.initialize();
+                    console.log('✓ Files sidebar initialized');
                 } catch (error) {
                     console.warn('⚠️ Could not load conversations:', error.message);
                 }
             } else {
-                console.log('ℹ️ User not authenticated, skipping conversation load');
+                console.log('ℹ️ User not authenticated, skipping conversation and files load');
             }
 
             await this.settingsManager.loadAvailableModels();
@@ -203,6 +213,13 @@ class App {
                 statusIndicator.style.background = '#ef4444';
                 statusText.textContent = 'Ошибка';
             }
+        }
+    }
+
+    // Метод для обновления сайдбара файлов после загрузки
+    refreshFilesSidebar() {
+        if (this.filesSidebarManager && this.authManager.isAuthenticated()) {
+            this.filesSidebarManager.loadFiles(true);
         }
     }
 }

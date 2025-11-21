@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import aiofiles
 import os
 from pathlib import Path
+import logging
 
 from app.db.session import get_db
 from app.db.models import User
@@ -14,6 +15,8 @@ from app.api.dependencies import get_current_user
 from app.crud import crud_file
 from app.core.config import settings
 from app.services.file import process_file_async
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -95,6 +98,19 @@ async def get_files(
     return files
 
 
+@router.get("/processed", response_model=List[FileInfo])
+async def get_processed_files(
+        db: AsyncSession = Depends(get_db),
+        current_user: User = Depends(get_current_user)
+):
+    """Get only processed files for the current user"""
+    files = await crud_file.get_processed_files(
+        db,
+        user_id=current_user.id
+    )
+    return files
+
+
 @router.get("/{file_id}", response_model=FileInfo)
 async def get_file(
         file_id: UUID,
@@ -123,7 +139,7 @@ async def delete_file(
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
-    """Delete file"""
+    """Delete file and all associated embeddings"""
     file = await crud_file.get_user_file(
         db,
         file_id=file_id,
@@ -136,11 +152,83 @@ async def delete_file(
             detail="File not found"
         )
 
-    # Delete physical file
-    if os.path.exists(file.path):
-        os.remove(file.path)
+    try:
+        # 1. Delete embeddings from ChromaDB
+        await delete_file_from_chroma(str(file_id))
+        logger.info(f"Deleted embeddings from ChromaDB for file {file_id}")
 
-    # Delete from database
-    await crud_file.remove(db, id=file_id)
+        # 2. Delete embeddings from PostgreSQL (if exists)
+        await delete_file_from_postgres(db, str(file_id))
+        logger.info(f"Deleted embeddings from PostgreSQL for file {file_id}")
 
-    return {"message": "File deleted"}
+        # 3. Delete physical file
+        if os.path.exists(file.path):
+            os.remove(file.path)
+            logger.info(f"Deleted physical file: {file.path}")
+
+        # 4. Delete from database
+        await crud_file.remove(db, id=file_id)
+        logger.info(f"Deleted file record from database: {file_id}")
+
+        return {
+            "success": True,
+            "message": "File and all embeddings deleted successfully",
+            "file_id": str(file_id)
+        }
+
+    except Exception as e:
+        logger.error(f"Error deleting file {file_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting file: {str(e)}"
+        )
+
+
+async def delete_file_from_chroma(file_id: str):
+    """Delete all embeddings for a file from ChromaDB"""
+    try:
+        from app.rag.vector_store import VectorStoreManager
+
+        vector_store = VectorStoreManager()
+
+        # Delete by metadata filter
+        vector_store.collection.delete(
+            where={"file_id": file_id}
+        )
+
+        logger.info(f"Successfully deleted ChromaDB embeddings for file: {file_id}")
+    except Exception as e:
+        logger.error(f"Error deleting from ChromaDB: {e}")
+        raise
+
+
+async def delete_file_from_postgres(db: AsyncSession, file_id: str):
+    """Delete all embeddings for a file from PostgreSQL"""
+    try:
+        from sqlalchemy import text
+
+        # Check if document_embeddings table exists
+        check_query = text("""
+                           SELECT EXISTS (SELECT
+                                          FROM information_schema.tables
+                                          WHERE table_name = 'document_embeddings')
+                           """)
+        result = await db.execute(check_query)
+        table_exists = result.scalar()
+
+        if table_exists:
+            delete_query = text("""
+                                DELETE
+                                FROM document_embeddings
+                                WHERE metadata ->> 'file_id' = :file_id
+                                """)
+            await db.execute(delete_query, {"file_id": file_id})
+            await db.commit()
+            logger.info(f"Successfully deleted PostgreSQL embeddings for file: {file_id}")
+        else:
+            logger.info("document_embeddings table does not exist, skipping PostgreSQL cleanup")
+
+    except Exception as e:
+        logger.error(f"Error deleting from PostgreSQL: {e}")
+        # Don't raise - PostgreSQL embeddings are optional
+        pass

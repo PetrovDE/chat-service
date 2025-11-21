@@ -11,6 +11,7 @@ export class FilesSidebarManager {
     initialize() {
         console.log('📁 Initializing Files Sidebar Manager');
         this.loadFiles();
+            this.attachFileEventListeners();
 
         // Auto-refresh every 10 seconds
         this.refreshInterval = setInterval(() => {
@@ -82,9 +83,7 @@ export class FilesSidebarManager {
 
         container.innerHTML = this.files.map(file => this.renderFileItem(file)).join('');
 
-        // Attach event listeners
-        this.attachFileEventListeners();
-    }
+   }
 
     renderFileItem(file) {
         const icon = this.getFileIcon(file.file_type);

@@ -1,15 +1,17 @@
 // frontend/static/js/files-sidebar-manager.js
-
 export class FilesSidebarManager {
     constructor(apiService, uiController) {
         this.apiService = apiService;
         this.uiController = uiController;
         this.files = [];
         this.refreshInterval = null;
+        this.currentConversationId = null; // НОВОЕ: отслеживание текущего чата
     }
 
-    initialize() {
+    // ОБНОВЛЕНО: добавлен параметр conversationId
+    initialize(conversationId = null) {
         console.log('📁 Initializing Files Sidebar Manager');
+        this.currentConversationId = conversationId; // НОВОЕ
 
         // Устанавливаем делегирование событий один раз
         this.attachFileEventListeners();
@@ -39,20 +41,16 @@ export class FilesSidebarManager {
 
             // Ищем кнопку удаления
             const deleteBtn = e.target.closest('[data-action="delete"]');
-
             if (deleteBtn) {
                 e.preventDefault();
                 e.stopPropagation();
-
                 const fileId = deleteBtn.dataset.fileId;
                 console.log('🗑️ Delete button clicked for file:', fileId);
-
                 if (fileId && fileId !== 'undefined') {
                     await this.handleDeleteFile(fileId);
                 } else {
                     console.error('File ID not found on delete button');
                 }
-
                 return;
             }
         });
@@ -60,15 +58,15 @@ export class FilesSidebarManager {
         console.log('✅ File event listeners attached successfully');
     }
 
+    // ОБНОВЛЕНО: передаёт currentConversationId в API
     async loadFiles(silent = false) {
         try {
             if (!silent) {
                 this.showLoading();
             }
 
-            const response = await this.apiService.getProcessedFiles();
+            const response = await this.apiService.getProcessedFiles(this.currentConversationId); // ОБНОВЛЕНО
             this.files = response || [];
-
             console.log('📦 Loaded files:', this.files);
 
             this.render();
@@ -131,11 +129,13 @@ export class FilesSidebarManager {
         console.log(`✓ Rendered ${this.files.length} files in sidebar`);
     }
 
+    // ОБНОВЛЕНО: добавлено отображение информации о чатах (НОВОЕ ПОЛЕ conversation_ids)
     renderFileItem(file) {
         const icon = this.getFileIcon(file.file_type);
         const statusBadge = this.getStatusBadge(file.is_processed);
         const fileSize = this.formatFileSize(file.file_size);
         const uploadDate = this.formatDate(file.uploaded_at);
+        const conversationInfo = this.renderConversationInfo(file.conversation_ids); // НОВОЕ
 
         // ВАЖНО: используем file.id, а не file.file_id
         return `
@@ -156,6 +156,7 @@ export class FilesSidebarManager {
                                 📦 ${file.chunks_count} фрагментов
                             </div>
                         ` : ''}
+                        ${conversationInfo}
                     </div>
                 </div>
                 <div class="file-item-actions">
@@ -171,130 +172,141 @@ export class FilesSidebarManager {
         `;
     }
 
+    // НОВОЕ: Рендер информации о чатах
+    renderConversationInfo(conversationIds) {
+        if (!conversationIds || conversationIds.length === 0) {
+            return `<div class="file-item-chats">💬 Не используется</div>`;
+        }
+
+        const count = conversationIds.length;
+        return `<div class="file-item-chats">💬 В ${count} чатах</div>`;
+    }
+
     escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
     }
 
+
     getFileIcon(fileType) {
-        const icons = {
-            'pdf': '📕',
-            'docx': '📘',
-            'doc': '📘',
-            'txt': '📄',
-            'md': '📝',
-            'csv': '📊',
-            'xlsx': '📗',
-            'xls': '📗',
-            'json': '📋',
-        };
-        return icons[fileType?.toLowerCase()] || '📄';
+      const icons = {
+        'pdf': '📕',
+        'docx': '📘',
+        'doc': '📘',
+        'txt': '📄',
+        'md': '📝',
+        'csv': '📊',
+        'xlsx': '📗',
+        'xls': '📗',
+        'json': '📋',
+      };
+      return icons[fileType?.toLowerCase()] || '📄';
     }
 
-    getStatusBadge(status) {
-        const badges = {
-            'completed': '<span class="file-item-status completed">✅ Обработан</span>',
-            'processing': '<span class="file-item-status processing">⏳ Обработка...</span>',
-            'pending': '<span class="file-item-status pending">⏸️ Ожидание</span>',
-            'failed': '<span class="file-item-status failed">❌ Ошибка</span>',
-        };
-        return badges[status] || badges['pending'];
+    getStatusBadge(is_processed) {
+      if (is_processed === true || is_processed === 'completed') {
+        return '<span class="file-item-status completed">✅ Обработан</span>';
+      } else if (is_processed === 'processing') {
+        return '<span class="file-item-status processing">⏳ Обработка...</span>';
+      } else if (is_processed === 'failed') {
+        return '<span class="file-item-status failed">❌ Ошибка</span>';
+      }
+      return '<span class="file-item-status pending">⏸️ Ожидание</span>';
     }
 
     formatFileSize(bytes) {
-        if (!bytes) return '0 B';
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(1024));
-        return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
+      if (!bytes) return '0 B';
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(1024));
+      return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
     }
 
     formatDate(dateString) {
-        if (!dateString) return '';
-        const date = new Date(dateString);
-        const now = new Date();
-        const diffMs = now - date;
-        const diffMins = Math.floor(diffMs / 60000);
-        const diffHours = Math.floor(diffMs / 3600000);
-        const diffDays = Math.floor(diffMs / 86400000);
+      if (!dateString) return '';
+      const date = new Date(dateString);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
 
-        if (diffMins < 1) return 'только что';
-        if (diffMins < 60) return `${diffMins} мин назад`;
-        if (diffHours < 24) return `${diffHours} ч назад`;
-        if (diffDays < 7) return `${diffDays} дн назад`;
+      if (diffMins < 1) return 'только что';
+      if (diffMins < 60) return `${diffMins} мин назад`;
+      if (diffHours < 24) return `${diffHours} ч назад`;
+      if (diffDays < 7) return `${diffDays} дн назад`;
 
-        return date.toLocaleDateString('ru-RU', {
-            day: 'numeric',
-            month: 'short',
-            year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
-        });
+      return date.toLocaleDateString('ru-RU', {
+        day: 'numeric',
+        month: 'short',
+        year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
+      });
     }
 
     async handleDeleteFile(fileId) {
-        console.log('🗑️ Starting file deletion for ID:', fileId);
+      console.log('🗑️ Starting file deletion for ID:', fileId);
+      // ВАЖНО: используем file.id для поиска
+      const file = this.files.find(f => f.id === fileId);
+      if (!file) {
+        console.error('File not found:', fileId);
+        console.log('Available files:', this.files);
+        this.uiController.showToast('❌ Файл не найден', 'error');
+        return;
+      }
 
-        // ВАЖНО: используем file.id для поиска
-        const file = this.files.find(f => f.id === fileId);
-        if (!file) {
-            console.error('File not found:', fileId);
-            console.log('Available files:', this.files);
-            this.uiController.showToast('❌ Файл не найден', 'error');
-            return;
-        }
+      const confirmed = confirm(
+        `Вы уверены, что хотите удалить файл "${file.original_filename}"?\n\n` +
+        `Это удалит:\n` +
+        `• Файл с сервера\n` +
+        `• Все embeddings из ChromaDB\n` +
+        `• Все embeddings из PostgreSQL\n` +
+        `• Запись из базы данных\n\n` +
+        `Это действие нельзя отменить!`
+      );
 
-        const confirmed = confirm(
-            `Вы уверены, что хотите удалить файл "${file.original_filename}"?\n\n` +
-            `Это удалит:\n` +
-            `• Файл с сервера\n` +
-            `• Все embeddings из ChromaDB\n` +
-            `• Все embeddings из PostgreSQL\n` +
-            `• Запись из базы данных\n\n` +
-            `Это действие нельзя отменить!`
+      if (!confirmed) {
+        console.log('Deletion cancelled by user');
+        return;
+      }
+
+      try {
+        console.log('🔄 Deleting file via API...');
+        this.uiController.showLoading('Удаление файла...');
+        await this.apiService.deleteFile(fileId);
+        this.uiController.hideLoading();
+        this.uiController.showToast('✅ Файл успешно удален', 'success');
+        console.log('✅ File deleted successfully');
+        // Reload files list
+        await this.loadFiles();
+      } catch (error) {
+        console.error('❌ Error deleting file:', error);
+        this.uiController.hideLoading();
+        this.uiController.showToast(
+          `❌ Ошибка удаления: ${error.message}`,
+          'error'
         );
+      }
+    }
 
-        if (!confirmed) {
-            console.log('Deletion cancelled by user');
-            return;
-        }
-
-        try {
-            console.log('🔄 Deleting file via API...');
-            this.uiController.showLoading('Удаление файла...');
-
-            await this.apiService.deleteFile(fileId);
-
-            this.uiController.hideLoading();
-            this.uiController.showToast('✅ Файл успешно удален', 'success');
-
-            console.log('✅ File deleted successfully');
-
-            // Reload files list
-            await this.loadFiles();
-
-        } catch (error) {
-            console.error('❌ Error deleting file:', error);
-            this.uiController.hideLoading();
-            this.uiController.showToast(
-                `❌ Ошибка удаления: ${error.message}`,
-                'error'
-            );
-        }
+    setCurrentConversation(conversationId) {
+      this.currentConversationId = conversationId;
+      console.log('📌 Current conversation set to:', conversationId);
     }
 
     destroy() {
-        if (this.refreshInterval) {
-            clearInterval(this.refreshInterval);
-            this.refreshInterval = null;
-        }
-        console.log('📁 Files Sidebar Manager destroyed');
+      if (this.refreshInterval) {
+        clearInterval(this.refreshInterval);
+        this.refreshInterval = null;
+      }
+      console.log('📁 Files Sidebar Manager destroyed');
     }
-}
+  }
 
-// Global toggle function
-window.toggleFilesSidebar = function() {
+  // Global toggle function
+  window.toggleFilesSidebar = function() {
     const sidebar = document.getElementById('filesSidebar');
     if (sidebar) {
-        sidebar.classList.toggle('active');
-        console.log('Files sidebar toggled:', sidebar.classList.contains('active'));
+      sidebar.classList.toggle('active');
+      console.log('Files sidebar toggled:', sidebar.classList.contains('active'));
     }
-};
+  };

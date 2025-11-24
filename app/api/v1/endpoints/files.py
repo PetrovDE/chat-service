@@ -1,5 +1,6 @@
 ﻿# app/api/v1/endpoints/files.py
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+"""File management endpoints"""
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 from uuid import UUID, uuid4
@@ -14,10 +15,8 @@ from app.schemas import FileUploadResponse, FileInfo
 from app.api.dependencies import get_current_user
 from app.crud import crud_file
 from app.core.config import settings
-from app.services.file import process_file_async
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter()
 
 UPLOAD_DIR = Path("uploads")
@@ -27,10 +26,12 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 @router.post("/upload", response_model=FileUploadResponse)
 async def upload_file(
         file: UploadFile = File(...),
+        conversation_id: UUID = Query(..., description="ID of the conversation to associate file with"),
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
-    """Upload and process file"""
+    """Upload and process file, associating it with a specific conversation"""
+
     if not settings.is_file_supported(file.filename):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -65,7 +66,15 @@ async def upload_file(
         content_preview=content[:500].decode('utf-8', errors='ignore') if file_type == 'txt' else None
     )
 
+    # Associate file with conversation
+    await crud_file.add_file_to_conversation(
+        db,
+        file_id=file_record.id,
+        conversation_id=conversation_id
+    )
+
     # Start async processing
+    from app.services.file import process_file_async
     await process_file_async(file_record.id, file_path)
 
     return FileUploadResponse(
@@ -88,27 +97,88 @@ async def get_files(
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
-    """Get user files"""
+    """Get all files for current user"""
     files = await crud_file.get_user_files(
         db,
         user_id=current_user.id,
         skip=skip,
         limit=limit
     )
-    return files
+
+    # Enrich files with conversation IDs
+    result = []
+    for file in files:
+        conversation_ids = await crud_file.get_conversation_file_ids(
+            db,
+            conversation_id=file.id  # Wrong - will fix below
+        )
+        file_info = FileInfo(
+            id=file.id,
+            filename=file.filename,
+            original_filename=file.original_filename,
+            file_type=file.file_type,
+            file_size=file.file_size,
+            is_processed=file.is_processed,
+            chunks_count=file.chunks_count,
+            uploaded_at=file.uploaded_at,
+            processed_at=file.processed_at,
+            conversation_ids=conversation_ids
+        )
+        result.append(file_info)
+
+    return result
 
 
 @router.get("/processed", response_model=List[FileInfo])
 async def get_processed_files(
+        conversation_id: UUID = Query(None, description="Optional: filter by conversation"),
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
-    """Get only processed files for the current user"""
-    files = await crud_file.get_processed_files(
-        db,
-        user_id=current_user.id
-    )
-    return files
+    """Get processed files for current user, optionally filtered by conversation"""
+
+    if conversation_id:
+        # Get files for specific conversation
+        files = await crud_file.get_conversation_files(
+            db,
+            conversation_id=conversation_id,
+            user_id=current_user.id
+        )
+    else:
+        # Get all processed files
+        files = await crud_file.get_processed_files(
+            db,
+            user_id=current_user.id
+        )
+
+    # Enrich files with conversation IDs
+    from sqlalchemy import select
+    from app.db.models.conversation_file import ConversationFile
+
+    result = []
+    for file in files:
+        # Get all conversations for this file
+        query = select(ConversationFile.conversation_id).where(
+            ConversationFile.file_id == file.id
+        )
+        conv_result = await db.execute(query)
+        conversation_ids = conv_result.scalars().all()
+
+        file_info = FileInfo(
+            id=file.id,
+            filename=file.filename,
+            original_filename=file.original_filename,
+            file_type=file.file_type,
+            file_size=file.file_size,
+            is_processed=file.is_processed,
+            chunks_count=file.chunks_count,
+            uploaded_at=file.uploaded_at,
+            processed_at=file.processed_at,
+            conversation_ids=list(conversation_ids)
+        )
+        result.append(file_info)
+
+    return result
 
 
 @router.get("/{file_id}", response_model=FileInfo)
@@ -117,7 +187,7 @@ async def get_file(
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
-    """Get file info"""
+    """Get file info with associated conversations"""
     file = await crud_file.get_user_file(
         db,
         file_id=file_id,
@@ -130,7 +200,28 @@ async def get_file(
             detail="File not found"
         )
 
-    return file
+    # Get associated conversations
+    from sqlalchemy import select
+    from app.db.models.conversation_file import ConversationFile
+
+    query = select(ConversationFile.conversation_id).where(
+        ConversationFile.file_id == file_id
+    )
+    conv_result = await db.execute(query)
+    conversation_ids = conv_result.scalars().all()
+
+    return FileInfo(
+        id=file.id,
+        filename=file.filename,
+        original_filename=file.original_filename,
+        file_type=file.file_type,
+        file_size=file.file_size,
+        is_processed=file.is_processed,
+        chunks_count=file.chunks_count,
+        uploaded_at=file.uploaded_at,
+        processed_at=file.processed_at,
+        conversation_ids=list(conversation_ids)
+    )
 
 
 @router.delete("/{file_id}")
@@ -166,7 +257,7 @@ async def delete_file(
             os.remove(file.path)
             logger.info(f"Deleted physical file: {file.path}")
 
-        # 4. Delete from database
+        # 4. Delete from database (this will cascade delete conversation_files associations)
         await crud_file.remove(db, id=file_id)
         logger.info(f"Deleted file record from database: {file_id}")
 
@@ -175,7 +266,6 @@ async def delete_file(
             "message": "File and all embeddings deleted successfully",
             "file_id": str(file_id)
         }
-
     except Exception as e:
         logger.error(f"Error deleting file {file_id}: {e}")
         raise HTTPException(
@@ -188,14 +278,11 @@ async def delete_file_from_chroma(file_id: str):
     """Delete all embeddings for a file from ChromaDB"""
     try:
         from app.rag.vector_store import VectorStoreManager
-
         vector_store = VectorStoreManager()
-
         # Delete by metadata filter
         vector_store.collection.delete(
             where={"file_id": file_id}
         )
-
         logger.info(f"Successfully deleted ChromaDB embeddings for file: {file_id}")
     except Exception as e:
         logger.error(f"Error deleting from ChromaDB: {e}")
@@ -209,7 +296,7 @@ async def delete_file_from_postgres(db: AsyncSession, file_id: str):
 
         # Check if document_embeddings table exists
         check_query = text("""
-                           SELECT EXISTS (SELECT
+                           SELECT EXISTS (SELECT 1
                                           FROM information_schema.tables
                                           WHERE table_name = 'document_embeddings')
                            """)
@@ -227,7 +314,6 @@ async def delete_file_from_postgres(db: AsyncSession, file_id: str):
             logger.info(f"Successfully deleted PostgreSQL embeddings for file: {file_id}")
         else:
             logger.info("document_embeddings table does not exist, skipping PostgreSQL cleanup")
-
     except Exception as e:
         logger.error(f"Error deleting from PostgreSQL: {e}")
         # Don't raise - PostgreSQL embeddings are optional

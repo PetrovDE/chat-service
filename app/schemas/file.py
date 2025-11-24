@@ -1,11 +1,13 @@
 # app/schemas/file.py
+"""Pydantic schemas for file operations"""
 import uuid
-from typing import Optional, Dict, Any
+from typing import Optional, List
 from datetime import datetime
 from pydantic import BaseModel, Field
 
 
 class FileUploadResponse(BaseModel):
+    """Response schema for file upload"""
     file_id: uuid.UUID
     filename: str
     original_filename: str
@@ -21,6 +23,7 @@ class FileUploadResponse(BaseModel):
 
 
 class FileInfo(BaseModel):
+    """Schema for file information with conversation associations"""
     id: uuid.UUID
     filename: str
     original_filename: str
@@ -30,13 +33,19 @@ class FileInfo(BaseModel):
     chunks_count: int
     uploaded_at: datetime
     processed_at: Optional[datetime] = None
+    # Новое поле: список ID бесед, где используется файл
+    conversation_ids: List[uuid.UUID] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
 
 
 class FileProcessingStatus(BaseModel):
+    """Schema for file processing status"""
     file_id: uuid.UUID
     status: str  # pending, processing, completed, failed
     chunks_count: int
     error_message: Optional[str] = None
+
+    class Config:
+        from_attributes = True

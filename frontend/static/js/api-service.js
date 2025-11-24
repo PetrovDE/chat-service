@@ -1,5 +1,4 @@
 // frontend/static/js/api-service.js
-
 class ApiService {
     constructor() {
         this.baseURL = '/api/v1';
@@ -8,10 +7,8 @@ class ApiService {
     async request(method, endpoint, data = null) {
         const url = `${this.baseURL}${endpoint}`;
         console.log(`📡 ${method} ${url}`, data || '');
-
         try {
-            const headers = {'Content-Type': 'application/json'};
-
+            const headers = { 'Content-Type': 'application/json' };
             const token = localStorage.getItem('auth_token');
             if (token) {
                 headers['Authorization'] = `Bearer ${token}`;
@@ -50,11 +47,9 @@ class ApiService {
         try {
             const response = await fetch('/health');
             console.log(`✓ GET /health → ${response.status}`);
-
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
-
             return await response.json();
         } catch (error) {
             console.error('❌ GET /health → ERROR:', error);
@@ -62,9 +57,13 @@ class ApiService {
         }
     }
 
-    // Files API - только используемые методы
-    async getProcessedFiles() {
-        return this.get('/files/processed');
+    // Files API - ОБНОВЛЕНО: добавлена поддержка conversation_id параметра
+    async getProcessedFiles(conversationId = null) {
+        let endpoint = '/files/processed';
+        if (conversationId) {
+            endpoint += `?conversation_id=${conversationId}`;
+        }
+        return this.get(endpoint);
     }
 
     async deleteFile(fileId) {

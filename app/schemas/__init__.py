@@ -1,4 +1,5 @@
 # app/schemas/__init__.py
+"""Pydantic schemas for API models"""
 from app.schemas.user import (
     UserBase, UserCreate, UserUpdate, UserInDB, UserResponse
 )

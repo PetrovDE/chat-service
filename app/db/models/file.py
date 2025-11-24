@@ -1,14 +1,15 @@
 # app/db/models/file.py
+"""File model for document storage and RAG processing"""
 from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, JSON, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime
-
 from app.db.base import Base
 
 
 class File(Base):
+    """File storage model with RAG metadata and conversation association"""
     __tablename__ = "files"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -32,3 +33,13 @@ class File(Base):
 
     # Relationships
     owner = relationship("User", back_populates="files")
+    # Association relationship for conversations
+    conversations_association = relationship("ConversationFile", back_populates="file", cascade="all, delete-orphan")
+    # Indirect relationship to conversations through association table
+    conversations = relationship(
+        "Conversation",
+        secondary="conversation_files",
+        back_populates="files",
+        viewonly=True,
+        lazy="selectin"
+    )

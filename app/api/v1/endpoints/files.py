@@ -254,10 +254,14 @@ async def delete_file(
 
         # 3. Delete physical file
         if os.path.exists(file.path):
-            os.remove(file.path)
-            logger.info(f"Deleted physical file: {file.path}")
+            try:
+                os.remove(file.path)
+                logger.info(f"Deleted physical file: {file.path}")
+            except OSError as e:
+                logger.warning(f"Could not delete physical file {file.path}: {e}")
+                # Продолжаем даже если файл не удалился - может быть заблокирован
 
-        # 4. Delete from database (this will cascade delete conversation_files associations)
+        # 4. Delete from database
         await crud_file.remove(db, id=file_id)
         logger.info(f"Deleted file record from database: {file_id}")
 

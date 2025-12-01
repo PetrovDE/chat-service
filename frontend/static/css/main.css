@@ -1,0 +1,68 @@
+/* ================================================
+   Main CSS - Import All Modules
+   LLaMA Chat Service
+   ================================================ */
+
+/* Base */
+@import url('./base/variables.css');
+@import url('./base/reset.css');
+@import url('./base/typography.css');
+
+/* Layout */
+@import url('./layout/header.css');
+@import url('./layout/main.css');
+
+/* Components */
+@import url('./components/buttons.css');
+@import url('./components/forms.css');
+@import url('./components/modals.css');
+@import url('./components/sidebar.css');
+@import url('./components/chat.css');
+@import url('./components/messages.css');
+@import url('./components/files.css');
+@import url('./components/toast.css');
+@import url('./components/user-menu.css');
+@import url('./components/status.css');
+
+/* Utilities */
+@import url('./utilities/animations.css');
+@import url('./utilities/helpers.css');
+
+/* ================================================
+   Global Styles (if any specific overrides needed)
+   ================================================ */
+
+/* Smooth scroll */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--color-gray-100);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--color-gray-500);
+    border-radius: var(--radius-sm);
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--color-gray-600);
+}
+
+/* Selection */
+::selection {
+    background: var(--color-primary-light);
+    color: var(--color-primary);
+}
+
+::-moz-selection {
+    background: var(--color-primary-light);
+    color: var(--color-primary);
+}

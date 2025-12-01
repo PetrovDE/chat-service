@@ -1,0 +1,353 @@
+/* ================================================
+   Buttons
+   ================================================ */
+
+/* Base Button Styles */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-md) var(--spacing-xl);
+    border: none;
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-medium);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    text-decoration: none;
+}
+
+.btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+/* Primary Button */
+.send-button,
+.new-chat-btn,
+.auth-submit-btn,
+.login-btn {
+    background: var(--color-primary);
+    color: var(--color-white);
+    border: none;
+    border-radius: var(--radius-lg);
+    font-weight: var(--font-weight-semibold);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+
+.send-button:hover,
+.new-chat-btn:hover,
+.auth-submit-btn:hover,
+.login-btn:hover {
+    background: var(--color-primary-hover);
+}
+
+.send-button:disabled,
+.auth-submit-btn:disabled {
+    background: var(--color-gray-500);
+    cursor: not-allowed;
+}
+
+/* Specific Button Sizes */
+.send-button {
+    padding: var(--spacing-lg) var(--spacing-3xl);
+    font-size: var(--font-size-md);
+}
+
+.new-chat-btn {
+    width: 100%;
+    padding: var(--spacing-md);
+}
+
+.auth-submit-btn {
+    width: 100%;
+    padding: 0.875rem;
+}
+
+.login-btn {
+    padding: var(--spacing-sm) var(--spacing-xl);
+}
+
+/* Stop Button (Danger) */
+.stop-button {
+    padding: var(--spacing-lg) var(--spacing-3xl);
+    background: var(--color-error);
+    color: var(--color-white);
+    border: none;
+    border-radius: var(--radius-lg);
+    font-size: var(--font-size-md);
+    font-weight: var(--font-weight-semibold);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+    display: none;
+}
+
+.stop-button:hover {
+    background: var(--color-error-hover);
+}
+
+/* Icon Buttons */
+.icon-btn,
+.close-button,
+.header-btn,
+.attach-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition-fast);
+}
+
+.icon-btn {
+    padding: var(--spacing-xs);
+    color: var(--color-gray-600);
+    font-size: var(--font-size-base);
+}
+
+.icon-btn:hover {
+    background: var(--color-gray-300);
+    color: var(--color-gray-900);
+}
+
+.close-button {
+    font-size: var(--font-size-2xl);
+    color: var(--color-gray-600);
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-md);
+}
+
+.close-button:hover {
+    background: var(--color-gray-200);
+    color: var(--color-gray-900);
+}
+
+/* Header & Attach Buttons */
+.header-btn,
+.attach-btn {
+    background: var(--color-gray-100);
+    border: 1px solid var(--color-gray-400);
+    border-radius: var(--radius-md);
+    transition: all var(--transition-fast);
+}
+
+.header-btn {
+    padding: var(--spacing-sm);
+    margin-left: var(--spacing-sm);
+    font-size: 1.25rem;
+}
+
+.attach-btn {
+    padding: var(--spacing-md);
+    font-size: 1.25rem;
+    flex-shrink: 0;
+}
+
+.header-btn:hover,
+.attach-btn:hover {
+    background: var(--color-gray-300);
+    transform: scale(1.05);
+}
+
+/* Toggle Button */
+.toggle-settings,
+.sidebar-toggle {
+    background: var(--color-gray-100);
+    border: none;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+
+.toggle-settings {
+    padding: var(--spacing-sm) var(--spacing-lg);
+    font-size: var(--font-size-base);
+}
+
+.toggle-settings:hover {
+    background: var(--color-gray-300);
+}
+
+.sidebar-toggle {
+    position: fixed;
+    left: 0;
+    top: 80px;
+    padding: var(--spacing-sm);
+    background: var(--color-white);
+    border: 1px solid var(--color-gray-400);
+    border-left: none;
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    z-index: var(--z-sticky);
+}
+
+.sidebar-toggle:hover {
+    background: var(--color-gray-200);
+}
+
+/* Files Sidebar Toggle */
+.files-sidebar-toggle {
+    position: fixed;
+    top: 70px;
+    right: 20px;
+    width: 40px;
+    height: 40px;
+    background: var(--color-primary);
+    color: var(--color-white);
+    border: none;
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--shadow-primary);
+    transition: all var(--transition-fast);
+    z-index: var(--z-sticky);
+}
+
+.files-sidebar-toggle:hover {
+    background: var(--color-primary-dark);
+    transform: scale(1.05);
+}
+
+.files-sidebar-toggle svg {
+    transition: transform var(--transition-base);
+}
+
+.files-sidebar.active ~ .files-sidebar-toggle svg {
+    transform: rotate(180deg);
+}
+
+/* Close Files Sidebar Button */
+.close-files-sidebar {
+    background: none;
+    border: none;
+    color: var(--color-gray-600);
+    font-size: 1.5rem;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color var(--transition-fast);
+}
+
+.close-files-sidebar:hover {
+    color: var(--color-gray-900);
+}
+
+/* User Profile Button */
+.user-profile-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-lg);
+    background: var(--color-gray-200);
+    border: 1px solid var(--color-gray-400);
+    border-radius: var(--radius-2xl);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    position: relative;
+}
+
+.user-profile-btn:hover {
+    background: var(--color-gray-300);
+}
+
+/* File Item Buttons */
+.file-item-btn {
+    flex: 1;
+    padding: var(--spacing-sm);
+    border: 1px solid var(--color-gray-400);
+    border-radius: var(--radius-md);
+    background: var(--color-white);
+    color: var(--color-gray-900);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.file-item-btn:hover {
+    background: var(--color-gray-100);
+    border-color: var(--color-primary);
+}
+
+.file-item-btn.delete {
+    color: var(--color-error-hover);
+}
+
+.file-item-btn.delete:hover {
+    background: var(--color-error-light);
+    border-color: var(--color-error-hover);
+}
+
+/* Settings Buttons */
+.settings-btn {
+    padding: var(--spacing-md) var(--spacing-2xl);
+    border: none;
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-md);
+    font-weight: var(--font-weight-semibold);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.settings-btn.primary {
+    background: var(--color-primary);
+    color: var(--color-white);
+}
+
+.settings-btn.primary:hover {
+    background: var(--color-primary-hover);
+}
+
+.settings-btn.secondary {
+    background: var(--color-gray-100);
+    color: var(--color-gray-900);
+    border: 1px solid var(--color-gray-400);
+}
+
+.settings-btn.secondary:hover {
+    background: var(--color-gray-300);
+}
+
+/* User Menu Items */
+.user-menu-item {
+    width: 100%;
+    padding: var(--spacing-md) var(--spacing-lg);
+    background: none;
+    border: none;
+    text-align: left;
+    cursor: pointer;
+    font-size: var(--font-size-base);
+    color: var(--color-gray-900);
+    transition: background var(--transition-fast);
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.user-menu-item:hover {
+    background: var(--color-gray-200);
+}
+
+.user-menu-item:first-of-type {
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.user-menu-item:last-of-type {
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    color: var(--color-error);
+}
+
+.user-menu-item:last-of-type:hover {
+    background: var(--color-error-light);
+}

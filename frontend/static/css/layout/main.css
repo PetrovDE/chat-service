@@ -1,0 +1,32 @@
+/* ================================================
+   Main Layout
+   ================================================ */
+
+.main-container {
+    margin-top: var(--header-height);
+    margin-left: 0;
+    transition: margin-left var(--transition-base) ease;
+    height: calc(100vh - var(--header-height));
+    display: flex;
+    flex-direction: column;
+}
+
+/* Sidebar states */
+body:not(.sidebar-collapsed) .main-container {
+    margin-left: var(--sidebar-width);
+}
+
+body.sidebar-collapsed .sidebar {
+    transform: translateX(-100%);
+}
+
+body.sidebar-collapsed .sidebar-toggle {
+    display: block !important;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    body:not(.sidebar-collapsed) .main-container {
+        margin-left: 0;
+    }
+}

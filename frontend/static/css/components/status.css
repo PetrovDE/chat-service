@@ -1,0 +1,34 @@
+/* ================================================
+   Status Indicators & Health
+   ================================================ */
+
+.health-status {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-lg);
+}
+
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: var(--radius-full);
+    background: var(--color-gray-600);
+    animation: pulse 2s ease-in-out infinite;
+}
+
+.status-indicator.online {
+    background: var(--color-success);
+}
+
+.status-indicator.offline {
+    background: var(--color-error);
+}
+
+.status-indicator.warning {
+    background: var(--color-warning);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}

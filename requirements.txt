@@ -47,6 +47,7 @@ markdown>=3.7
 unstructured[xlsx]>=0.10.0
 pandas>=2.0.0
 openpyxl>=3.1.0
+docx2txt>=0.8
 
 # === Text Processing ===
 tiktoken>=0.8.0

@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     COLLECTION_NAME: str = Field("documents", env="COLLECTION_NAME")
     EMBEDDINGS_MODEL: str = Field("llama3.1:8b", env="EMBEDDINGS_MODEL")  # ИСПРАВЛЕНО
     EMBEDDINGS_BASEURL: AnyUrl = Field("http://localhost:11434", env="EMBEDDINGS_BASEURL")
-    CHUNK_SIZE: int = Field(1000, env="CHUNK_SIZE")
-    CHUNK_OVERLAP: int = Field(200, env="CHUNK_OVERLAP")
+    CHUNK_SIZE: int = Field(2000, env="CHUNK_SIZE")
+    CHUNK_OVERLAP: int = Field(400, env="CHUNK_OVERLAP")
     ENABLE_CACHE: bool = Field(True, env="ENABLE_CACHE")
     MAX_FILESIZE_MB: int = Field(50, env="MAX_FILESIZE_MB")
 

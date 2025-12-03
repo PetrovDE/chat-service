@@ -51,3 +51,4 @@ temp/
 *.db
 *.sqlite3
 uploads/
+/dev_test/

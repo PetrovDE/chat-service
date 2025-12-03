@@ -1,8 +1,8 @@
 # app/rag/retriever.py
-
 import logging
 from typing import List, Optional, Dict, Any
 from langchain_core.documents import Document
+
 from app.rag.vector_store import VectorStoreManager
 from app.rag.document_loader import DocumentLoader
 from app.rag.text_splitter import SmartTextSplitter
@@ -12,56 +12,76 @@ logger = logging.getLogger(__name__)
 
 
 class RAGRetriever:
-    def __init__(self,
-                 vectorstore: Optional[VectorStoreManager] = None,
-                 documentloader: Optional[DocumentLoader] = None,
-                 textsplitter: Optional[SmartTextSplitter] = None):
+    def __init__(
+            self,
+            vectorstore: Optional[VectorStoreManager] = None,
+            documentloader: Optional[DocumentLoader] = None,
+            textsplitter: Optional[SmartTextSplitter] = None
+    ):
         self.vectorstore = vectorstore or VectorStoreManager()
         self.documentloader = documentloader or DocumentLoader()
         self.textsplitter = textsplitter or SmartTextSplitter()
         logger.info("RAGRetriever initialized")
 
-    async def process_and_store_file(self, filepath: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def process_and_store_file(
+            self,
+            filepath: str,
+            metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         docs = await self.documentloader.load_file(filepath, metadata)
         chunk_docs = self.textsplitter.split_documents(docs)
         embeddings = embeddings_manager.embedd_documents([doc.page_content for doc in chunk_docs])
+
         for doc, emb in zip(chunk_docs, embeddings):
             chunk_id = doc.metadata.get("id", None) or doc.page_content[:40]
             self.vectorstore.add_document(doc_id=chunk_id, embedding=emb, metadata=doc.metadata)
+
         return {"count_stored_chunks": len(chunk_docs)}
 
-    def query_rag(self, query_content: str, top_k: int = 5, user_id: Optional[str] = None) -> List[Document]:
+    def query_rag(
+            self,
+            query_content: str,
+            top_k: int = 5,
+            user_id: Optional[str] = None,
+            conversation_id: Optional[str] = None  # ✅ НОВЫЙ ПАРАМЕТР
+    ) -> List[Document]:
         """
-        ИСПРАВЛЕНО: Улучшенный поиск с правильной обработкой content
+        ИСПРАВЛЕНО: Улучшенный поиск с фильтрацией по conversation_id
         """
         embedding_query = embeddings_manager.embedd_documents([query_content])[0]
         results = self.vectorstore.query(embedding_query, top_k=top_k)
+
         logger.info(f"🔍 Vector store returned {len(results)} raw results")
 
+        # ✅ ИСПРАВЛЕНИЕ: Фильтруем по conversation_id (ГЛАВНОЕ!)
+        if conversation_id:
+            filtered_results = [
+                r for r in results
+                if r.get('metadata', {}).get('conversation_id') == conversation_id
+            ]
+            logger.info(f"🔍 After conversation_id filter: {len(filtered_results)} results")
+            results = filtered_results
+
+        # Дополнительная фильтрация по user_id (для безопасности)
         if user_id:
-            filtered_results = [r for r in results if r.get('metadata', {}).get('user_id') == user_id]
+            filtered_results = [
+                r for r in results
+                if r.get('metadata', {}).get('user_id') == user_id
+            ]
             logger.info(f"🔍 After user_id filter: {len(filtered_results)} results")
             results = filtered_results
 
         documents = []
         for idx, result in enumerate(results):
-            # ИСПРАВЛЕНИЕ 6: Улучшенная логика извлечения content
-            # Проверяем несколько возможных источников контента
+            # Извлечение content
             content = None
 
-            # Источник 1: прямое поле content
             if 'content' in result and result['content']:
                 content = result['content']
-
-            # Источник 2: content в metadata
             elif 'metadata' in result and 'content' in result['metadata']:
                 content = result['metadata']['content']
-
-            # Источник 3: page_content в metadata
             elif 'metadata' in result and 'page_content' in result['metadata']:
                 content = result['metadata']['page_content']
-
-            # Источник 4: text в metadata
             elif 'metadata' in result and 'text' in result['metadata']:
                 content = result['metadata']['text']
 
@@ -72,10 +92,7 @@ class RAGRetriever:
                 )
                 continue
 
-            # Создаем metadata без дублирования content
             metadata = result.get('metadata', {}).copy()
-
-            # Добавляем полезную информацию для отладки
             metadata['result_index'] = idx
             metadata['similarity_score'] = result.get('distance', 0)
 
@@ -87,11 +104,11 @@ class RAGRetriever:
 
             logger.debug(
                 f"✅ Document {idx}: {len(content)} chars, "
-                f"file={metadata.get('filename', 'unknown')}"
+                f"file={metadata.get('filename', 'unknown')}, "
+                f"conv_id={metadata.get('conversation_id', 'none')}"
             )
 
         logger.info(f"✅ Returning {len(documents)} valid documents for RAG")
-
         if not documents:
             logger.warning("⚠️ No valid documents found - RAG context will be empty!")
 
@@ -108,7 +125,6 @@ class RAGRetriever:
         context_chunks = []
         for i, doc in enumerate(context_documents, 1):
             content = doc.page_content
-
             if not content or not content.strip():
                 logger.warning(f"⚠️ Skipping document {i} - empty content")
                 continue
@@ -125,8 +141,7 @@ class RAGRetriever:
                 doc_header += f" - часть {chunk_index + 1}"
             doc_header += "]"
 
-            # ИСПРАВЛЕНИЕ 7: Ограничиваем длину контента для промпта
-            # чтобы не превысить лимиты контекста модели
+            # Ограничиваем длину контента
             max_content_length = 2000
             if len(content) > max_content_length:
                 content = content[:max_content_length] + "\n[... содержимое обрезано ...]"
@@ -155,6 +170,7 @@ class RAGRetriever:
             f"{len(context_text)} context chars, "
             f"{len(prompt)} total chars"
         )
+
         return prompt
 
 

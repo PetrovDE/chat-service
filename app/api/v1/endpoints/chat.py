@@ -76,39 +76,44 @@ async def chat_stream(
             for msg in messages[:-1]  # Exclude the last message we just added
         ]
 
-        # Check for RAG context
-        user_files = []
+        # ✅ ИСПРАВЛЕНО: Check for RAG context ONLY for current conversation
+        conversation_files = []
         rag_context_used = False
         final_prompt = chat_data.message
 
         if user_id:
             try:
-                user_files = await crud_file.get_user_files(db, user_id=user_id)
-                logger.info(f"📂 User has {len(user_files)} files")
+                # ✅ ИСПРАВЛЕНИЕ: Получаем только файлы ТЕКУЩЕГО чата
+                conversation_files = await crud_file.get_conversation_files(
+                    db,
+                    conversation_id=conversation_id,
+                    user_id=user_id
+                )
+                logger.info(f"📂 Current conversation has {len(conversation_files)} files")
             except Exception as e:
-                logger.warning(f"⚠️ Could not fetch files: {e}")
+                logger.warning(f"⚠️ Could not fetch conversation files: {e}")
 
-        # Use RAG if files are available
-        if user_files and any(f.is_processed == "completed" for f in user_files):
+        # ✅ ИСПРАВЛЕНО: Use RAG if files are available FOR THIS CONVERSATION
+        if conversation_files and any(f.is_processed == "completed" for f in conversation_files):
             try:
-                logger.info("🤖 Retrieving RAG context...")
-                # FIX: использовать query_rag с user_id фильтром
+                logger.info("🤖 Retrieving RAG context for current conversation...")
+                # ✅ ИСПРАВЛЕНИЕ: передаем conversation_id для фильтрации
                 context_docs = rag_retriever.query_rag(
                     chat_data.message,
                     top_k=3,
-                    user_id=str(user_id) if user_id else None
+                    user_id=str(user_id) if user_id else None,
+                    conversation_id=str(conversation_id)  # ✅ Добавлен conversation_id
                 )
 
                 if context_docs:
-                    # FIX: использовать build_context_prompt
                     final_prompt = rag_retriever.build_context_prompt(
                         query=chat_data.message,
                         context_documents=context_docs
                     )
                     rag_context_used = True
-                    logger.info(f"✅ Using RAG with {len(context_docs)} documents")
+                    logger.info(f"✅ Using RAG with {len(context_docs)} documents from this conversation")
                 else:
-                    logger.info("ℹ️ No relevant context found")
+                    logger.info("ℹ️ No relevant context found in this conversation's files")
             except Exception as e:
                 logger.warning(f"⚠️ RAG retrieval failed: {e}")
 
@@ -253,33 +258,41 @@ async def chat(
             for msg in messages[:-1]
         ]
 
-        # RAG
-        user_files = []
+        # ✅ ИСПРАВЛЕНО: RAG only for current conversation
+        conversation_files = []
         rag_context_used = False
         final_prompt = chat_data.message
 
         if user_id:
             try:
-                user_files = await crud_file.get_user_files(db, user_id=user_id)
+                # ✅ ИСПРАВЛЕНИЕ: Получаем только файлы ТЕКУЩЕГО чата
+                conversation_files = await crud_file.get_conversation_files(
+                    db,
+                    conversation_id=conversation_id,
+                    user_id=user_id
+                )
+                logger.info(f"📂 Current conversation has {len(conversation_files)} files")
             except Exception as e:
                 logger.warning(f"Files fetch error: {e}")
 
-        if user_files and any(f.is_processed == "completed" for f in user_files):
+        # ✅ ИСПРАВЛЕНО: Use RAG if files are available FOR THIS CONVERSATION
+        if conversation_files and any(f.is_processed == "completed" for f in conversation_files):
             try:
-                # FIX: использовать query_rag с user_id фильтром
+                # ✅ ИСПРАВЛЕНИЕ: передаем conversation_id для фильтрации
                 context_docs = rag_retriever.query_rag(
                     chat_data.message,
                     top_k=3,
-                    user_id=str(user_id) if user_id else None
+                    user_id=str(user_id) if user_id else None,
+                    conversation_id=str(conversation_id)  # ✅ Добавлен conversation_id
                 )
 
                 if context_docs:
-                    # FIX: использовать build_context_prompt
                     final_prompt = rag_retriever.build_context_prompt(
                         query=chat_data.message,
                         context_documents=context_docs
                     )
                     rag_context_used = True
+                    logger.info(f"✅ Using RAG with {len(context_docs)} documents from this conversation")
             except Exception as e:
                 logger.warning(f"RAG error: {e}")
 

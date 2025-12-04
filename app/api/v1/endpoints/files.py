@@ -1,8 +1,10 @@
-﻿# app/api/v1/endpoints/files.py
-"""File management endpoints"""
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, Query
+﻿"""
+File management endpoints
+Эндпоинты для работы с файлами: загрузка, обработка, удаление
+"""
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, Query, Form
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
+from typing import List, Optional
 from uuid import UUID, uuid4
 import aiofiles
 import os
@@ -26,56 +28,133 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 @router.post("/upload", response_model=FileUploadResponse)
 async def upload_file(
         file: UploadFile = File(...),
-        conversation_id: UUID = Query(..., description="ID of the conversation to associate file with"),
+        conversation_id: UUID = Form(...),
+        embedding_mode: str = Form("local"),
+        embedding_model: Optional[str] = Form(None),
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
-    """Upload and process file, associating it with a specific conversation"""
+    """
+    Upload and process file, associating it with a specific conversation
 
+    Args:
+        file: Файл для загрузки
+        conversation_id: ID диалога для привязки файла
+        embedding_mode: Режим генерации эмбеддингов ('local' или 'corporate')
+        embedding_model: Модель для эмбеддингов (опционально)
+        db: Сессия БД
+        current_user: Текущий пользователь
+
+    Returns:
+        FileUploadResponse: Информация о загруженном файле
+    """
+    # Валидация типа файла
     if not settings.is_file_supported(file.filename):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File type not supported"
+            detail=f"File type not supported. Supported: {settings.supported_filetypes}"
         )
 
-    if file.size > settings.MAX_FILESIZE_MB * 1024 * 1024:
+    # Валидация размера файла
+    if file.size and file.size > settings.MAX_FILESIZE_MB * 1024 * 1024:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"File too large (max {settings.MAX_FILESIZE_MB}MB)"
         )
 
-    # Save file
+    # Валидация режима эмбеддингов (поддерживаем оба варианта названия)
+    valid_modes = ["local", "corporate", "aihub"]
+    if embedding_mode not in valid_modes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid embedding_mode. Must be 'local' or 'corporate'"
+        )
+
+    logger.info(f"📤 Uploading file: {file.filename}, mode: {embedding_mode}, model: {embedding_model}")
+
+    # Сохранение файла на диск
     file_id = uuid4()
     file_path = UPLOAD_DIR / f"{current_user.id}" / f"{file_id}_{file.filename}"
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    async with aiofiles.open(file_path, 'wb') as f:
-        content = await file.read()
-        await f.write(content)
+    try:
+        async with aiofiles.open(file_path, 'wb') as f:
+            content = await file.read()
+            await f.write(content)
 
-    # Save to database
+        logger.info(f"✅ File saved to disk: {file_path}")
+    except Exception as e:
+        logger.error(f"❌ Failed to save file: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save file: {str(e)}"
+        )
+
+    # Определение типа файла
     file_type = file.filename.split('.')[-1].lower()
-    file_record = await crud_file.create_file(
-        db,
-        user_id=current_user.id,
-        filename=f"{file_id}_{file.filename}",
-        original_filename=file.filename,
-        path=str(file_path),
-        file_type=file_type,
-        file_size=file.size,
-        content_preview=content[:500].decode('utf-8', errors='ignore') if file_type == 'txt' else None
-    )
 
-    # Associate file with conversation
-    await crud_file.add_file_to_conversation(
-        db,
-        file_id=file_record.id,
-        conversation_id=conversation_id
-    )
+    # Предпросмотр содержимого для текстовых файлов
+    content_preview = None
+    if file_type in ['txt', 'md']:
+        try:
+            content_preview = content[:500].decode('utf-8', errors='ignore')
+        except Exception as e:
+            logger.warning(f"⚠️ Could not create preview: {e}")
 
-    # Start async processing
-    from app.services.file import process_file_async
-    await process_file_async(file_record.id, file_path)
+    # Сохранение записи в БД
+    try:
+        file_record = await crud_file.create_file(
+            db,
+            user_id=current_user.id,
+            filename=f"{file_id}_{file.filename}",
+            original_filename=file.filename,
+            path=str(file_path),
+            file_type=file_type,
+            file_size=len(content),
+            content_preview=content_preview
+        )
+
+        logger.info(f"✅ File record created in DB: {file_record.id}")
+    except Exception as e:
+        logger.error(f"❌ Failed to create file record: {e}")
+        # Удаляем файл с диска если не удалось создать запись
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create file record: {str(e)}"
+        )
+
+    # Привязка файла к диалогу
+    try:
+        await crud_file.add_file_to_conversation(
+            db,
+            file_id=file_record.id,
+            conversation_id=conversation_id
+        )
+
+        logger.info(f"✅ File associated with conversation: {conversation_id}")
+    except Exception as e:
+        logger.error(f"❌ Failed to associate file with conversation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to associate file with conversation: {str(e)}"
+        )
+
+    # Запуск асинхронной обработки файла
+    try:
+        from app.services.file import process_file_async
+        await process_file_async(
+            file_id=file_record.id,
+            file_path=file_path,
+            embedding_mode=embedding_mode,
+            embedding_model=embedding_model
+        )
+
+        logger.info(f"🚀 File processing started: {file_record.id}")
+    except Exception as e:
+        logger.error(f"❌ Failed to start file processing: {e}")
+        # Не выбрасываем исключение, файл уже загружен, обработка будет в фоне
 
     return FileUploadResponse(
         file_id=file_record.id,
@@ -88,6 +167,71 @@ async def upload_file(
         chunks_count=file_record.chunks_count,
         uploaded_at=file_record.uploaded_at
     )
+
+
+@router.post("/process/{file_id}")
+async def process_file(
+        file_id: UUID,
+        embedding_mode: str = Form("local"),
+        embedding_model: Optional[str] = Form(None),
+        db: AsyncSession = Depends(get_db),
+        current_user: User = Depends(get_current_user)
+):
+    """
+    Manually trigger file processing (if it failed or needs reprocessing)
+
+    Args:
+        file_id: ID файла
+        embedding_mode: Режим генерации эмбеддингов ('local' или 'corporate')
+        embedding_model: Модель для эмбеддингов (опционально)
+    """
+    file = await crud_file.get_user_file(
+        db,
+        file_id=file_id,
+        user_id=current_user.id
+    )
+
+    if not file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found"
+        )
+
+    if not os.path.exists(file.path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Physical file not found"
+        )
+
+    # Валидация режима
+    valid_modes = ["local", "corporate", "aihub"]
+    if embedding_mode not in valid_modes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid embedding_mode. Must be 'local' or 'corporate'"
+        )
+
+    try:
+        from app.services.file import process_file_async
+        await process_file_async(
+            file_id=file_id,
+            file_path=Path(file.path),
+            embedding_mode=embedding_mode,
+            embedding_model=embedding_model
+        )
+
+        return {
+            "success": True,
+            "message": "File processing started",
+            "file_id": str(file_id),
+            "embedding_mode": embedding_mode
+        }
+    except Exception as e:
+        logger.error(f"❌ Failed to start file processing: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start file processing: {str(e)}"
+        )
 
 
 @router.get("/", response_model=List[FileInfo])
@@ -105,13 +249,19 @@ async def get_files(
         limit=limit
     )
 
-    # Enrich files with conversation IDs
+    # Обогащаем файлы информацией о диалогах
+    from sqlalchemy import select
+    from app.db.models.conversation_file import ConversationFile
+
     result = []
     for file in files:
-        conversation_ids = await crud_file.get_conversation_file_ids(
-            db,
-            conversation_id=file.id  # Wrong - will fix below
+        # Получаем все диалоги для этого файла
+        query = select(ConversationFile.conversation_id).where(
+            ConversationFile.file_id == file.id
         )
+        conv_result = await db.execute(query)
+        conversation_ids = conv_result.scalars().all()
+
         file_info = FileInfo(
             id=file.id,
             filename=file.filename,
@@ -122,7 +272,7 @@ async def get_files(
             chunks_count=file.chunks_count,
             uploaded_at=file.uploaded_at,
             processed_at=file.processed_at,
-            conversation_ids=conversation_ids
+            conversation_ids=list(conversation_ids)
         )
         result.append(file_info)
 
@@ -138,26 +288,26 @@ async def get_processed_files(
     """Get processed files for current user, optionally filtered by conversation"""
 
     if conversation_id:
-        # Get files for specific conversation
+        # Получаем файлы для конкретного диалога
         files = await crud_file.get_conversation_files(
             db,
             conversation_id=conversation_id,
             user_id=current_user.id
         )
     else:
-        # Get all processed files
+        # Получаем все обработанные файлы
         files = await crud_file.get_processed_files(
             db,
             user_id=current_user.id
         )
 
-    # Enrich files with conversation IDs
+    # Обогащаем файлы информацией о диалогах
     from sqlalchemy import select
     from app.db.models.conversation_file import ConversationFile
 
     result = []
     for file in files:
-        # Get all conversations for this file
+        # Получаем все диалоги для этого файла
         query = select(ConversationFile.conversation_id).where(
             ConversationFile.file_id == file.id
         )
@@ -200,7 +350,7 @@ async def get_file(
             detail="File not found"
         )
 
-    # Get associated conversations
+    # Получаем связанные диалоги
     from sqlalchemy import select
     from app.db.models.conversation_file import ConversationFile
 
@@ -244,26 +394,26 @@ async def delete_file(
         )
 
     try:
-        # 1. Delete embeddings from ChromaDB
+        # 1. Удаляем эмбеддинги из ChromaDB
         await delete_file_from_chroma(str(file_id))
-        logger.info(f"Deleted embeddings from ChromaDB for file {file_id}")
+        logger.info(f"✅ Deleted embeddings from ChromaDB for file {file_id}")
 
-        # 2. Delete embeddings from PostgreSQL (if exists)
+        # 2. Удаляем эмбеддинги из PostgreSQL (если существуют)
         await delete_file_from_postgres(db, str(file_id))
-        logger.info(f"Deleted embeddings from PostgreSQL for file {file_id}")
+        logger.info(f"✅ Deleted embeddings from PostgreSQL for file {file_id}")
 
-        # 3. Delete physical file
+        # 3. Удаляем физический файл
         if os.path.exists(file.path):
             try:
                 os.remove(file.path)
-                logger.info(f"Deleted physical file: {file.path}")
+                logger.info(f"✅ Deleted physical file: {file.path}")
             except OSError as e:
-                logger.warning(f"Could not delete physical file {file.path}: {e}")
+                logger.warning(f"⚠️ Could not delete physical file {file.path}: {e}")
                 # Продолжаем даже если файл не удалился - может быть заблокирован
 
-        # 4. Delete from database
+        # 4. Удаляем из базы данных
         await crud_file.remove(db, id=file_id)
-        logger.info(f"Deleted file record from database: {file_id}")
+        logger.info(f"✅ Deleted file record from database: {file_id}")
 
         return {
             "success": True,
@@ -271,7 +421,7 @@ async def delete_file(
             "file_id": str(file_id)
         }
     except Exception as e:
-        logger.error(f"Error deleting file {file_id}: {e}")
+        logger.error(f"❌ Error deleting file {file_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error deleting file: {str(e)}"
@@ -283,13 +433,13 @@ async def delete_file_from_chroma(file_id: str):
     try:
         from app.rag.vector_store import VectorStoreManager
         vector_store = VectorStoreManager()
-        # Delete by metadata filter
+        # Удаляем по фильтру метаданных
         vector_store.collection.delete(
             where={"file_id": file_id}
         )
-        logger.info(f"Successfully deleted ChromaDB embeddings for file: {file_id}")
+        logger.info(f"✅ Successfully deleted ChromaDB embeddings for file: {file_id}")
     except Exception as e:
-        logger.error(f"Error deleting from ChromaDB: {e}")
+        logger.error(f"❌ Error deleting from ChromaDB: {e}")
         raise
 
 
@@ -298,27 +448,27 @@ async def delete_file_from_postgres(db: AsyncSession, file_id: str):
     try:
         from sqlalchemy import text
 
-        # Check if document_embeddings table exists
+        # Проверяем существование таблицы document_embeddings
         check_query = text("""
-                           SELECT EXISTS (SELECT 1
-                                          FROM information_schema.tables
-                                          WHERE table_name = 'document_embeddings')
-                           """)
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_name = 'document_embeddings')
+        """)
         result = await db.execute(check_query)
         table_exists = result.scalar()
 
         if table_exists:
             delete_query = text("""
-                                DELETE
-                                FROM document_embeddings
-                                WHERE metadata ->> 'file_id' = :file_id
-                                """)
+                DELETE FROM document_embeddings
+                WHERE metadata ->> 'file_id' = :file_id
+            """)
             await db.execute(delete_query, {"file_id": file_id})
             await db.commit()
-            logger.info(f"Successfully deleted PostgreSQL embeddings for file: {file_id}")
+            logger.info(f"✅ Successfully deleted PostgreSQL embeddings for file: {file_id}")
         else:
-            logger.info("document_embeddings table does not exist, skipping PostgreSQL cleanup")
+            logger.info("ℹ️ document_embeddings table does not exist, skipping PostgreSQL cleanup")
     except Exception as e:
-        logger.error(f"Error deleting from PostgreSQL: {e}")
-        # Don't raise - PostgreSQL embeddings are optional
+        logger.error(f"❌ Error deleting from PostgreSQL: {e}")
+        # Не выбрасываем исключение - PostgreSQL эмбеддинги опциональны
         pass

@@ -26,16 +26,28 @@ class Settings(BaseSettings):
     CORPORATE_API_USERNAME: str = Field("", env="CORPORATE_API_USERNAME")
     CORPORATE_API_TOKEN: str = Field("", env="CORPORATE_API_TOKEN")
 
-    # LLM/RAG defaults - ИСПРАВЛЕНО: llama3.1:8b вместо llama3.18b
+    # AI HUB Configuration
+    AIHUB_URL: str = Field("", env="AIHUB_URL")
+    AIHUB_KEYCLOAK_HOST: str = Field("", env="AIHUB_KEYCLOAK_HOST")
+    AIHUB_USERNAME: str = Field("", env="AIHUB_USERNAME")
+    AIHUB_PASSWORD: str = Field("", env="AIHUB_PASSWORD")
+    AIHUB_CLIENT_ID: str = Field("", env="AIHUB_CLIENT_ID")
+    AIHUB_CLIENT_SECRET: str = Field("", env="AIHUB_CLIENT_SECRET")
+    AIHUB_REQUEST_TIMEOUT: int = Field(120, env="AIHUB_REQUEST_TIMEOUT")
+    AIHUB_VERIFY_SSL: bool = Field(False, env="AIHUB_VERIFY_SSL")
+    AIHUB_DEFAULT_MODEL: str = Field("vikhr", env="AIHUB_DEFAULT_MODEL")
+    AIHUB_EMBEDDING_MODEL: str = Field("embedding-model", env="AIHUB_EMBEDDING_MODEL")
+
+    # LLM/RAG defaults
     default_llm_mode: str = Field("local", env="DEFAULT_LLM_MODE")
-    default_rag_model: str = Field("llama3.1:8b", env="DEFAULT_RAG_MODEL")  # ИСПРАВЛЕНО
+    default_rag_model: str = Field("llama3.1:8b", env="DEFAULT_RAG_MODEL")
     max_chunks_per_file: int = Field(100, env="MAX_CHUNKS_PER_FILE")
     splitter_type: str = Field("smart", env="SPLITTER_TYPE")
 
-    # VectorStore / RAG / LLM - ИСПРАВЛЕНО: llama3.1:8b вместо llama3.18b
+    # VectorStore / RAG / LLM
     VECTORDB_PATH: str = Field(".chromadb", env="VECTORDB_PATH")
     COLLECTION_NAME: str = Field("documents", env="COLLECTION_NAME")
-    EMBEDDINGS_MODEL: str = Field("llama3.1:8b", env="EMBEDDINGS_MODEL")  # ИСПРАВЛЕНО
+    EMBEDDINGS_MODEL: str = Field("llama3.1:8b", env="EMBEDDINGS_MODEL")
     EMBEDDINGS_BASEURL: AnyUrl = Field("http://localhost:11434", env="EMBEDDINGS_BASEURL")
     CHUNK_SIZE: int = Field(2000, env="CHUNK_SIZE")
     CHUNK_OVERLAP: int = Field(400, env="CHUNK_OVERLAP")

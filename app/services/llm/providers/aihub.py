@@ -26,6 +26,14 @@ class AIHubAuthManager:
         self.password = settings.AIHUB_PASSWORD
         self.client_id = settings.AIHUB_CLIENT_ID
         self.client_secret = settings.AIHUB_CLIENT_SECRET
+        
+        # ✅ ДОБАВЛЕНО: Логирование конфигурации (без пароля!)
+        logger.info(f"🔑 AI HUB Auth Config:")
+        logger.info(f"  - Keycloak Host: {self.keycloak_host}")
+        logger.info(f"  - Username: {self.username}")
+        logger.info(f"  - Client ID: {self.client_id}")
+        logger.info(f"  - Client Secret: {'*' * len(self.client_secret) if self.client_secret else 'NOT SET'}")
+        logger.info(f"  - Password: {'*' * len(self.password) if self.password else 'NOT SET'}")
 
     async def get_token(self) -> Optional[str]:
         """
@@ -39,6 +47,8 @@ class AIHubAuthManager:
                 return self._token
 
         # Получаем новый токен
+        logger.info("🔑 Requesting new AI HUB token from Keycloak...")
+        
         data = {
             "grant_type": "password",
             "client_id": self.client_id,
@@ -53,6 +63,8 @@ class AIHubAuthManager:
 
         try:
             async with httpx.AsyncClient(verify=settings.AIHUB_VERIFY_SSL) as client:
+                logger.info(f"🔑 Sending auth request to: {self.keycloak_host}")
+                
                 response = await client.post(
                     self.keycloak_host,
                     data=data,
@@ -60,40 +72,59 @@ class AIHubAuthManager:
                     timeout=30.0
                 )
 
+                # ✅ ДОБАВЛЕНО: Логирование ответа
+                logger.info(f"🔑 Keycloak response status: {response.status_code}")
+                
                 if response.status_code == 200:
                     token_info = response.json()
                     self._token = token_info.get("access_token")
+
+                    if not self._token:
+                        logger.error("❌ Token received but 'access_token' field is missing!")
+                        logger.error(f"Response keys: {list(token_info.keys())}")
+                        return None
 
                     # Вычисляем время истечения токена
                     expires_in = token_info.get("expires_in", 300)  # По умолчанию 5 минут
                     self._token_expires_at = datetime.now() + timedelta(seconds=expires_in)
 
-                    logger.info(f"✅ Successfully obtained AI HUB token (expires in {expires_in}s)")
+                    # ✅ ДОБАВЛЕНО: Показываем первые и последние символы токена
+                    token_preview = f"{self._token[:20]}...{self._token[-20:]}" if len(self._token) > 40 else "[short token]"
+                    logger.info(f"✅ Successfully obtained AI HUB token: {token_preview}")
+                    logger.info(f"✅ Token expires in {expires_in}s")
                     return self._token
                 else:
+                    # ✅ ДОБАВЛЕНО: Полный лог ошибки
+                    logger.error(f"❌ Failed to get AI HUB token - Status: {response.status_code}")
+                    logger.error(f"❌ Response headers: {dict(response.headers)}")
+                    
                     try:
                         error_info = response.json()
-                        error_msg = error_info.get("error_description", f"Status code: {response.status_code}")
+                        logger.error(f"❌ Error response body: {json.dumps(error_info, indent=2)}")
+                        error_msg = error_info.get("error_description") or error_info.get("error", f"Status code: {response.status_code}")
                     except Exception:
                         error_msg = f"Status code: {response.status_code}"
+                        logger.error(f"❌ Raw response text: {response.text[:500]}")
 
-                    logger.error(f"❌ Failed to get AI HUB token: {error_msg}")
+                    logger.error(f"❌ Error message: {error_msg}")
                     return None
 
         except httpx.TimeoutException:
             logger.error("❌ Keycloak authentication timeout")
             return None
-        except httpx.ConnectError:
-            logger.error("❌ Keycloak connection error")
+        except httpx.ConnectError as e:
+            logger.error(f"❌ Keycloak connection error: {e}")
+            logger.error(f"❌ Make sure Keycloak is accessible at: {self.keycloak_host}")
             return None
         except Exception as e:
-            logger.error(f"❌ Unexpected error getting AI HUB token: {e}")
+            logger.error(f"❌ Unexpected error getting AI HUB token: {type(e).__name__}: {e}", exc_info=True)
             return None
 
     def clear_token(self):
         """Очистить кешированный токен"""
         self._token = None
         self._token_expires_at = None
+        logger.info("🗑️ AI HUB token cache cleared")
 
 
 class AIHubProvider(BaseLLMProvider):
@@ -111,7 +142,11 @@ class AIHubProvider(BaseLLMProvider):
         self.embedding_model = settings.AIHUB_EMBEDDING_MODEL
         self.auth_manager = AIHubAuthManager()
 
-        logger.info(f"🚀 AIHubProvider initialized: {self.base_url}")
+        logger.info(f"🚀 AIHubProvider initialized")
+        logger.info(f"  - Base URL: {self.base_url}")
+        logger.info(f"  - Verify SSL: {self.verify_ssl}")
+        logger.info(f"  - Default Model: {self.default_model}")
+        logger.info(f"  - Embedding Model: {self.embedding_model}")
 
     async def _get_headers(self) -> Dict[str, str]:
         """Получить заголовки с актуальным токеном"""
@@ -167,14 +202,20 @@ class AIHubProvider(BaseLLMProvider):
         """Получить список доступных моделей из AI HUB"""
         try:
             headers = await self._get_headers()
+            
+            # ✅ ДОБАВЛЕНО: Логирование запроса
+            url = f"{self.base_url}/models"
+            logger.info(f"📊 Fetching models from: {url}")
 
             async with httpx.AsyncClient(verify=self.verify_ssl) as client:
                 response = await client.get(
-                    f"{self.base_url}/models",
+                    url,
                     headers=headers,
                     params={"type": "chatbot"},
                     timeout=self.timeout
                 )
+
+                logger.info(f"📊 Models response status: {response.status_code}")
 
                 if response.status_code == 200:
                     data = response.json()
@@ -183,11 +224,12 @@ class AIHubProvider(BaseLLMProvider):
                     logger.info(f"📋 Available AI HUB models: {model_names}")
                     return model_names
                 else:
-                    logger.error(f"❌ Failed to get AI HUB models: {response.status_code} - {response.text}")
+                    logger.error(f"❌ Failed to get AI HUB models: {response.status_code}")
+                    logger.error(f"❌ Response: {response.text[:500]}")
                     return []
 
         except Exception as e:
-            logger.error(f"❌ Error getting AI HUB models: {e}")
+            logger.error(f"❌ Error getting AI HUB models: {type(e).__name__}: {e}", exc_info=True)
             return []
 
     async def generate_response(

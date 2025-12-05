@@ -12,11 +12,17 @@ class SettingsManager {
         console.log('✓ SettingsManager initialized');
     }
 
-    async loadAvailableModels() {
+    async loadAvailableModels(mode = null) {
         console.log('📋 Loading models...');
         try {
-            const mode = this.settings.mode || 'ollama';
-            const response = await this.apiService.get(`/models/list?mode=${mode}`);
+            // ✅ ИСПРАВЛЕНО: Используем переданный режим или текущий
+            const selectedMode = mode || this.settings.mode || 'local';
+            console.log(`🔧 Loading models for mode: ${selectedMode}`);
+
+            // ✅ ИСПРАВЛЕНО: Преобразуем режим для API (если нужно)
+            const apiMode = selectedMode === 'corporate' ? 'corporate' : selectedMode;
+
+            const response = await this.apiService.get(`/models/list?mode=${apiMode}`);
             console.log('✓ Models response:', response);
 
             const modelSelector = document.getElementById('model-selector');
@@ -27,7 +33,6 @@ class SettingsManager {
                     // Если model - объект, извлекаем name или id
                     const modelValue = typeof model === 'string' ? model : (model.name || model.id || model);
                     const modelLabel = typeof model === 'string' ? model : (model.name || model.id || model);
-
                     return `<option value="${modelValue}">${modelLabel}</option>`;
                 }).join('');
                 console.log('✅ Loaded', response.models.length, 'models');
@@ -45,7 +50,8 @@ class SettingsManager {
     setMode(mode) {
         this.settings.mode = mode;
         console.log('🔧 Mode set to:', mode);
-        this.loadAvailableModels();
+        // ✅ НОВОЕ: Загружаем модели для нового режима
+        this.loadAvailableModels(mode);
     }
 
     setModel(model) {

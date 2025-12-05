@@ -55,7 +55,8 @@ class App {
             this.chatManager.setConversationsManager(this.conversationsManager);
             console.log('✓ ChatManager <-> ConversationsManager linked');
 
-            this.fileManager = new FileManager(this.apiService, this.uiController, this.chatManager);
+            // ✅ ИСПРАВЛЕНО: FileManager теперь принимает только chatManager
+            this.fileManager = new FileManager(this.chatManager);
             console.log('✓ File Manager initialized');
 
             // Инициализируем Files Sidebar Manager
@@ -98,10 +99,8 @@ class App {
 
             this.initialized = true;
             console.log('✅ Application initialized successfully!');
-
         } catch (error) {
             console.error('❌ Failed to initialize application:', error);
-
             const errorContainer = document.getElementById('chatMessages');
             if (errorContainer) {
                 errorContainer.innerHTML = `
@@ -137,7 +136,6 @@ class App {
                     this.handleSendMessage();
                 }
             });
-
             messageInput.addEventListener('input', (e) => {
                 e.target.style.height = 'auto';
                 e.target.style.height = e.target.scrollHeight + 'px';
@@ -146,14 +144,23 @@ class App {
 
         const modeSelector = document.getElementById('mode-selector');
         if (modeSelector) {
-            modeSelector.addEventListener('change', (e) => {
-                this.settingsManager.setMode(e.target.value);
+            modeSelector.addEventListener('change', async (e) => {
+                const newMode = e.target.value;
+                console.log('🔄 Mode changed to:', newMode);
+
+                // ✅ НОВОЕ: Устанавливаем режим
+                this.settingsManager.setMode(newMode);
+
+                // ✅ НОВОЕ: Загружаем модели для нового режима
+                await this.settingsManager.loadAvailableModels(newMode);
+                console.log('✅ Models reloaded for mode:', newMode);
             });
         }
 
         const modelSelector = document.getElementById('model-selector');
         if (modelSelector) {
             modelSelector.addEventListener('change', (e) => {
+                console.log('🎯 Model changed to:', e.target.value);
                 this.settingsManager.setModel(e.target.value);
             });
         }

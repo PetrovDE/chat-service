@@ -34,7 +34,8 @@ class ChatManager {
       this.addMessageToUI('user', message);
 
       // Prepare request with correct mapping
-      const modelSource = settings.mode === 'local' ? 'ollama' : settings.mode || 'ollama';
+      const modelSource = settings.mode || 'local';
+      console.log('🔌 Model source:', modelSource); // Debug
 
       // НОВОЕ: Получаем file_ids из FileManager
       const fileIds = [];

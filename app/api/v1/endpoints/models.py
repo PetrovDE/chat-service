@@ -42,13 +42,12 @@ async def list_models(mode: str = "local") -> Dict[str, Any]:
                     "error": str(e)
                 }
 
-        # ✅ ИСПРАВЛЕНО: поддержка режима 'aihub' (корпоративный AI HUB)
         elif mode in ["aihub", "corporate"]:
             logger.info(f"🏢 Querying AI HUB for models")
 
             try:
-                # Пытаемся получить реальные модели из AI HUB
-                aihub_url = settings.AIHUB_URL
+                aihub_url = getattr(settings, 'AIHUB_URL', None)
+
                 if not aihub_url:
                     logger.warning("⚠️ AIHUB_URL not configured, returning default models")
                     aihub_models = [
@@ -57,15 +56,18 @@ async def list_models(mode: str = "local") -> Dict[str, Any]:
                     ]
                 else:
                     try:
-                        # Запрашиваем модели с Authentication
+                        # Пытаемся получить реальные модели из AI HUB
                         headers = {}
-                        if settings.AIHUB_API_KEY:
-                            headers['Authorization'] = f'Bearer {settings.AIHUB_API_KEY}'
+
+                        aihub_token = getattr(settings, 'AIHUB_CLIENT_ID', None)
+                        if aihub_token:
+                            headers['Authorization'] = f'Bearer {aihub_token}'
 
                         response = requests.get(
                             f"{aihub_url}/models",
                             headers=headers,
-                            timeout=5
+                            timeout=5,
+                            verify=getattr(settings, 'AIHUB_VERIFY_SSL', False)
                         )
                         response.raise_for_status()
 
@@ -145,15 +147,17 @@ async def models_status() -> Dict[str, Any]:
     except:
         pass
 
-    # ✅ Проверка доступности AI HUB
+    # ✅ Проверка доступности AI HUB (используем getattr для безопасности)
     try:
-        aihub_available = bool(settings.AIHUB_URL)
+        aihub_url = getattr(settings, 'AIHUB_URL', None)
+        aihub_available = bool(aihub_url)
     except:
         pass
 
     # ✅ Проверка OpenAI
     try:
-        openai_available = bool(settings.OPENAI_API_KEY)
+        openai_api_key = getattr(settings, 'OPENAI_API_KEY', None)
+        openai_available = bool(openai_api_key)
     except:
         pass
 
@@ -164,7 +168,7 @@ async def models_status() -> Dict[str, Any]:
         },
         "aihub": {
             "available": aihub_available,
-            "url": settings.AIHUB_URL if hasattr(settings, 'AIHUB_URL') else None
+            "url": getattr(settings, 'AIHUB_URL', None)
         },
         "openai": {
             "available": openai_available

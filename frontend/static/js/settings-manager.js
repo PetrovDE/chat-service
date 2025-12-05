@@ -19,9 +19,17 @@ class SettingsManager {
             const selectedMode = mode || this.settings.mode || 'local';
             console.log(`🔧 Loading models for mode: ${selectedMode}`);
 
+            // ✅ Валидация режима
+            const validModes = ['local', 'ollama', 'openai', 'aihub'];
+            if (!validModes.includes(selectedMode)) {
+                console.warn(`⚠️ Invalid mode ${selectedMode}, using local`);
+                this.settings.mode = 'local';
+                return this.loadAvailableModels('local');
+            }
+
             let modelsData;
 
-            // ✅ ИСПРАВЛЕНИЕ: Используем правильный эндпоинт /models/list?mode=...
+            // ✅ ИСПРАВЛЕНИЕ: Всегда используем правильный эндпоинт /models/list?mode=...
             console.log(`🔌 Fetching models from: /models/list?mode=${selectedMode}`);
             const response = await this.apiService.get(`/models/list?mode=${selectedMode}`);
             modelsData = response;
@@ -90,6 +98,12 @@ class SettingsManager {
     }
 
     setMode(mode) {
+        // ✅ Валидация режима
+        const validModes = ['local', 'ollama', 'openai', 'aihub'];
+        if (!validModes.includes(mode)) {
+            console.warn(`⚠️ Invalid mode: ${mode}, keeping current: ${this.settings.mode}`);
+            return;
+        }
         this.settings.mode = mode;
         console.log('🔧 Mode set to:', mode);
     }

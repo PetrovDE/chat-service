@@ -1,6 +1,6 @@
 ﻿# app/api/v1/endpoints/models.py
 from fastapi import APIRouter, HTTPException
-from typing import Dict, Any
+from typing import Dict, Any, List
 import requests
 import logging
 from app.core.config import settings
@@ -15,42 +15,111 @@ async def list_models(mode: str = "local") -> Dict[str, Any]:
     try:
         logger.info(f"📋 Getting models for mode: {mode}")
 
-        # ✅ ИСПРАВЛЕНО: поддержка 'local', 'ollama' И 'corporate'
+        # ✅ ИСПРАВЛЕНО: поддержка 'local', 'ollama' и 'aihub'
         if mode in ["local", "ollama"]:
             # Локальные модели через Ollama
             ollama_url = str(settings.EMBEDDINGS_BASEURL).rstrip('/')
             logger.info(f"🔌 Querying Ollama: {ollama_url}")
 
-            response = requests.get(f"{ollama_url}/api/tags", timeout=5)
-            response.raise_for_status()
-            data = response.json()
-            models = data.get("models", [])
+            try:
+                response = requests.get(f"{ollama_url}/api/tags", timeout=5)
+                response.raise_for_status()
+                data = response.json()
+                models = data.get("models", [])
+                logger.info(f"✅ Got {len(models)} models from Ollama")
 
-            logger.info(f"✅ Got {len(models)} models from Ollama")
+                return {
+                    "mode": mode,
+                    "models": [{"name": m.get("name"), "size": m.get("size", 0)} for m in models],
+                    "count": len(models)
+                }
+            except Exception as e:
+                logger.error(f"❌ Error querying Ollama: {e}")
+                return {
+                    "mode": mode,
+                    "models": [],
+                    "count": 0,
+                    "error": str(e)
+                }
 
-            return {
-                "mode": mode,
-                "models": [{"name": m.get("name"), "size": m.get("size", 0)} for m in models],
-                "count": len(models)
-            }
-
-        # ✅ НОВОЕ: поддержка режима 'corporate' (AI HUB)
-        elif mode in ["corporate", "aihub"]:
+        # ✅ ИСПРАВЛЕНО: поддержка режима 'aihub' (корпоративный AI HUB)
+        elif mode in ["aihub", "corporate"]:
             logger.info(f"🏢 Querying AI HUB for models")
 
-            # Здесь нужно получить модели из AI HUB
-            # Пока возвращаем известные модели AI HUB
-            aihub_models = [
-                {"name": "vikhr", "size": 0},  # Основная чат-модель
-                {"name": "embedding-model", "size": 0}  # Модель для эмбеддингов
+            try:
+                # Пытаемся получить реальные модели из AI HUB
+                aihub_url = settings.AIHUB_URL
+                if not aihub_url:
+                    logger.warning("⚠️ AIHUB_URL not configured, returning default models")
+                    aihub_models = [
+                        {"name": "vikhr-llm", "size": 0},
+                        {"name": "vikhr-7b", "size": 0}
+                    ]
+                else:
+                    try:
+                        # Запрашиваем модели с Authentication
+                        headers = {}
+                        if settings.AIHUB_API_KEY:
+                            headers['Authorization'] = f'Bearer {settings.AIHUB_API_KEY}'
+
+                        response = requests.get(
+                            f"{aihub_url}/models",
+                            headers=headers,
+                            timeout=5
+                        )
+                        response.raise_for_status()
+
+                        data = response.json()
+                        # Обрабатываем ответ в зависимости от формата
+                        if isinstance(data, list):
+                            aihub_models = data
+                        elif isinstance(data, dict) and 'models' in data:
+                            aihub_models = data['models']
+                        elif isinstance(data, dict) and 'data' in data:
+                            aihub_models = data['data']
+                        else:
+                            logger.warning(f"⚠️ Unexpected AI HUB response format: {data}")
+                            aihub_models = []
+
+                    except requests.exceptions.RequestException as e:
+                        logger.warning(f"⚠️ Could not fetch from AI HUB API: {e}, using defaults")
+                        aihub_models = [
+                            {"name": "vikhr-llm", "size": 0},
+                            {"name": "vikhr-7b", "size": 0}
+                        ]
+
+                logger.info(f"✅ Returning {len(aihub_models)} AI HUB models")
+                return {
+                    "mode": mode,
+                    "models": aihub_models,
+                    "count": len(aihub_models)
+                }
+
+            except Exception as e:
+                logger.error(f"❌ Error getting AI HUB models: {e}")
+                # Возвращаем default модели в случае ошибки
+                return {
+                    "mode": mode,
+                    "models": [
+                        {"name": "vikhr-llm", "size": 0},
+                        {"name": "vikhr-7b", "size": 0}
+                    ],
+                    "count": 2,
+                    "error": str(e)
+                }
+
+        # OpenAI и другие режимы
+        elif mode == "openai":
+            logger.info(f"🔌 Using OpenAI models")
+            openai_models = [
+                {"name": "gpt-4", "size": 0},
+                {"name": "gpt-3.5-turbo", "size": 0},
+                {"name": "gpt-4-turbo", "size": 0}
             ]
-
-            logger.info(f"✅ Returning {len(aihub_models)} AI HUB models")
-
             return {
                 "mode": mode,
-                "models": aihub_models,
-                "count": len(aihub_models)
+                "models": openai_models,
+                "count": len(openai_models)
             }
 
         else:
@@ -67,6 +136,7 @@ async def models_status() -> Dict[str, Any]:
     """Статус доступности моделей"""
     ollama_available = False
     aihub_available = False
+    openai_available = False
 
     try:
         ollama_url = str(settings.EMBEDDINGS_BASEURL).rstrip('/')
@@ -75,15 +145,28 @@ async def models_status() -> Dict[str, Any]:
     except:
         pass
 
-    # ✅ НОВОЕ: проверка доступности AI HUB
+    # ✅ Проверка доступности AI HUB
     try:
-        aihub_available = bool(settings.AIHUB_URL and settings.AIHUB_KEYCLOAK_HOST)
+        aihub_available = bool(settings.AIHUB_URL)
+    except:
+        pass
+
+    # ✅ Проверка OpenAI
+    try:
+        openai_available = bool(settings.OPENAI_API_KEY)
     except:
         pass
 
     return {
-        "ollama": {"available": ollama_available, "url": str(settings.EMBEDDINGS_BASEURL)},
-        "corporate": {"available": aihub_available, "url": settings.AIHUB_URL},
-        # ✅ Изменено с CORPORATE_API_URL на AIHUB_URL
-        "aihub": {"available": aihub_available, "url": settings.AIHUB_URL}  # ✅ Добавлено
+        "ollama": {
+            "available": ollama_available,
+            "url": str(settings.EMBEDDINGS_BASEURL)
+        },
+        "aihub": {
+            "available": aihub_available,
+            "url": settings.AIHUB_URL if hasattr(settings, 'AIHUB_URL') else None
+        },
+        "openai": {
+            "available": openai_available
+        }
     }

@@ -21,17 +21,10 @@ class SettingsManager {
 
             let modelsData;
 
-            // ✅ ИСПРАВЛЕНИЕ: Для aihub используем прямой эндпоинт /models
-            if (selectedMode === 'aihub') {
-                console.log('🌐 Fetching models from AI HUB: /models');
-                const response = await this.apiService.get('/models');
-                modelsData = response;
-            } else {
-                // Для остальных режимов используем /models/list
-                console.log(`🔌 Fetching models from: /models/list?mode=${selectedMode}`);
-                const response = await this.apiService.get(`/models/list?mode=${selectedMode}`);
-                modelsData = response;
-            }
+            // ✅ ИСПРАВЛЕНИЕ: Используем правильный эндпоинт /models/list?mode=...
+            console.log(`🔌 Fetching models from: /models/list?mode=${selectedMode}`);
+            const response = await this.apiService.get(`/models/list?mode=${selectedMode}`);
+            modelsData = response;
 
             console.log('✓ Models response:', modelsData);
 

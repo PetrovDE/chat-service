@@ -1,8 +1,6 @@
 // app/static/js/file-manager.js
 class FileManager {
-    constructor(apiService, uiController, chatManager) {
-        this.apiService = apiService;
-        this.uiController = uiController;
+    constructor(chatManager) {
         this.chatManager = chatManager;
         this.attachedFiles = [];
         console.log('✓ FileManager initialized');
@@ -88,6 +86,28 @@ class FileManager {
         return null;
     }
 
+    getEmbeddingMode() {
+        const modeSelector = document.getElementById('mode-selector');
+        if (modeSelector) {
+            const mode = modeSelector.value;
+            console.log('✓ Using embedding mode:', mode);
+            return mode;
+        }
+        console.warn('⚠️ Mode selector not found, using default: local');
+        return 'local';
+    }
+
+    getEmbeddingModel() {
+        const modelSelector = document.getElementById('model-selector');
+        if (modelSelector && modelSelector.value && modelSelector.value !== '') {
+            const model = modelSelector.value;
+            console.log('✓ Using embedding model:', model);
+            return model;
+        }
+        console.log('ℹ️ No specific model selected, will use default');
+        return null;
+    }
+
     async uploadAndProcess(file) {
         console.log('📤 Uploading file:', file.name);
 
@@ -98,8 +118,18 @@ class FileManager {
             throw new Error('Не удалось определить активный чат. Пожалуйста, откройте или создайте беседу перед загрузкой файла.');
         }
 
+        // Get embedding mode and model
+        const embeddingMode = this.getEmbeddingMode();
+        const embeddingModel = this.getEmbeddingModel();
+
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('conversation_id', conversationId);
+        formData.append('embedding_mode', embeddingMode);
+
+        if (embeddingModel) {
+            formData.append('embedding_model', embeddingModel);
+        }
 
         try {
             // Show loading
@@ -108,10 +138,11 @@ class FileManager {
                 container.style.display = 'block';
                 const list = document.getElementById('attachedFilesList');
                 if (list) {
+                    const modeText = embeddingMode === 'local' ? 'Локальные модели' : 'Корпоративный HUB';
                     list.innerHTML = `
                         <div style="display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 8px; background: #f0f7ff;">
                             <div class="spinner" style="width: 20px; height: 20px; border: 2px solid #e1e5e9; border-top-color: #007bff; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-                            <span>Загрузка и обработка файла...</span>
+                            <span>Загрузка и обработка файла (${modeText})...</span>
                         </div>
                     `;
                 }
@@ -124,9 +155,10 @@ class FileManager {
                 headers['Authorization'] = `Bearer ${token}`;
             }
 
-            // Pass conversation_id as query parameter
-            const uploadUrl = `/api/v1/files/upload?conversation_id=${conversationId}`;
+            const uploadUrl = `/api/v1/files/upload`;
             console.log('📡 Upload URL:', uploadUrl);
+            console.log('📦 Embedding mode:', embeddingMode);
+            console.log('🎯 Embedding model:', embeddingModel || 'default');
 
             const response = await fetch(uploadUrl, {
                 method: 'POST',
@@ -137,19 +169,17 @@ class FileManager {
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
                 console.error('❌ Server error response:', errorData);
-                throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+                throw new Error(errorData.detail || `Upload failed: ${response.status} ${response.statusText}`);
             }
 
             const result = await response.json();
             console.log('✅ File uploaded, status:', result.is_processed);
 
-            // ✅ ИСПРАВЛЕНИЕ: Обработка всех возможных статусов
+            // Handle different processing statuses
             if (result.is_processed === 'pending' || result.is_processed === 'processing') {
-                // Файл загружен, но еще обрабатывается - ждем завершения
                 console.log('⏳ File is processing, waiting for completion...');
-                await this.waitForProcessingComplete(result.file_id, file.name);
+                await this.waitForProcessingComplete(result.file_id, file.name, embeddingMode);
             } else if (result.is_processed === 'completed') {
-                // Файл уже обработан (синхронная обработка)
                 console.log('✅ File already processed');
                 this.attachedFiles.push({
                     id: result.file_id,
@@ -158,13 +188,13 @@ class FileManager {
                     type: file.type
                 });
                 this.renderAttachedFiles();
-                alert(`Файл "${file.name}" успешно загружен и обработан!`);
+                const modeText = embeddingMode === 'local' ? 'локальными моделями' : 'корпоративным HUB';
+                alert(`Файл "${file.name}" успешно загружен и обработан ${modeText}!`);
             } else if (result.is_processed === 'failed') {
                 throw new Error('Файл был загружен, но произошла ошибка при обработке');
             } else {
-                // На всякий случай - ждем обработки
                 console.log(`⚠️ Unknown status '${result.is_processed}', waiting for completion...`);
-                await this.waitForProcessingComplete(result.file_id, file.name);
+                await this.waitForProcessingComplete(result.file_id, file.name, embeddingMode);
             }
 
         } catch (error) {
@@ -178,8 +208,7 @@ class FileManager {
         }
     }
 
-    // ✅ Функция ожидания завершения обработки
-    async waitForProcessingComplete(fileId, fileName) {
+    async waitForProcessingComplete(fileId, fileName, embeddingMode) {
         const maxAttempts = 120; // Максимум 120 попыток (2 минуты)
         let attempts = 0;
 
@@ -203,7 +232,6 @@ class FileManager {
                 console.log(`📊 File status check (attempt ${attempts + 1}/${maxAttempts}): ${fileInfo.is_processed}`);
 
                 if (fileInfo.is_processed === 'completed') {
-                    // ✅ Обработка завершена!
                     console.log('✅ File processing completed!');
                     this.attachedFiles.push({
                         id: fileId,
@@ -212,13 +240,12 @@ class FileManager {
                         type: fileInfo.file_type
                     });
                     this.renderAttachedFiles();
-                    alert(`Файл "${fileName}" успешно загружен и обработан!`);
+                    const modeText = embeddingMode === 'local' ? 'локальными моделями' : 'корпоративным HUB';
+                    alert(`Файл "${fileName}" успешно загружен и обработан ${modeText}!`);
                     return true;
                 } else if (fileInfo.is_processed === 'failed') {
-                    // ❌ Ошибка обработки
                     throw new Error('Ошибка обработки файла на сервере');
                 } else if (fileInfo.is_processed === 'pending' || fileInfo.is_processed === 'processing') {
-                    // ⏳ Еще обрабатывается
                     attempts++;
                     if (attempts >= maxAttempts) {
                         throw new Error('Превышено время ожидания обработки файла (2 минуты)');
@@ -227,7 +254,6 @@ class FileManager {
                     await new Promise(resolve => setTimeout(resolve, 1000));
                     return await checkStatus();
                 } else {
-                    // Неизвестный статус - ждем
                     console.warn(`⚠️ Unknown status: ${fileInfo.is_processed}`);
                     attempts++;
                     if (attempts >= maxAttempts) {

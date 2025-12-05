@@ -124,6 +124,45 @@ class AIHubProvider(BaseLLMProvider):
             "Content-Type": "application/json",
         }
 
+    def _prepare_messages(self, conversation_history: Optional[List[Dict[str, str]]], prompt: str) -> List[Dict[str, str]]:
+        """
+        Подготовить сообщения в формате AI HUB API.
+        Конвертирует 'content' -> 'text' и применяет ограничения API.
+        """
+        messages = []
+        
+        # Добавляем системное сообщение, если есть в истории
+        if conversation_history:
+            for msg in conversation_history:
+                role = msg.get("role", "user")[:20]  # Ограничение: макс 20 символов
+                
+                # ✅ ИСПРАВЛЕНИЕ: конвертируем 'content' в 'text'
+                content = msg.get("content") or msg.get("text", "")
+                text = content[:1000]  # Ограничение: макс 1000 символов
+                
+                if text:  # Пропускаем пустые сообщения
+                    messages.append({
+                        "role": role,
+                        "text": text
+                    })
+        
+        # Добавляем текущий запрос
+        messages.append({
+            "role": "user",
+            "text": prompt[:1000]  # Ограничение: макс 1000 символов
+        })
+        
+        # ✅ Ограничение API: максимум 10 сообщений
+        if len(messages) > 10:
+            logger.warning(f"⚠️ Truncating messages from {len(messages)} to 10 (API limit)")
+            # Оставляем первое (обычно system) и последние 9
+            if messages[0].get("role") == "system":
+                messages = [messages[0]] + messages[-9:]
+            else:
+                messages = messages[-10:]
+        
+        return messages
+
     async def get_available_models(self) -> List[str]:
         """Получить список доступных моделей из AI HUB"""
         try:
@@ -160,14 +199,9 @@ class AIHubProvider(BaseLLMProvider):
             conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> Dict[str, Any]:
         """Генерировать полный ответ через AI HUB (без стриминга)"""
-        messages = []
-
-        # Добавляем историю разговора
-        if conversation_history:
-            messages.extend(conversation_history)
-
-        # Добавляем текущий запрос
-        messages.append({"role": "user", "text": prompt})
+        
+        # ✅ ИСПРАВЛЕНИЕ: используем правильный формат сообщений
+        messages = self._prepare_messages(conversation_history, prompt)
 
         payload = {
             "messages": messages,
@@ -221,14 +255,9 @@ class AIHubProvider(BaseLLMProvider):
             conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> AsyncGenerator[str, None]:
         """Генерировать ответ со стримингом через AI HUB"""
-        messages = []
-
-        # Добавляем историю разговора
-        if conversation_history:
-            messages.extend(conversation_history)
-
-        # Добавляем текущий запрос
-        messages.append({"role": "user", "text": prompt})
+        
+        # ✅ ИСПРАВЛЕНИЕ: используем правильный формат сообщений
+        messages = self._prepare_messages(conversation_history, prompt)
 
         payload = {
             "messages": messages,

@@ -5,6 +5,7 @@ AI HUB LLM Provider
 import logging
 import json
 import base64
+import uuid  # ✅ ДОБАВЛЕНО для генерации traceId
 from typing import Optional, Dict, Any, List, AsyncGenerator
 from datetime import datetime, timedelta
 import httpx
@@ -248,15 +249,22 @@ class AIHubProvider(BaseLLMProvider):
         logger.info(f"  - Embedding Model: {self.embedding_model}")
 
     async def _get_headers(self) -> Dict[str, str]:
-        """Получить заголовки с актуальным токеном"""
+        """Получить заголовки с актуальным токеном и traceId"""
         token = await self.auth_manager.get_token()
         if not token:
             raise Exception("Failed to obtain AI HUB authentication token")
 
-        return {
+        # Генерируем уникальный traceId для каждого запроса
+        trace_id = str(uuid.uuid4())
+
+        headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "traceId": trace_id  # ✅ ДОБАВЛЕНО: обязательный заголовок для AI HUB
         }
+
+        logger.debug(f"📤 Request headers prepared - traceId: {trace_id}")
+        return headers
 
     def _prepare_messages(self, conversation_history: Optional[List[Dict[str, str]]], prompt: str) -> List[Dict[str, str]]:
         """
@@ -304,6 +312,7 @@ class AIHubProvider(BaseLLMProvider):
 
             url = f"{self.base_url}/models"
             logger.info(f"📊 Fetching models from: {url}")
+            logger.debug(f"📊 Request headers: {list(headers.keys())}")
 
             async with httpx.AsyncClient(verify=self.verify_ssl) as client:
                 response = await client.get(
@@ -359,12 +368,16 @@ class AIHubProvider(BaseLLMProvider):
 
             async with httpx.AsyncClient(verify=self.verify_ssl) as client:
                 logger.info(f"📡 Sending request to AI HUB: model={model}")
+                logger.debug(f"📡 Request payload: {json.dumps(payload, ensure_ascii=False)[:200]}...")
+
                 response = await client.post(
                     f"{self.base_url}/models/{model}/chat",
                     headers=headers,
                     json=payload,
                     timeout=self.timeout
                 )
+
+                logger.info(f"📡 Response status: {response.status_code}")
 
                 if response.status_code == 200:
                     data = response.json()
@@ -414,6 +427,7 @@ class AIHubProvider(BaseLLMProvider):
 
             async with httpx.AsyncClient(verify=self.verify_ssl) as client:
                 logger.info(f"📡 Starting AI HUB stream: model={model}")
+                logger.debug(f"📡 Request payload: {json.dumps(payload, ensure_ascii=False)[:200]}...")
 
                 async with client.stream(
                         "POST",

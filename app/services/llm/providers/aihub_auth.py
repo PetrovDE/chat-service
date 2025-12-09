@@ -1,6 +1,6 @@
 """
 AI HUB Authentication Manager
-Модуль для аутентификации через Keycloak
+Модуль для аутентификации через Keycloak (Password Grant с Basic Auth)
 """
 import logging
 import base64
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class AIHubAuthManager:
-    """Менеджер аутентификации для AI HUB через Keycloak"""
+    """Менеджер аутентификации для AI HUB через Keycloak (Password Grant с Basic Auth)"""
 
     def __init__(self):
         self._token: Optional[str] = None
@@ -26,13 +26,6 @@ class AIHubAuthManager:
         self.client_secret = settings.AIHUB_CLIENT_SECRET
         self.verify_ssl = settings.AIHUB_VERIFY_SSL
 
-        # Определяем режим аутентификации
-        self.use_client_credentials = bool(
-            self.client_id and
-            self.client_secret and
-            not (self.username and self.password)
-        )
-
         self._log_config()
 
     def _log_config(self):
@@ -41,25 +34,18 @@ class AIHubAuthManager:
         logger.info("🔑 AI HUB Authentication Configuration")
         logger.info("=" * 60)
         logger.info(f"Keycloak Host: {self.keycloak_host}")
-        logger.info(f"Auth Mode: {'Client Credentials (Basic Auth)' if self.use_client_credentials else 'Password Grant'}")
+        logger.info(f"Auth Mode: Password Grant with Basic Auth")
         logger.info(f"Verify SSL: {self.verify_ssl}")
-
-        if self.use_client_credentials:
-            logger.info(f"Client ID: {self.client_id}")
-            logger.info(f"Client Secret: {'*' * min(8, len(self.client_secret)) if self.client_secret else 'NOT SET'}")
-        else:
-            logger.info(f"Username: {self.username}")
-            logger.info(f"Password: {'*' * min(8, len(self.password)) if self.password else 'NOT SET'}")
-            logger.info(f"Client ID: {self.client_id}")
-            logger.info(f"Client Secret: {'*' * min(8, len(self.client_secret)) if self.client_secret else 'NOT SET'}")
+        logger.info(f"Username: {self.username}")
+        logger.info(f"Password: {'*' * min(8, len(self.password)) if self.password else 'NOT SET'}")
+        logger.info(f"Client ID: {self.client_id}")
+        logger.info(f"Client Secret: {'*' * min(8, len(self.client_secret)) if self.client_secret else 'NOT SET'}")
         logger.info("=" * 60)
 
     async def get_token(self) -> Optional[str]:
         """
-        Получить JWT токен через Keycloak
-        Поддерживает два режима:
-        1. Client Credentials (Basic Auth) - если нет username/password
-        2. Password Grant - если есть учетные данные
+        Получить JWT токен через Keycloak (Password Grant с Basic Auth)
+        Использует кеширование с автоматическим обновлением
         """
         # Проверяем актуальность кешированного токена (с запасом 60 секунд)
         if self._token and self._token_expires_at:
@@ -68,59 +54,34 @@ class AIHubAuthManager:
                 return self._token
 
         # Получаем новый токен
-        if self.use_client_credentials:
-            return await self._get_token_client_credentials()
-        else:
-            return await self._get_token_password_grant()
+        return await self._request_token()
 
-    async def _get_token_client_credentials(self) -> Optional[str]:
-        """Получение токена через Client Credentials flow с Basic Auth"""
-        logger.info("🔑 Requesting new token (Client Credentials with Basic Auth)...")
+    async def _request_token(self) -> Optional[str]:
+        """Запрос токена через Password Grant с Basic Auth в заголовке"""
+        logger.info("🔑 Requesting new token (Password Grant with Basic Auth)...")
 
-        # Кодируем client credentials для Basic Auth
+        # ✅ Кодируем client credentials для Basic Auth
         credentials = f"{self.client_id}:{self.client_secret}"
         encoded_credentials = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
 
+        # ✅ Headers с Basic Auth
         headers = {
             'Authorization': f'Basic {encoded_credentials}',
             'Content-Type': 'application/x-www-form-urlencoded'
         }
 
-        data = {
-            "grant_type": "client_credentials"
-        }
-
-        return await self._request_token(headers, data, "Client Credentials")
-
-    async def _get_token_password_grant(self) -> Optional[str]:
-        """Получение токена через Password Grant flow"""
-        logger.info("🔑 Requesting new token (Password Grant)...")
-
+        # ✅ Data ТОЛЬКО с grant_type, username, password (БЕЗ client_id и client_secret!)
         data = {
             "grant_type": "password",
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
             "username": self.username,
             "password": self.password,
         }
 
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-
-        return await self._request_token(headers, data, "Password Grant")
-
-    async def _request_token(
-            self,
-            headers: dict,
-            data: dict,
-            auth_type: str
-    ) -> Optional[str]:
-        """Общий метод для запроса токена"""
         try:
             async with httpx.AsyncClient(verify=self.verify_ssl) as client:
                 logger.debug(f"🔗 POST {self.keycloak_host}")
-                logger.debug(f"📤 Headers: {list(headers.keys())}")
+                logger.debug(f"📤 Headers: Authorization=Basic {encoded_credentials[:20]}...")
+                logger.debug(f"📤 Data keys: {list(data.keys())}")
 
                 response = await client.post(
                     self.keycloak_host,
@@ -132,7 +93,7 @@ class AIHubAuthManager:
                 logger.info(f"📥 Keycloak response: {response.status_code}")
 
                 if response.status_code == 200:
-                    return self._handle_success_response(response, auth_type)
+                    return self._handle_success_response(response)
                 else:
                     self._handle_error_response(response)
                     return None
@@ -148,7 +109,7 @@ class AIHubAuthManager:
             logger.error(f"❌ Unexpected error: {type(e).__name__}: {e}", exc_info=True)
             return None
 
-    def _handle_success_response(self, response, auth_type: str) -> Optional[str]:
+    def _handle_success_response(self, response) -> Optional[str]:
         """Обработка успешного ответа"""
         try:
             token_info = response.json()
@@ -160,14 +121,19 @@ class AIHubAuthManager:
                 return None
 
             # Вычисляем время истечения токена
-            expires_in = token_info.get("expires_in", 300)
+            expires_in = token_info.get("expires_in", 300)  # По умолчанию 5 минут
             self._token_expires_at = datetime.now() + timedelta(seconds=expires_in)
 
             # Показываем preview токена
             token_preview = self._get_token_preview(self._token)
-            logger.info(f"✅ Token obtained ({auth_type})")
-            logger.info(f"✅ Token preview: {token_preview}")
-            logger.info(f"✅ Expires in: {expires_in}s ({expires_in // 60} min)")
+
+            logger.info("=" * 60)
+            logger.info("✅ Token obtained successfully")
+            logger.info("=" * 60)
+            logger.info(f"Token preview: {token_preview}")
+            logger.info(f"Expires in: {expires_in}s ({expires_in // 60} min)")
+            logger.info(f"Valid until: {self._token_expires_at.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("=" * 60)
 
             return self._token
 
@@ -191,6 +157,12 @@ class AIHubAuthManager:
             logger.error(f"Raw response: {response.text[:500]}")
 
         logger.error("=" * 60)
+
+        # Подсказки по частым ошибкам
+        if response.status_code == 401:
+            logger.error("💡 Hint: Check username, password, or client credentials in Basic Auth")
+        elif response.status_code == 400:
+            logger.error("💡 Hint: Check request format or grant_type parameter")
 
     @staticmethod
     def _get_token_preview(token: str) -> str:

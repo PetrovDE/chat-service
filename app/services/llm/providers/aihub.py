@@ -27,8 +27,8 @@ class AIHubProvider(BaseLLMProvider):
             read=settings.AIHUB_REQUEST_TIMEOUT
         )
         self.verify_ssl = settings.AIHUB_VERIFY_SSL
-        self.default_model = settings.AIHUB_DEFAULT_MODEL
-        self.embedding_model = settings.AIHUB_EMBEDDING_MODEL
+        self.default_model = "vikhr"  # ✅ Дефолтная модель для чата
+        self.embedding_model = "arctic"  # ✅ Дефолтная модель для embedding
         self.auth_manager = AIHubAuthManager()
 
         self._log_config()
@@ -120,8 +120,9 @@ class AIHubProvider(BaseLLMProvider):
 
                 if response.status_code == 200:
                     data = response.json()
-                    models = data.get("models", [])
-                    model_names = [m["id"] for m in models]
+                    # ✅ ИСПРАВЛЕНО: API возвращает список объектов моделей
+                    models = data if isinstance(data, list) else data.get("models", [])
+                    model_names = [m.get("id") if isinstance(m, dict) else m for m in models]
                     logger.info(f"✅ Available models: {model_names}")
                     return model_names
                 else:
@@ -150,7 +151,7 @@ class AIHubProvider(BaseLLMProvider):
             "parameters": {
                 "stream": False,
                 "temperature": temperature,
-                "maxTokens": str(max_tokens),  # ✅ ИСПРАВЛЕНО: строка
+                "maxTokens": str(max_tokens),  # ✅ Строка
                 "reasoningOptions": {"mode": "DISABLED"}
             }
         }
@@ -211,7 +212,7 @@ class AIHubProvider(BaseLLMProvider):
             "parameters": {
                 "stream": True,
                 "temperature": temperature,
-                "maxTokens": str(max_tokens),  # ✅ ИСПРАВЛЕНО: строка
+                "maxTokens": str(max_tokens),  # ✅ Строка
                 "reasoningOptions": {"mode": "DISABLED"}
             }
         }
@@ -318,17 +319,15 @@ class AIHubProvider(BaseLLMProvider):
 
     def _extract_embedding_from_response(self, response_data: dict) -> Optional[Any]:
         """Извлечь embedding из ответа API"""
-        # ✅ ИСПРАВЛЕНО: API всегда возвращает {"embeddings": [[...]]}
+        # ✅ API возвращает {"embeddings": [[...]]}
         if "embeddings" in response_data:
             embeddings = response_data["embeddings"]
             if isinstance(embeddings, list) and len(embeddings) > 0:
-                # Берем первый элемент двумерного массива
                 logger.debug("Found embeddings in 'embeddings' field (2D array)")
                 return embeddings[0]
             logger.error("❌ Embeddings array is empty")
             return None
 
-        # Поддержка альтернативных форматов (на всякий случай)
         elif "embedding" in response_data:
             logger.debug("Found embedding in 'embedding' field")
             return response_data["embedding"]
@@ -346,7 +345,6 @@ class AIHubProvider(BaseLLMProvider):
             embedding_array = np.array(embedding_data)
             logger.debug(f"Raw embedding | shape: {embedding_array.shape}")
 
-            # Проверка размерности
             if embedding_array.ndim == 0:
                 logger.error("❌ Embedding is scalar")
                 return None
@@ -366,7 +364,6 @@ class AIHubProvider(BaseLLMProvider):
                 logger.error(f"❌ Final embedding has {processed.ndim} dimensions")
                 return None
 
-            # Статистика
             unique_values = len(np.unique(processed))
             if unique_values == 1:
                 logger.error("❌ All values are identical!")

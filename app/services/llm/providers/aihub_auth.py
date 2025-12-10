@@ -43,38 +43,59 @@ class AIHubAuthManager:
         logger.info("=" * 60)
 
     async def get_token(self) -> Optional[str]:
-        """
-        Получить JWT токен через Keycloak (Password Grant с Basic Auth)
-        Использует кеширование с автоматическим обновлением
-        """
-        logger.info("🔑 get_token() called")  # ← ДОБАВЛЕНО
+        """Получить JWT токен через Keycloak"""
+        import sys
 
-        # Проверяем актуальность кешированного токена (с запасом 60 секунд)
+        print("=" * 80, file=sys.stderr)
+        print("🔑 get_token() CALLED!", file=sys.stderr)
+        print(f"🔑 Current token: {self._token is not None}", file=sys.stderr)
+        print(f"🔑 Token expires at: {self._token_expires_at}", file=sys.stderr)
+        print("=" * 80, file=sys.stderr)
+
+        logger.info("🔑 get_token() called")
+
+        # Проверяем актуальность кешированного токена
         if self._token and self._token_expires_at:
-            logger.info(f"🔑 Checking cached token... expires_at={self._token_expires_at}")  # ← ДОБАВЛЕНО
+            print(f"🔑 Checking cached token... expires_at={self._token_expires_at}", file=sys.stderr)
+            logger.info(f"🔑 Checking cached token... expires_at={self._token_expires_at}")
+
             if datetime.now() < self._token_expires_at - timedelta(seconds=60):
-                logger.info("🔑 Using cached token")  # ← Сменили на info
+                print("🔑 Using cached token", file=sys.stderr)
+                logger.info("🔑 Using cached token")
                 return self._token
             else:
-                logger.info("🔑 Cached token expired, requesting new one...")  # ← ДОБАВЛЕНО
+                print("🔑 Cached token expired, requesting new one...", file=sys.stderr)
+                logger.info("🔑 Cached token expired, requesting new one...")
         else:
-            logger.info("🔑 No cached token, requesting new one...")  # ← ДОБАВЛЕНО
+            print("🔑 No cached token, requesting new one...", file=sys.stderr)
+            logger.info("🔑 No cached token, requesting new one...")
 
         # Получаем новый токен
-        logger.info("🔑 Calling _request_token()...")  # ← ДОБАВЛЕНО
+        print("🔑 Calling _request_token()...", file=sys.stderr)
+        logger.info("🔑 Calling _request_token()...")
+
         token = await self._request_token()
 
+        print(f"🔑 _request_token() returned: {token is not None}", file=sys.stderr)
         if token:
-            logger.info(f"🔑 _request_token() returned token: {token[:30]}...")  # ← ДОБАВЛЕНО
+            print(f"🔑 Token preview: {token[:30]}...", file=sys.stderr)
+            logger.info(f"🔑 _request_token() returned token: {token[:30]}...")
         else:
-            logger.error("🔑 _request_token() returned None!")  # ← ДОБАВЛЕНО
+            print("🔑 _request_token() returned None!", file=sys.stderr)
+            logger.error("🔑 _request_token() returned None!")
 
         return token
 
     async def _request_token(self) -> Optional[str]:
-        """Запрос токена через Password Grant с Basic Auth в заголовке"""
+        """Запрос токена через Password Grant с Basic Auth"""
+        import sys
+
+        print("=" * 80, file=sys.stderr)
+        print("🔑 _request_token() STARTED!", file=sys.stderr)
+        print("=" * 80, file=sys.stderr)
+
         logger.info("=" * 80)
-        logger.info("🔑 _request_token() STARTED")  # ← ИЗМЕНЕНО
+        logger.info("🔑 _request_token() STARTED")
         logger.info("=" * 80)
 
         # ✅ Кодируем client credentials для Basic Auth

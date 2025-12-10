@@ -47,30 +47,46 @@ class AIHubProvider(BaseLLMProvider):
 
     async def _get_headers(self) -> Dict[str, str]:
         """Получить заголовки с актуальным токеном и traceId"""
+        import sys
+
+        print("=" * 80, file=sys.stderr)
+        print("🔑 _get_headers() CALLED!", file=sys.stderr)
+        print("=" * 80, file=sys.stderr)
+
         logger.info("=" * 80)
         logger.info("🔑 _get_headers() called - requesting token...")
         logger.info("=" * 80)
 
-        token = await self.auth_manager.get_token()
+        try:
+            print("🔑 About to call auth_manager.get_token()...", file=sys.stderr)
+            token = await self.auth_manager.get_token()
+            print(f"🔑 get_token() returned: {token is not None}", file=sys.stderr)
 
-        if not token:
-            logger.error("❌ CRITICAL: Failed to obtain AI HUB authentication token!")
-            raise Exception("Failed to obtain AI HUB authentication token")
+            if not token:
+                print("❌ CRITICAL: No token returned!", file=sys.stderr)
+                logger.error("❌ CRITICAL: Failed to obtain AI HUB authentication token!")
+                raise Exception("Failed to obtain AI HUB authentication token")
 
-        logger.info(f"✅ Token obtained in _get_headers(): {token[:30]}...{token[-10:]}")
+            print(f"✅ Token obtained: {token[:30]}...", file=sys.stderr)
+            logger.info(f"✅ Token obtained in _get_headers(): {token[:30]}...{token[-10:]}")
 
-        # Генерируем уникальный traceId для каждого запроса
-        trace_id = str(uuid.uuid4())
+            # Генерируем уникальный traceId для каждого запроса
+            trace_id = str(uuid.uuid4())
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "traceId": trace_id
-        }
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "traceId": trace_id
+            }
 
-        logger.info(f"📤 Headers prepared | traceId: {trace_id}")
-        logger.info("=" * 80)
-        return headers
+            logger.info(f"📤 Headers prepared | traceId: {trace_id}")
+            logger.info("=" * 80)
+            return headers
+
+        except Exception as e:
+            print(f"❌ EXCEPTION in _get_headers: {type(e).__name__}: {e}", file=sys.stderr)
+            logger.error(f"❌ EXCEPTION in _get_headers: {type(e).__name__}: {e}", exc_info=True)
+            raise
 
     def _prepare_messages(
             self,

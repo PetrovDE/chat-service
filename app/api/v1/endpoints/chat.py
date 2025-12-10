@@ -102,7 +102,8 @@ async def chat_stream(
                     chat_data.message,
                     top_k=3,
                     user_id=str(user_id) if user_id else None,
-                    conversation_id=str(conversation_id)  # ✅ Добавлен conversation_id
+                    conversation_id=str(conversation_id),
+                    model_source = chat_data.model_source
                 )
 
                 if context_docs:
@@ -283,7 +284,8 @@ async def chat(
                     chat_data.message,
                     top_k=3,
                     user_id=str(user_id) if user_id else None,
-                    conversation_id=str(conversation_id)  # ✅ Добавлен conversation_id
+                    conversation_id=str(conversation_id),
+                    model_source=chat_data.model_source
                 )
 
                 if context_docs:

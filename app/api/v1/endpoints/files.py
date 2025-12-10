@@ -430,18 +430,23 @@ async def delete_file(
 
 async def delete_file_from_chroma(file_id: str):
     """Delete all embeddings for a file from ChromaDB"""
-    try:
-        from app.rag.vector_store import VectorStoreManager
-        vector_store = VectorStoreManager()
-        # Удаляем по фильтру метаданных
-        vector_store.collection.delete(
-            where={"file_id": file_id}
+try:
+        from app.rag.vector_store import vectorstore_manager
+        
+        logger.info(f"🗑️ Deleting ChromaDB embeddings for file: {file_id}")
+        
+        # Удаляем по фильтру метаданных из всех коллекций
+        deleted_count = vectorstore_manager.delete_by_metadata(
+            filter_dict={"file_id": file_id}
         )
-        logger.info(f"✅ Successfully deleted ChromaDB embeddings for file: {file_id}")
+        
+        logger.info(f"✅ Successfully deleted {deleted_count} embeddings for file: {file_id}")
+        
+        return deleted_count
+        
     except Exception as e:
-        logger.error(f"❌ Error deleting from ChromaDB: {e}")
+        logger.error(f"❌ Error deleting from ChromaDB: {e}", exc_info=True)
         raise
-
 
 async def delete_file_from_postgres(db: AsyncSession, file_id: str):
     """Delete all embeddings for a file from PostgreSQL"""

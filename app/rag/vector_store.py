@@ -504,5 +504,140 @@ class VectorStoreManager:
         return stats
 
 
+
+    def delete_by_metadata(
+        self, 
+        filter_dict: Dict[str, Any],
+        dimension: Optional[int] = None
+    ) -> int:
+        """
+        Удаляет документы по фильтру метаданных
+        
+        Args:
+            filter_dict: Фильтр для поиска документов (формат ChromaDB where)
+            dimension: Если указана, удаляет только из коллекции этой размерности.
+                      Если None, пытается удалить из всех коллекций.
+        
+        Returns:
+            Количество удаленных документов
+        """
+        total_deleted = 0
+        
+        if dimension:
+            # Удаление из конкретной коллекции
+            collection_name = self._get_collection_name(dimension)
+            try:
+                collection = self.client.get_collection(collection_name)
+                
+                # Сначала находим документы
+                results = collection.get(where=filter_dict)
+                
+                if results and results.get('ids'):
+                    ids_to_delete = results['ids']
+                    collection.delete(ids=ids_to_delete)
+                    total_deleted = len(ids_to_delete)
+                    logger.info(
+                        f"✅ Deleted {total_deleted} documents from {collection_name} "
+                        f"with filter: {filter_dict}"
+                    )
+                else:
+                    logger.info(f"ℹ️ No documents found in {collection_name} with filter: {filter_dict}")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Could not delete from collection {collection_name}: {e}")
+        else:
+            # Удаление из всех коллекций этого базового имени
+            logger.info(f"🗑️ Deleting from all collections with filter: {filter_dict}")
+            
+            collections = self.client.list_collections()
+            
+            for collection_obj in collections:
+                if not collection_obj.name.startswith(self.base_collection_name):
+                    continue
+                
+                try:
+                    # Находим документы
+                    results = collection_obj.get(where=filter_dict)
+                    
+                    if results and results.get('ids'):
+                        ids_to_delete = results['ids']
+                        collection_obj.delete(ids=ids_to_delete)
+                        deleted_count = len(ids_to_delete)
+                        total_deleted += deleted_count
+                        logger.info(
+                            f"   ✅ Deleted {deleted_count} documents from {collection_obj.name}"
+                        )
+                        
+                except Exception as e:
+                    logger.warning(f"   ⚠️ Failed to delete from {collection_obj.name}: {e}")
+                    continue
+            
+            logger.info(f"✅ Total deleted: {total_deleted} documents")
+        
+        return total_deleted
+
+    def delete_by_ids(
+        self,
+        document_ids: List[str],
+        dimension: Optional[int] = None
+    ) -> int:
+        """
+        Удаляет документы по списку ID
+        
+        Args:
+            document_ids: Список ID документов для удаления
+            dimension: Если указана, удаляет только из коллекции этой размерности.
+        
+        Returns:
+            Количество удаленных документов
+        """
+        if not document_ids:
+            logger.warning("⚠️ Empty document_ids list provided")
+            return 0
+        
+        total_deleted = 0
+        
+        if dimension:
+            # Удаление из конкретной коллекции
+            collection_name = self._get_collection_name(dimension)
+            try:
+                collection = self.client.get_collection(collection_name)
+                collection.delete(ids=document_ids)
+                total_deleted = len(document_ids)
+                logger.info(f"✅ Deleted {total_deleted} documents from {collection_name}")
+            except Exception as e:
+                logger.error(f"❌ Failed to delete from {collection_name}: {e}")
+                raise
+        else:
+            # Удаление из всех коллекций
+            logger.info(f"🗑️ Deleting {len(document_ids)} IDs from all collections")
+            
+            collections = self.client.list_collections()
+            
+            for collection_obj in collections:
+                if not collection_obj.name.startswith(self.base_collection_name):
+                    continue
+                
+                try:
+                    # Проверяем, какие ID существуют в этой коллекции
+                    results = collection_obj.get(ids=document_ids)
+                    
+                    if results and results.get('ids'):
+                        existing_ids = results['ids']
+                        collection_obj.delete(ids=existing_ids)
+                        deleted_count = len(existing_ids)
+                        total_deleted += deleted_count
+                        logger.info(
+                            f"   ✅ Deleted {deleted_count} documents from {collection_obj.name}"
+                        )
+                        
+                except Exception as e:
+                    logger.warning(f"   ⚠️ Failed to delete from {collection_obj.name}: {e}")
+                    continue
+            
+            logger.info(f"✅ Total deleted: {total_deleted} documents")
+        
+        return total_deleted
+
 # Singleton instance
 vectorstore_manager = VectorStoreManager()

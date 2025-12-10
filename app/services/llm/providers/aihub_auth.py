@@ -47,18 +47,35 @@ class AIHubAuthManager:
         Получить JWT токен через Keycloak (Password Grant с Basic Auth)
         Использует кеширование с автоматическим обновлением
         """
+        logger.info("🔑 get_token() called")  # ← ДОБАВЛЕНО
+
         # Проверяем актуальность кешированного токена (с запасом 60 секунд)
         if self._token and self._token_expires_at:
+            logger.info(f"🔑 Checking cached token... expires_at={self._token_expires_at}")  # ← ДОБАВЛЕНО
             if datetime.now() < self._token_expires_at - timedelta(seconds=60):
-                logger.debug("🔑 Using cached token")
+                logger.info("🔑 Using cached token")  # ← Сменили на info
                 return self._token
+            else:
+                logger.info("🔑 Cached token expired, requesting new one...")  # ← ДОБАВЛЕНО
+        else:
+            logger.info("🔑 No cached token, requesting new one...")  # ← ДОБАВЛЕНО
 
         # Получаем новый токен
-        return await self._request_token()
+        logger.info("🔑 Calling _request_token()...")  # ← ДОБАВЛЕНО
+        token = await self._request_token()
+
+        if token:
+            logger.info(f"🔑 _request_token() returned token: {token[:30]}...")  # ← ДОБАВЛЕНО
+        else:
+            logger.error("🔑 _request_token() returned None!")  # ← ДОБАВЛЕНО
+
+        return token
 
     async def _request_token(self) -> Optional[str]:
         """Запрос токена через Password Grant с Basic Auth в заголовке"""
-        logger.info("🔑 Requesting new token (Password Grant with Basic Auth)...")
+        logger.info("=" * 80)
+        logger.info("🔑 _request_token() STARTED")  # ← ИЗМЕНЕНО
+        logger.info("=" * 80)
 
         # ✅ Кодируем client credentials для Basic Auth
         credentials = f"{self.client_id}:{self.client_secret}"
@@ -70,7 +87,7 @@ class AIHubAuthManager:
             'Content-Type': 'application/x-www-form-urlencoded'
         }
 
-        # ✅ Data ТОЛЬКО с grant_type, username, password (БЕЗ client_id и client_secret!)
+        # ✅ Data ТОЛЬКО с grant_type, username, password
         data = {
             "grant_type": "password",
             "username": self.username,
@@ -78,10 +95,13 @@ class AIHubAuthManager:
         }
 
         try:
+            logger.info(f"🔗 POST {self.keycloak_host}")
+            logger.info(f"📤 Headers: Authorization=Basic {encoded_credentials[:20]}...")
+            logger.info(f"📤 Data keys: {list(data.keys())}")
+            logger.info(f"🔒 SSL Verify: {self.verify_ssl}")
+
             async with httpx.AsyncClient(verify=self.verify_ssl) as client:
-                logger.debug(f"🔗 POST {self.keycloak_host}")
-                logger.debug(f"📤 Headers: Authorization=Basic {encoded_credentials[:20]}...")
-                logger.debug(f"📤 Data keys: {list(data.keys())}")
+                logger.info("📡 Sending POST to Keycloak...")
 
                 response = await client.post(
                     self.keycloak_host,
@@ -93,8 +113,10 @@ class AIHubAuthManager:
                 logger.info(f"📥 Keycloak response: {response.status_code}")
 
                 if response.status_code == 200:
+                    logger.info("✅ Got 200 OK, parsing response...")
                     return self._handle_success_response(response)
                 else:
+                    logger.error(f"❌ Got {response.status_code}, handling error...")
                     self._handle_error_response(response)
                     return None
 

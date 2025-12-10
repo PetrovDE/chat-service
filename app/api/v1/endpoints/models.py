@@ -4,6 +4,7 @@ from typing import Dict, Any, List
 import requests
 import logging
 from app.core.config import settings
+from app.services.llm.manager import llm_manager  # ← ДОБАВИТЬ
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -46,51 +47,21 @@ async def list_models(mode: str = "local") -> Dict[str, Any]:
             logger.info(f"🏢 Querying AI HUB for models")
 
             try:
-                aihub_url = getattr(settings, 'AIHUB_URL', None)
+                # ✅ ИСПРАВЛЕНО: используем llm_manager для получения моделей
+                logger.info("📡 Using llm_manager to get AI HUB models...")
 
-                if not aihub_url:
-                    logger.warning("⚠️ AIHUB_URL not configured, returning default models")
-                    aihub_models = [
-                        {"name": "vikhr-llm", "size": 0},
-                        {"name": "vikhr-7b", "size": 0}
-                    ]
+                models_list = await llm_manager.get_available_models(source="aihub")
+
+                if models_list:
+                    aihub_models = [{"name": model, "size": 0} for model in models_list]
+                    logger.info(f"✅ Got {len(aihub_models)} models from AI HUB via llm_manager")
                 else:
-                    try:
-                        # Пытаемся получить реальные модели из AI HUB
-                        headers = {}
+                    logger.warning("⚠️ No models returned from AI HUB, using defaults")
+                    aihub_models = [
+                        {"name": "vikhr", "size": 0},
+                        {"name": "gpt-4", "size": 0}
+                    ]
 
-                        aihub_token = getattr(settings, 'AIHUB_CLIENT_ID', None)
-                        if aihub_token:
-                            headers['Authorization'] = f'Bearer {aihub_token}'
-
-                        response = requests.get(
-                            f"{aihub_url}/models",
-                            headers=headers,
-                            timeout=5,
-                            verify=getattr(settings, 'AIHUB_VERIFY_SSL', False)
-                        )
-                        response.raise_for_status()
-
-                        data = response.json()
-                        # Обрабатываем ответ в зависимости от формата
-                        if isinstance(data, list):
-                            aihub_models = data
-                        elif isinstance(data, dict) and 'models' in data:
-                            aihub_models = data['models']
-                        elif isinstance(data, dict) and 'data' in data:
-                            aihub_models = data['data']
-                        else:
-                            logger.warning(f"⚠️ Unexpected AI HUB response format: {data}")
-                            aihub_models = []
-
-                    except requests.exceptions.RequestException as e:
-                        logger.warning(f"⚠️ Could not fetch from AI HUB API: {e}, using defaults")
-                        aihub_models = [
-                            {"name": "vikhr-llm", "size": 0},
-                            {"name": "vikhr-7b", "size": 0}
-                        ]
-
-                logger.info(f"✅ Returning {len(aihub_models)} AI HUB models")
                 return {
                     "mode": mode,
                     "models": aihub_models,
@@ -98,13 +69,13 @@ async def list_models(mode: str = "local") -> Dict[str, Any]:
                 }
 
             except Exception as e:
-                logger.error(f"❌ Error getting AI HUB models: {e}")
+                logger.error(f"❌ Error getting AI HUB models: {e}", exc_info=True)
                 # Возвращаем default модели в случае ошибки
                 return {
                     "mode": mode,
                     "models": [
-                        {"name": "vikhr-llm", "size": 0},
-                        {"name": "vikhr-7b", "size": 0}
+                        {"name": "vikhr", "size": 0},
+                        {"name": "gpt-4", "size": 0}
                     ],
                     "count": 2,
                     "error": str(e)
@@ -129,7 +100,7 @@ async def list_models(mode: str = "local") -> Dict[str, Any]:
             return {"mode": mode, "models": [], "count": 0}
 
     except Exception as e:
-        logger.error(f"❌ Error getting models: {e}")
+        logger.error(f"❌ Error getting models: {e}", exc_info=True)
         return {"mode": mode, "models": [], "count": 0, "error": str(e)}
 
 
@@ -147,7 +118,7 @@ async def models_status() -> Dict[str, Any]:
     except:
         pass
 
-    # ✅ Проверка доступности AI HUB (используем getattr для безопасности)
+    # ✅ Проверка доступности AI HUB
     try:
         aihub_url = getattr(settings, 'AIHUB_URL', None)
         aihub_available = bool(aihub_url)

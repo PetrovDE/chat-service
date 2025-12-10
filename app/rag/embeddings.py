@@ -127,7 +127,11 @@ class EmbeddingsManager:
             logger.warning("⚠️ Empty texts list provided")
             return []
 
-        logger.info(f"🔮 Generating embeddings for {len(texts)} texts using {self.original_mode}")
+        # Определяем модель для эмбеддингов
+        # Для AI HUB всегда используем "arctic", для остальных - текущую модель
+        embedding_model = "arctic" if self.mode == "aihub" else self.model
+
+        logger.info(f"🔮 Generating embeddings for {len(texts)} texts using {self.original_mode}, model: {embedding_model}")
 
         all_embeddings = []
 
@@ -139,7 +143,7 @@ class EmbeddingsManager:
                 embedding = await llm_manager.generate_embedding(
                     text=text,
                     model_source=self.mode,  # Используем внутреннее имя (aihub)
-                    model_name=self.model
+                    model_name=embedding_model  # Для aihub всегда "arctic"
                 )
 
                 if not embedding or len(embedding) == 0:

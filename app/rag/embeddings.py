@@ -17,6 +17,12 @@ class EmbeddingsManager:
     Поддерживает: local (Ollama), corporate/aihub (AI HUB)
     """
 
+    # Маппинг режимов на размерности эмбеддингов
+    DEFAULT_DIMENSIONS = {
+        "local": 4096,  # По умолчанию для Ollama
+        "aihub": 1024,  # arctic модель
+    }
+
     def __init__(
         self,
         mode: str = "local",
@@ -48,7 +54,10 @@ class EmbeddingsManager:
         self.keycloak_token = keycloak_token or settings.CORPORATE_API_TOKEN
         self.system_user = system_user or settings.CORPORATE_API_USERNAME
 
-        logger.info(f"🚀 EmbeddingsManager initialized: mode={self.original_mode} (internal: {self.mode}), model={self.model}")
+        logger.info(
+            f"🚀 EmbeddingsManager initialized: mode={self.original_mode} "
+            f"(internal: {self.mode}), model={self.model}"
+        )
 
     def switch_mode(self, mode: str):
         """
@@ -83,6 +92,15 @@ class EmbeddingsManager:
         except Exception as e:
             logger.error(f"❌ Failed to get available models: {e}")
             return []
+
+    def get_embedding_dimension(self) -> int:
+        """
+        Получить ожидаемую размерность эмбеддингов для текущего режима
+
+        Returns:
+            Размерность вектора эмбеддинга
+        """
+        return self.DEFAULT_DIMENSIONS.get(self.mode, 1024)
 
     def embedd_documents(self, texts: List[str]) -> List[List[float]]:
         """
@@ -130,8 +148,12 @@ class EmbeddingsManager:
         # Определяем модель для эмбеддингов
         # Для AI HUB всегда используем "arctic", для остальных - текущую модель
         embedding_model = "arctic" if self.mode == "aihub" else self.model
+        expected_dim = self.get_embedding_dimension()
 
-        logger.info(f"🔮 Generating embeddings for {len(texts)} texts using {self.original_mode}, model: {embedding_model}")
+        logger.info(
+            f"🔮 Generating embeddings for {len(texts)} texts using {self.original_mode}, "
+            f"model: {embedding_model}, expected dimension: {expected_dim}"
+        )
 
         all_embeddings = []
 
@@ -150,14 +172,25 @@ class EmbeddingsManager:
                     logger.error(f"❌ Empty embedding returned for text {idx+1}")
                     raise RuntimeError(f"Empty embedding returned for text {idx+1}")
 
+                # Проверка размерности
+                actual_dim = len(embedding)
+                if actual_dim != expected_dim:
+                    logger.warning(
+                        f"⚠️ Unexpected embedding dimension: expected {expected_dim}, "
+                        f"got {actual_dim} for text {idx+1}"
+                    )
+
                 all_embeddings.append(embedding)
-                logger.debug(f"✅ Embedding {idx+1} received: {len(embedding)} dimensions")
+                logger.debug(f"✅ Embedding {idx+1} received: {actual_dim} dimensions")
 
             except Exception as e:
                 logger.error(f"❌ Failed to generate embedding for text {idx+1}: {e}")
                 raise RuntimeError(f"Embedding generation failed for text {idx+1}: {e}")
 
-        logger.info(f"✅ Generated {len(all_embeddings)} embeddings successfully")
+        logger.info(
+            f"✅ Generated {len(all_embeddings)} embeddings successfully "
+            f"(dimension: {len(all_embeddings[0]) if all_embeddings else 'N/A'})"
+        )
         return all_embeddings
 
 

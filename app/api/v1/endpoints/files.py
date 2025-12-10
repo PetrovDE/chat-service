@@ -444,9 +444,6 @@ try:
         
         return deleted_count
         
-    except Exception as e:
-        logger.error(f"❌ Error deleting from ChromaDB: {e}", exc_info=True)
-        raise
 
 async def delete_file_from_postgres(db: AsyncSession, file_id: str):
     """Delete all embeddings for a file from PostgreSQL"""

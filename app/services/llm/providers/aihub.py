@@ -235,7 +235,7 @@ class AIHubProvider(BaseLLMProvider):
         payload = {
             "messages": messages,
             "parameters": {
-                "stream": True,
+                "stream": False,
                 "temperature": temperature,
                 "maxTokens": str(max_tokens),  # ✅ Строка
                 "reasoningOptions": {"mode": "DISABLED"}

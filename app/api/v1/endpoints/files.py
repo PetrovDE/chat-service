@@ -375,6 +375,28 @@ async def get_file(
 
 
 @router.delete("/{file_id}")
+
+async def delete_file_from_chroma(file_id: str) -> int:
+    """Удаляет эмбеддинги файла из ChromaDB"""
+    try:
+        from app.rag.vector_store import vectorstore_manager
+        deleted = vectorstore_manager.delete_by_metadata({"file_id": file_id})
+        logger.info(f"✅ Deleted {deleted} embeddings from ChromaDB for file {file_id}")
+        return deleted
+    except Exception as e:
+        logger.error(f"❌ Error deleting from ChromaDB: {e}", exc_info=True)
+        return 0
+
+
+async def delete_file_from_postgres(db: AsyncSession, file_id: str) -> None:
+    """Удаляет эмбеддинги файла из PostgreSQL"""
+    try:
+        await delete_file_from_postgres(db, str(file_id))
+        logger.info(f"✅ Deleted embeddings from PostgreSQL for file {file_id}")
+    except Exception as e:
+        logger.warning(f"⚠️ Error deleting from PostgreSQL: {e}")
+
+
 async def delete_file(
         file_id: UUID,
         db: AsyncSession = Depends(get_db),

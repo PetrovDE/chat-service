@@ -53,7 +53,7 @@ class RAGRetriever:
         )
 
         # Генерируем эмбеддинги
-        embeddings = embeddings_manager.embedd_documents([doc.page_content for doc in chunk_docs])
+        embeddings = await embeddings_manager.embedd_documents_async([doc.page_content for doc in chunk_docs])
 
         # Сохраняем информацию о модели в метаданных для каждого чанка
         for doc, emb in zip(chunk_docs, embeddings):
@@ -81,7 +81,7 @@ class RAGRetriever:
             "embedding_mode": embeddings_manager.original_mode
         }
 
-    def query_rag(
+    async def query_rag(
             self,
             query_content: str,
             top_k: int = 5,
@@ -121,7 +121,7 @@ class RAGRetriever:
                 f"expected_dim={expected_dim}"
             )
 
-            embedding_query = embeddings_manager.embedd_documents([query_content])[0]
+            embedding_query = (await embeddings_manager.embedd_documents_async([query_content]))[0]
             actual_dim = len(embedding_query)
 
             logger.info(

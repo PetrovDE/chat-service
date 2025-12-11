@@ -98,7 +98,7 @@ async def chat_stream(
             try:
                 logger.info("🤖 Retrieving RAG context for current conversation...")
                 # ✅ ИСПРАВЛЕНИЕ: передаем conversation_id для фильтрации
-                context_docs = rag_retriever.query_rag(
+                context_docs = await rag_retriever.query_rag(
                     chat_data.message,
                     top_k=3,
                     user_id=str(user_id) if user_id else None,
@@ -280,7 +280,7 @@ async def chat(
         if conversation_files and any(f.is_processed == "completed" for f in conversation_files):
             try:
                 # ✅ ИСПРАВЛЕНИЕ: передаем conversation_id для фильтрации
-                context_docs = rag_retriever.query_rag(
+                context_docs = await rag_retriever.query_rag(
                     chat_data.message,
                     top_k=3,
                     user_id=str(user_id) if user_id else None,

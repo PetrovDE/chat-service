@@ -21,10 +21,11 @@ class AIHubProvider(BaseLLMProvider):
 
     def __init__(self):
         self.base_url = settings.AIHUB_URL.rstrip('/')
+        # ✅ ИСПРАВЛЕНО: Увеличен таймаут до 120 секунд (2 минуты)
         self.timeout = httpx.Timeout(
-            settings.AIHUB_REQUEST_TIMEOUT,
-            connect=10.0,
-            read=settings.AIHUB_REQUEST_TIMEOUT
+            120.0,  # 2 минуты общий таймаут
+            connect=10.0,  # 10 секунд на подключение
+            read=120.0  # 2 минуты на чтение ответа
         )
         self.verify_ssl = settings.AIHUB_VERIFY_SSL
         self.default_model = "vikhr"  # ✅ Дефолтная модель для чата
@@ -40,7 +41,7 @@ class AIHubProvider(BaseLLMProvider):
         logger.info("=" * 60)
         logger.info(f"Base URL: {self.base_url}")
         logger.info(f"Verify SSL: {self.verify_ssl}")
-        logger.info(f"Request Timeout: {settings.AIHUB_REQUEST_TIMEOUT}s")
+        logger.info(f"Request Timeout: 120s (2 minutes)")
         logger.info(f"Default Model: {self.default_model}")
         logger.info(f"Embedding Model: {self.embedding_model}")
         logger.info("=" * 60)
@@ -228,16 +229,19 @@ class AIHubProvider(BaseLLMProvider):
             max_tokens: int = 2000,
             conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> AsyncGenerator[str, None]:
-        """Генерировать ответ со стримингом через AI HUB"""
+        """
+        ✅ ИСПРАВЛЕНО: Генерировать ответ БЕЗ стриминга через AI HUB
+        AI HUB не поддерживает streaming, поэтому получаем полный ответ и возвращаем его как один chunk
+        """
 
         messages = self._prepare_messages(conversation_history, prompt)
 
         payload = {
             "messages": messages,
             "parameters": {
-                "stream": False,
+                "stream": False,  # ✅ Явно отключаем stream
                 "temperature": temperature,
-                "maxTokens": str(max_tokens),  # ✅ Строка
+                "maxTokens": str(max_tokens),
                 "reasoningOptions": {"mode": "DISABLED"}
             }
         }
@@ -246,38 +250,46 @@ class AIHubProvider(BaseLLMProvider):
             headers = await self._get_headers()
             url = f"{self.base_url}/models/{model}/chat"
 
-            logger.info(f"📡 Starting stream | model: {model}")
+            logger.info(f"📡 Starting chat request (non-stream) | model: {model}")
+            logger.debug(f"Payload: {json.dumps(payload, ensure_ascii=False)[:200]}...")
 
+            # ✅ ИСПРАВЛЕНО: Используем обычный POST вместо stream
             async with httpx.AsyncClient(verify=self.verify_ssl) as client:
-                async with client.stream(
-                        "POST",
-                        url,
-                        headers=headers,
-                        json=payload,
-                        timeout=self.timeout
-                ) as response:
-                    response.raise_for_status()
+                response = await client.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout
+                )
 
-                    async for line in response.aiter_lines():
-                        if line:
-                            try:
-                                data = json.loads(line)
-                                if "message" in data and "text" in data["message"]:
-                                    content = data["message"]["text"]
-                                    if content:
-                                        yield content
-                            except json.JSONDecodeError as e:
-                                logger.warning(f"⚠️ JSON decode error: {e}")
-                                continue
+                logger.info(f"📥 Response: {response.status_code}")
 
-                    logger.info("✅ Stream completed")
+                if response.status_code == 200:
+                    data = response.json()
+                    message_data = data.get("message", {})
+                    content = message_data.get("text", "")
 
+                    if content:
+                        # ✅ Возвращаем весь ответ как единый chunk
+                        logger.info(f"✅ Chat completed | length: {len(content)} chars")
+                        yield content
+                    else:
+                        logger.warning("⚠️ Empty response from AI HUB")
+                else:
+                    error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
+                    logger.error(f"❌ Chat error: {error_msg}")
+                    raise Exception(f"AI HUB error: {error_msg}")
+
+        except httpx.TimeoutException as e:
+            error_msg = f"Request timeout after 120 seconds"
+            logger.error(f"❌ {error_msg}")
+            raise Exception(error_msg)
         except httpx.HTTPStatusError as e:
             error_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
             logger.error(f"❌ Streaming error: {error_msg}")
             raise Exception(error_msg)
         except Exception as e:
-            logger.error(f"❌ Streaming error: {type(e).__name__}: {e}")
+            logger.error(f"❌ Streaming error: {type(e).__name__}: {e}", exc_info=True)
             raise
 
     async def generate_embedding(

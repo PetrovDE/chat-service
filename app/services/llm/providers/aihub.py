@@ -25,7 +25,8 @@ class AIHubProvider(BaseLLMProvider):
         self.timeout = httpx.Timeout(
             300.0,  # 5 минут общий таймаут            
             connect=10.0,  # 10 секунд на подключение
-            read=300.0  # 5 минут на чтение ответа        )
+            read=300.0  # 5 минут на чтение ответа        
+        )
         self.verify_ssl = settings.AIHUB_VERIFY_SSL
         self.default_model = "vikhr"  # ✅ Дефолтная модель для чата
         self.embedding_model = "arctic"  # ✅ Дефолтная модель для embedding

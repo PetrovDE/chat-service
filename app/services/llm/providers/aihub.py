@@ -23,7 +23,8 @@ class AIHubProvider(BaseLLMProvider):
         self.base_url = settings.AIHUB_URL.rstrip('/')
         # ✅ ИСПРАВЛЕНО: Увеличен таймаут до 120 секунд (2 минуты)
         self.timeout = httpx.Timeout(
-            300.0,  # 5 минут общий таймаут            connect=10.0,  # 10 секунд на подключение
+            300.0,  # 5 минут общий таймаут            
+            connect=10.0,  # 10 секунд на подключение
             read=300.0  # 5 минут на чтение ответа        )
         self.verify_ssl = settings.AIHUB_VERIFY_SSL
         self.default_model = "vikhr"  # ✅ Дефолтная модель для чата
@@ -39,7 +40,8 @@ class AIHubProvider(BaseLLMProvider):
         logger.info("=" * 60)
         logger.info(f"Base URL: {self.base_url}")
         logger.info(f"Verify SSL: {self.verify_ssl}")
-        logger.info(f"Request Timeout: 300s (5 minutes)")        logger.info(f"Default Model: {self.default_model}")
+        logger.info(f"Request Timeout: 300s (5 minutes)")        
+        logger.info(f"Default Model: {self.default_model}")
         logger.info(f"Embedding Model: {self.embedding_model}")
         logger.info("=" * 60)
 
@@ -278,7 +280,8 @@ class AIHubProvider(BaseLLMProvider):
                     raise Exception(f"AI HUB error: {error_msg}")
 
         except httpx.TimeoutException as e:
-            error_msg = f"Request timeout after 300 seconds"            logger.error(f"❌ {error_msg}")
+            error_msg = f"Request timeout after 300 seconds"            
+            logger.error(f"❌ {error_msg}")
             raise Exception(error_msg)
         except httpx.HTTPStatusError as e:
             error_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"

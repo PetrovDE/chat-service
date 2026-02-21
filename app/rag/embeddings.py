@@ -19,7 +19,7 @@ class EmbeddingsManager:
 
     # Маппинг режимов на размерности эмбеддингов
     DEFAULT_DIMENSIONS = {
-        "local": 4096,  # По умолчанию для Ollama
+        "local": 0,  # FIX: dimension is model-specific; 0 = auto (no strict check)
         "aihub": 1024,  # arctic модель
     }
 
@@ -45,7 +45,7 @@ class EmbeddingsManager:
         """
         # Нормализация режима: corporate -> aihub (для внутреннего использования)
         self.mode = "aihub" if mode == "corporate" else mode
-        self.original_mode = mode  # Сохраняем оригинальное название
+        self.original_mode = mode
         self.model = model
 
         # Для обратной совместимости со старым кодом
@@ -60,12 +60,7 @@ class EmbeddingsManager:
         )
 
     def switch_mode(self, mode: str):
-        """
-        Переключить режим работы
-
-        Args:
-            mode: Новый режим ('local' или 'corporate')
-        """
+        """Переключить режим работы"""
         if mode not in ["local", "corporate", "aihub"]:
             raise ValueError(f"Incorrect mode: must be 'local' or 'corporate', got '{mode}'")
 
@@ -96,32 +91,19 @@ class EmbeddingsManager:
     def get_embedding_dimension(self) -> int:
         """
         Получить ожидаемую размерность эмбеддингов для текущего режима
-
-        Returns:
-            Размерность вектора эмбеддинга
+        0 = не проверяем строго (auto)
         """
-        return self.DEFAULT_DIMENSIONS.get(self.mode, 1024)
+        return self.DEFAULT_DIMENSIONS.get(self.mode, 0)
 
     def embedd_documents(self, texts: List[str]) -> List[List[float]]:
-        """
-        Получить эмбеддинги для списка текстов (синхронная версия для совместимости)
-
-        Args:
-            texts: Список текстов для эмбеддинга
-
-        Returns:
-            List[List[float]]: Список векторов эмбеддингов
-        """
+        """Синхронная обертка (для совместимости)"""
         import asyncio
 
-        # Проверяем, есть ли уже running event loop
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # Нет running loop - создаем новый
             return asyncio.run(self.embedd_documents_async(texts))
         else:
-            # Есть running loop - используем nest_asyncio
             logger.warning("⚠️ embedd_documents called from async context, consider using embedd_documents_async")
             try:
                 import nest_asyncio
@@ -132,23 +114,19 @@ class EmbeddingsManager:
             return asyncio.run(self.embedd_documents_async(texts))
 
     async def embedd_documents_async(self, texts: List[str]) -> List[List[float]]:
-        """
-        Получить эмбеддинги для списка текстов (асинхронная версия)
-
-        Args:
-            texts: Список текстов для эмбеддинга
-
-        Returns:
-            List[List[float]]: Список векторов эмбеддингов
-        """
+        """Асинхронная генерация эмбеддингов"""
         if not texts:
             logger.warning("⚠️ Empty texts list provided")
             return []
 
-        # Определяем модель для эмбеддингов
-        # Для AI HUB всегда используем "arctic", для остальных - текущую модель
-        embedding_model = "arctic" if self.mode == "aihub" else self.model
-        expected_dim = self.get_embedding_dimension()
+        # FIX: embedding_model никогда не должен быть None
+        if self.mode == "aihub":
+            embedding_model = self.model or settings.AIHUB_EMBEDDING_MODEL or settings.EMBEDDINGS_MODEL
+        else:
+            embedding_model = self.model or settings.OLLAMA_EMBED_MODEL or settings.EMBEDDINGS_MODEL
+
+        # FIX: если EMBEDDINGS_DIM=0 — не проверяем строго
+        expected_dim = settings.EMBEDDINGS_DIM or self.get_embedding_dimension()
 
         logger.info(
             f"🔮 Generating embeddings for {len(texts)} texts using {self.original_mode}, "
@@ -159,29 +137,24 @@ class EmbeddingsManager:
 
         for idx, text in enumerate(texts):
             try:
-                logger.debug(f"🔌 Requesting embedding {idx+1}/{len(texts)} ({len(text)} chars)")
-
-                # Используем новую архитектуру провайдеров
                 embedding = await llm_manager.generate_embedding(
                     text=text,
-                    model_source=self.mode,  # Используем внутреннее имя (aihub)
-                    model_name=embedding_model  # Для aihub всегда "arctic"
+                    model_source=self.mode,
+                    model_name=embedding_model
                 )
 
                 if not embedding or len(embedding) == 0:
                     logger.error(f"❌ Empty embedding returned for text {idx+1}")
                     raise RuntimeError(f"Empty embedding returned for text {idx+1}")
 
-                # Проверка размерности
                 actual_dim = len(embedding)
-                if actual_dim != expected_dim:
+                if expected_dim and actual_dim != expected_dim:
                     logger.warning(
                         f"⚠️ Unexpected embedding dimension: expected {expected_dim}, "
                         f"got {actual_dim} for text {idx+1}"
                     )
 
                 all_embeddings.append(embedding)
-                logger.debug(f"✅ Embedding {idx+1} received: {actual_dim} dimensions")
 
             except Exception as e:
                 logger.error(f"❌ Failed to generate embedding for text {idx+1}: {e}")

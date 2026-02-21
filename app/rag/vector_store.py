@@ -1,6 +1,10 @@
 # app/rag/vector_store.py
+from __future__ import annotations
+
+import json
 import logging
 from typing import List, Dict, Any, Optional
+
 from app.core.config import settings
 
 try:
@@ -13,22 +17,14 @@ logger = logging.getLogger(__name__)
 
 class VectorStoreManager:
     """
-    Менеджер векторного хранилища с динамическим управлением размерностями эмбеддингов.
-
-    Автоматически создает и переключается между коллекциями в зависимости от размерности
-    входящих векторов. Поддерживает несколько коллекций одновременно.
+    Менеджер ChromaDB с поддержкой динамических коллекций по размерности эмбеддингов.
     """
 
     def __init__(
-            self,
-            base_collection_name: str = None,
-            persist_directory: str = None
+        self,
+        base_collection_name: str = None,
+        persist_directory: str = None
     ):
-        """
-        Args:
-            base_collection_name: Базовое имя для коллекций (без суффикса размерности)
-            persist_directory: Директория для хранения данных ChromaDB
-        """
         self.base_collection_name = base_collection_name or settings.COLLECTION_NAME
         self.persist_directory = persist_directory or str(settings.get_vectordb_path())
 
@@ -37,607 +33,259 @@ class VectorStoreManager:
 
         self.client = PersistentClient(path=self.persist_directory)
 
-        # Кеш активных коллекций: {dimension: collection_object}
         self._collections_cache: Dict[int, Any] = {}
-
-        # Текущая активная размерность и коллекция
         self._current_dimension: Optional[int] = None
         self._current_collection: Optional[Any] = None
 
         logger.info(
-            f"✅ VectorStoreManager initialized (dynamic mode)\n"
-            f"   Base name: {self.base_collection_name}\n"
-            f"   Directory: {self.persist_directory}"
+            "VectorStoreManager initialized. base=%s dir=%s",
+            self.base_collection_name,
+            self.persist_directory,
         )
 
     def _get_collection_name(self, dimension: int) -> str:
-        """
-        Генерирует имя коллекции на основе размерности.
-
-        Args:
-            dimension: Размерность эмбеддингов
-
-        Returns:
-            Имя коллекции вида "base_name_<dimension>d"
-        """
         return f"{self.base_collection_name}_{dimension}d"
 
-    def _get_or_create_collection(self, dimension: int):
-        """
-        Получает или создает коллекцию для указанной размерности.
-        Использует кеширование для оптимизации.
+    def _ensure_collection(self, embedding: List[float]) -> Any:
+        dimension = len(embedding)
 
-        Args:
-            dimension: Размерность эмбеддингов
+        if self._current_dimension == dimension and self._current_collection is not None:
+            return self._current_collection
 
-        Returns:
-            Объект коллекции ChromaDB
-        """
-        # Проверяем кеш
         if dimension in self._collections_cache:
-            logger.debug(f"📦 Using cached collection for dimension {dimension}")
-            return self._collections_cache[dimension]
+            self._current_dimension = dimension
+            self._current_collection = self._collections_cache[dimension]
+            logger.info("Active collection: %s (dim=%d)", self._get_collection_name(dimension), dimension)
+            return self._current_collection
 
-        # Создаем/получаем коллекцию
         collection_name = self._get_collection_name(dimension)
         try:
-            collection = self.client.get_or_create_collection(collection_name)
-            self._collections_cache[dimension] = collection
-
-            logger.info(
-                f"📦 Collection initialized: {collection_name}\n"
-                f"   Dimension: {dimension}\n"
-                f"   Document count: {collection.count()}"
+            collection = self.client.get_or_create_collection(
+                name=collection_name,
+                metadata={"dimension": dimension},
             )
-            return collection
+            self._collections_cache[dimension] = collection
+            self._current_dimension = dimension
+            self._current_collection = collection
 
+            try:
+                count = collection.count()
+            except Exception:
+                count = -1
+
+            logger.info("Collection initialized: %s dim=%d count=%s", collection_name, dimension, str(count))
+            return collection
         except Exception as e:
-            logger.error(f"❌ Failed to create collection {collection_name}: {e}")
+            logger.error("Failed to initialize collection: %s", e, exc_info=True)
             raise
 
-    def _ensure_collection(self, embedding: List[float]):
+    def _sanitize(self, data: Dict[str, Any], *, mode: str) -> Dict[str, Any]:
         """
-        Автоматически определяет размерность и переключается на нужную коллекцию.
-
-        Args:
-            embedding: Вектор эмбеддинга для определения размерности
+        mode:
+          - "storage": sanitize metadata for collection.add (Chroma требует scalar)
+          - "where": sanitize where-filter for collection.query/delete (нужно сохранить operator dicts и $in lists)
         """
-        dimension = len(embedding)
+        if not data:
+            return {}
 
-        # Если размерность изменилась или коллекция не инициализирована
-        if self._current_dimension != dimension:
-            old_dimension = self._current_dimension
+        operator_keys = {
+            "$and", "$or",
+            "$in", "$nin",
+            "$gt", "$gte", "$lt", "$lte",
+            "$ne", "$eq",
+            "$contains",
+        }
 
-            # Получаем/создаем нужную коллекцию
-            self._current_collection = self._get_or_create_collection(dimension)
-            self._current_dimension = dimension
+        def sanitize_value(v: Any, *, in_operator: bool) -> Any:
+            if v is None:
+                return None
+            if isinstance(v, (str, int, float, bool)):
+                return v
+            if isinstance(v, (bytes, bytearray)):
+                try:
+                    return v.decode("utf-8", errors="ignore")
+                except Exception:
+                    return str(v)
 
-            if old_dimension is not None and old_dimension != dimension:
-                logger.warning(
-                    f"🔄 Dimension changed: {old_dimension} → {dimension}\n"
-                    f"   Switched to: {self._get_collection_name(dimension)}"
-                )
-            else:
-                logger.info(f"✅ Active collection: {self._get_collection_name(dimension)} (dim: {dimension})")
+            if isinstance(v, dict):
+                is_operator = any(k in operator_keys for k in v.keys())
+                # For where-mode: keep operator dicts and recurse
+                if mode == "where" and is_operator:
+                    return {k: sanitize_value(val, in_operator=True) for k, val in v.items()}
+
+                # For storage-mode OR non-operator dict: must be scalar -> JSON string
+                try:
+                    payload = {k: sanitize_value(val, in_operator=False) for k, val in v.items()}
+                    return json.dumps(payload, ensure_ascii=False)
+                except Exception:
+                    return str(v)
+
+            if isinstance(v, (list, tuple, set)):
+                items = [sanitize_value(x, in_operator=in_operator) for x in list(v)]
+                # In where-mode inside operator ($in): keep list
+                if mode == "where" and in_operator:
+                    return items
+                # In storage-mode (or not-operator): must be scalar -> JSON string
+                try:
+                    return json.dumps(items, ensure_ascii=False)
+                except Exception:
+                    return str(items)
+
+            return str(v)
+
+        out: Dict[str, Any] = {}
+        for k, v in data.items():
+            # when k itself is an operator key, children are in_operator context
+            in_operator = (mode == "where" and k in operator_keys)
+            out[k] = sanitize_value(v, in_operator=in_operator)
+
+        return out
+
+    def _normalize_where(self, where: Dict[str, Any]) -> Dict[str, Any]:
+        if not where:
+            return {}
+
+        # Если уже оператор верхнего уровня — просто нормализуем рекурсивно
+        if "$and" in where and isinstance(where["$and"], list):
+            return {"$and": [self._normalize_where(x) if isinstance(x, dict) else x for x in where["$and"]]}
+        if "$or" in where and isinstance(where["$or"], list):
+            return {"$or": [self._normalize_where(x) if isinstance(x, dict) else x for x in where["$or"]]}
+
+        # КЛЮЧЕВОЕ: Chroma требует ровно один оператор на верхнем уровне,
+        # поэтому если у нас несколько полей — оборачиваем в $and
+        if isinstance(where, dict) and len(where.keys()) > 1:
+            return {"$and": [{k: v} for k, v in where.items()]}
+
+        return where
 
     def add_document(
-            self,
-            doc_id: str,
-            embedding: List[float],
-            metadata: Dict[str, Any]
-    ):
-        """
-        Добавляет документ в векторное хранилище.
-        Автоматически выбирает коллекцию по размерности эмбеддинга.
+        self,
+        *,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        embedding: Optional[List[float]] = None,
+        doc_id: Optional[str] = None
+    ) -> bool:
+        if embedding is None:
+            raise ValueError("Embedding is required")
 
-        Args:
-            doc_id: Уникальный идентификатор документа
-            embedding: Вектор эмбеддинга
-            metadata: Метаданные документа
-        """
-        # Автоматически переключаемся на нужную коллекцию
         self._ensure_collection(embedding)
-
-        content = metadata.get('content', '')
-        dimension = len(embedding)
-
-        logger.info(
-            f"📄 Adding document: {doc_id[:50]}...\n"
-            f"   Collection: {self._get_collection_name(dimension)}\n"
-            f"   Dimension: {dimension}\n"
-            f"   Content size: {len(content)} chars"
-        )
-
-        logger.debug(
-            f"   Metadata: conversation_id={metadata.get('conversation_id')}, "
-            f"user_id={metadata.get('user_id')}, "
-            f"file_id={metadata.get('file_id')}"
-        )
+        safe_metadata = self._sanitize(metadata or {}, mode="storage")
 
         try:
             self._current_collection.add(
-                ids=[doc_id],
+                documents=[content],
+                metadatas=[safe_metadata],
                 embeddings=[embedding],
-                metadatas=[metadata],
-                documents=[content]
+                ids=[doc_id] if doc_id else None,
             )
-
-            # Проверка сохранения
-            saved = self._current_collection.get(ids=[doc_id])
-            if saved and saved.get('metadatas'):
-                saved_metadata = saved['metadatas'][0]
-                logger.info(
-                    f"✅ Document saved successfully\n"
-                    f"   ID: {doc_id[:50]}...\n"
-                    f"   conversation_id: {saved_metadata.get('conversation_id')}"
-                )
-            else:
-                logger.warning(f"⚠️ Could not verify document save: {doc_id}")
-
+            logger.info(
+                "Document added: id=%s size=%d dim=%d collection=%s",
+                doc_id or "-",
+                len(content or ""),
+                len(embedding),
+                self._get_collection_name(len(embedding)),
+            )
+            return True
         except Exception as e:
-            logger.error(f"❌ Failed to add document {doc_id}: {e}")
-            raise
+            logger.error("Failed to add document: %s", e, exc_info=True)
+            return False
+
+    def delete_by_metadata(self, metadata_filter: Dict[str, Any]) -> bool:
+        if not metadata_filter:
+            return False
+
+        safe_filter = self._sanitize(metadata_filter, mode="where")
+        try:
+            for _, collection in self._collections_cache.items():
+                try:
+                    collection.delete(where=self._normalize_where(safe_filter))
+                except Exception:
+                    continue
+            logger.info("Deleted by metadata filter: %s", safe_filter)
+            return True
+        except Exception as e:
+            logger.error("Failed to delete by metadata: %s", e, exc_info=True)
+            return False
 
     def query(
-            self,
-            embedding_query: List[float],
-            top_k: int = 5,
-            filter_dict: Optional[Dict[str, Any]] = None,
-            search_all_dimensions: bool = False
+        self,
+        embedding_query: List[float],
+        top_k: int = 5,
+        filter_dict: Optional[Dict[str, Any]] = None,
+        search_all_dimensions: bool = False
     ) -> List[Dict[str, Any]]:
-        """
-        Ищет похожие документы в векторном хранилище.
-
-        Args:
-            embedding_query: Вектор запроса
-            top_k: Количество результатов
-            filter_dict: Фильтры для поиска (формат ChromaDB where)
-            search_all_dimensions: Если True, ищет во всех коллекциях (медленнее)
-
-        Returns:
-            Список найденных документов с метаданными и расстояниями
-        """
         dimension = len(embedding_query)
 
         if search_all_dimensions:
-            # Поиск во всех коллекциях
             return self._query_all_dimensions(embedding_query, top_k, filter_dict)
 
-        # Поиск только в коллекции с нужной размерностью
         self._ensure_collection(embedding_query)
 
+        safe_filter = self._sanitize(filter_dict or {}, mode="where") if filter_dict else None
+
         logger.info(
-            f"🔍 Querying collection: {self._get_collection_name(dimension)}\n"
-            f"   Top-K: {top_k}\n"
-            f"   Dimension: {dimension}\n"
-            f"   Filter: {filter_dict if filter_dict else 'None'}"
+            "Query: collection=%s top_k=%d dim=%d filter=%s",
+            self._get_collection_name(dimension),
+            top_k,
+            dimension,
+            safe_filter if safe_filter else None,
         )
 
         try:
-            query_params = {
-                "query_embeddings": [embedding_query],
-                "n_results": top_k
-            }
-
-            if filter_dict:
-                query_params["where"] = filter_dict
+            query_params = {"query_embeddings": [embedding_query], "n_results": top_k}
+            if safe_filter:
+                query_params["where"] = self._normalize_where(safe_filter)
 
             results = self._current_collection.query(**query_params)
-            parsed = self._parse_results(results)
-
-            logger.info(f"✅ Found {len(parsed)} documents")
-            return parsed
-
+            return self._parse_results(results)
         except Exception as e:
-            logger.error(f"❌ Query failed: {e}")
+            logger.error("Query failed: %s", e, exc_info=True)
             return []
 
     def _query_all_dimensions(
-            self,
-            embedding_query: List[float],
-            top_k: int,
-            filter_dict: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Ищет во всех коллекциях разных размерностей (fallback режим).
-
-        Args:
-            embedding_query: Вектор запроса
-            top_k: Количество результатов
-            filter_dict: Фильтры для поиска
-
-        Returns:
-            Объединенный список результатов из всех коллекций
-        """
-        logger.info("🔍 Multi-dimension search across all collections")
-
-        all_results = []
-        collections = self.client.list_collections()
-
-        for collection_obj in collections:
-            # Пропускаем коллекции не нашего базового имени
-            if not collection_obj.name.startswith(self.base_collection_name):
-                continue
-
-            try:
-                # Извлекаем размерность из имени
-                parts = collection_obj.name.split('_')
-                if not parts[-1].endswith('d'):
-                    continue
-
-                coll_dimension = int(parts[-1][:-1])
-
-                # Если размерности совпадают, делаем обычный поиск
-                if coll_dimension == len(embedding_query):
-                    logger.debug(f"   Searching in {collection_obj.name}")
-                    query_params = {
-                        "query_embeddings": [embedding_query],
-                        "n_results": top_k
-                    }
-                    if filter_dict:
-                        query_params["where"] = filter_dict
-
-                    results = collection_obj.query(**query_params)
-                    parsed = self._parse_results(results)
-
-                    for result in parsed:
-                        result['source_collection'] = collection_obj.name
-                        result['dimension'] = coll_dimension
-
-                    all_results.extend(parsed)
-
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to search in {collection_obj.name}: {e}")
-                continue
-
-        # Сортируем по distance и берем top_k
-        all_results.sort(key=lambda x: x.get('distance', float('inf')))
-        final_results = all_results[:top_k]
-
-        logger.info(f"✅ Multi-dimension search complete: {len(final_results)} results")
-        return final_results
-
-    def _parse_results(self, results: Dict) -> List[Dict[str, Any]]:
-        """
-        Парсит результаты ChromaDB в удобный формат.
-
-        Args:
-            results: Результаты от ChromaDB
-
-        Returns:
-            Список словарей с parsed результатами
-        """
-        parsed_results = []
-
-        if not results or 'ids' not in results or not results['ids']:
-            return parsed_results
-
-        ids = results['ids'][0]
-        metadatas = results.get('metadatas', [[]])[0]
-        documents = results.get('documents', [[]])[0]
-        distances = results.get('distances', [[]])[0]
-
-        for i, doc_id in enumerate(ids):
-            content = documents[i] if i < len(documents) else ''
-
-            # Fallback на content из metadata
-            if not content and i < len(metadatas):
-                content = metadatas[i].get('content', '')
-
-            current_metadata = metadatas[i] if i < len(metadatas) else {}
-            distance = distances[i] if i < len(distances) else 0.0
-
-            logger.debug(
-                f"   Result {i + 1}: id={doc_id[:30]}..., "
-                f"conv_id={current_metadata.get('conversation_id')}, "
-                f"distance={distance:.4f}"
-            )
-
-            parsed_results.append({
-                'id': doc_id,
-                'metadata': current_metadata,
-                'content': content,
-                'distance': distance
-            })
-
-        return parsed_results
-
-    def clear_collection(self, dimension: Optional[int] = None):
-        """
-        Очищает коллекцию (удаляет все документы).
-
-        Args:
-            dimension: Если указана, очищает только коллекцию этой размерности.
-                      Если None, очищает текущую активную коллекцию.
-        """
-        if dimension:
-            collection_name = self._get_collection_name(dimension)
-            try:
-                collection = self.client.get_collection(collection_name)
-                all_docs = collection.get()
-                if all_docs and all_docs.get('ids'):
-                    collection.delete(ids=all_docs['ids'])
-                    logger.info(f"✅ Cleared {len(all_docs['ids'])} documents from {collection_name}")
-                else:
-                    logger.info(f"Collection {collection_name} is already empty")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not clear collection {collection_name}: {e}")
-        else:
-            if not self._current_collection:
-                logger.warning("⚠️ No active collection to clear")
-                return
-
-            collection_name = self._get_collection_name(self._current_dimension)
-            logger.info(f"🗑️ Clearing collection {collection_name}")
-
-            try:
-                all_docs = self._current_collection.get()
-                if all_docs and all_docs.get('ids'):
-                    self._current_collection.delete(ids=all_docs['ids'])
-                    logger.info(f"✅ Deleted {len(all_docs['ids'])} documents")
-                else:
-                    logger.info("Collection is already empty")
-            except Exception as e:
-                logger.error(f"❌ Error clearing collection: {e}")
-
-    def clear_all_collections(self):
-        """Очищает все коллекции этого базового имени."""
-        logger.info(f"🗑️ Clearing all collections with base name: {self.base_collection_name}")
-
-        collections = self.client.list_collections()
-        cleared_count = 0
-
-        for collection_obj in collections:
-            if collection_obj.name.startswith(self.base_collection_name):
-                try:
-                    all_docs = collection_obj.get()
-                    if all_docs and all_docs.get('ids'):
-                        collection_obj.delete(ids=all_docs['ids'])
-                        cleared_count += len(all_docs['ids'])
-                        logger.info(f"   ✅ Cleared {collection_obj.name}: {len(all_docs['ids'])} docs")
-                except Exception as e:
-                    logger.warning(f"   ⚠️ Failed to clear {collection_obj.name}: {e}")
-
-        logger.info(f"✅ Cleared {cleared_count} documents total")
-
-    def delete_collection(self, dimension: Optional[int] = None):
-        """
-        Удаляет коллекцию полностью.
-
-        Args:
-            dimension: Если указана, удаляет коллекцию этой размерности.
-                      Если None, удаляет текущую активную коллекцию.
-        """
-        if dimension:
-            collection_name = self._get_collection_name(dimension)
-            try:
-                self.client.delete_collection(collection_name)
-                # Удаляем из кеша
-                if dimension in self._collections_cache:
-                    del self._collections_cache[dimension]
-                logger.info(f"✅ Deleted collection: {collection_name}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not delete collection {collection_name}: {e}")
-        else:
-            if not self._current_dimension:
-                logger.warning("⚠️ No active collection to delete")
-                return
-
-            collection_name = self._get_collection_name(self._current_dimension)
-            try:
-                self.client.delete_collection(collection_name)
-                # Удаляем из кеша
-                if self._current_dimension in self._collections_cache:
-                    del self._collections_cache[self._current_dimension]
-                # Сбрасываем текущую коллекцию
-                self._current_collection = None
-                self._current_dimension = None
-                logger.info(f"✅ Deleted collection: {collection_name}")
-            except Exception as e:
-                logger.error(f"❌ Error deleting collection: {e}")
-
-    def list_all_collections(self) -> List[Dict[str, Any]]:
-        """
-        Возвращает информацию о всех коллекциях.
-
-        Returns:
-            Список словарей с информацией о коллекциях
-        """
-        collections = self.client.list_collections()
-        result = []
-
-        for collection_obj in collections:
-            if collection_obj.name.startswith(self.base_collection_name):
-                try:
-                    # Извлекаем размерность
-                    parts = collection_obj.name.split('_')
-                    dimension = None
-                    if parts[-1].endswith('d'):
-                        try:
-                            dimension = int(parts[-1][:-1])
-                        except ValueError:
-                            pass
-
-                    doc_count = collection_obj.count()
-
-                    result.append({
-                        'name': collection_obj.name,
-                        'dimension': dimension,
-                        'document_count': doc_count,
-                        'is_active': dimension == self._current_dimension
-                    })
-                except Exception as e:
-                    logger.warning(f"⚠️ Error getting info for {collection_obj.name}: {e}")
-
-        logger.info(f"📚 Found {len(result)} collections")
-        return result
-
-    def get_stats(self) -> Dict[str, Any]:
-        """
-        Возвращает статистику по всем коллекциям.
-
-        Returns:
-            Словарь со статистикой
-        """
-        collections_info = self.list_all_collections()
-
-        total_docs = sum(c['document_count'] for c in collections_info)
-        dimensions = [c['dimension'] for c in collections_info if c['dimension']]
-
-        stats = {
-            'base_name': self.base_collection_name,
-            'total_collections': len(collections_info),
-            'total_documents': total_docs,
-            'available_dimensions': sorted(dimensions),
-            'current_dimension': self._current_dimension,
-            'collections': collections_info
-        }
-
-        logger.info(
-            f"📊 Stats:\n"
-            f"   Collections: {stats['total_collections']}\n"
-            f"   Documents: {stats['total_documents']}\n"
-            f"   Dimensions: {stats['available_dimensions']}\n"
-            f"   Current: {stats['current_dimension']}"
-        )
-
-        return stats
-
-
-
-    def delete_by_metadata(
-        self, 
-        filter_dict: Dict[str, Any],
-        dimension: Optional[int] = None
-    ) -> int:
-        """
-        Удаляет документы по фильтру метаданных
-        
-        Args:
-            filter_dict: Фильтр для поиска документов (формат ChromaDB where)
-            dimension: Если указана, удаляет только из коллекции этой размерности.
-                      Если None, пытается удалить из всех коллекций.
-        
-        Returns:
-            Количество удаленных документов
-        """
-        total_deleted = 0
-        
-        if dimension:
-            # Удаление из конкретной коллекции
-            collection_name = self._get_collection_name(dimension)
-            try:
-                collection = self.client.get_collection(collection_name)
-                
-                # Сначала находим документы
-                results = collection.get(where=filter_dict)
-                
-                if results and results.get('ids'):
-                    ids_to_delete = results['ids']
-                    collection.delete(ids=ids_to_delete)
-                    total_deleted = len(ids_to_delete)
-                    logger.info(
-                        f"✅ Deleted {total_deleted} documents from {collection_name} "
-                        f"with filter: {filter_dict}"
-                    )
-                else:
-                    logger.info(f"ℹ️ No documents found in {collection_name} with filter: {filter_dict}")
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ Could not delete from collection {collection_name}: {e}")
-        else:
-            # Удаление из всех коллекций этого базового имени
-            logger.info(f"🗑️ Deleting from all collections with filter: {filter_dict}")
-            
-            collections = self.client.list_collections()
-            
-            for collection_obj in collections:
-                if not collection_obj.name.startswith(self.base_collection_name):
-                    continue
-                
-                try:
-                    # Находим документы
-                    results = collection_obj.get(where=filter_dict)
-                    
-                    if results and results.get('ids'):
-                        ids_to_delete = results['ids']
-                        collection_obj.delete(ids=ids_to_delete)
-                        deleted_count = len(ids_to_delete)
-                        total_deleted += deleted_count
-                        logger.info(
-                            f"   ✅ Deleted {deleted_count} documents from {collection_obj.name}"
-                        )
-                        
-                except Exception as e:
-                    logger.warning(f"   ⚠️ Failed to delete from {collection_obj.name}: {e}")
-                    continue
-            
-            logger.info(f"✅ Total deleted: {total_deleted} documents")
-        
-        return total_deleted
-
-    def delete_by_ids(
         self,
-        document_ids: List[str],
-        dimension: Optional[int] = None
-    ) -> int:
-        """
-        Удаляет документы по списку ID
-        
-        Args:
-            document_ids: Список ID документов для удаления
-            dimension: Если указана, удаляет только из коллекции этой размерности.
-        
-        Returns:
-            Количество удаленных документов
-        """
-        if not document_ids:
-            logger.warning("⚠️ Empty document_ids list provided")
-            return 0
-        
-        total_deleted = 0
-        
-        if dimension:
-            # Удаление из конкретной коллекции
-            collection_name = self._get_collection_name(dimension)
-            try:
-                collection = self.client.get_collection(collection_name)
-                collection.delete(ids=document_ids)
-                total_deleted = len(document_ids)
-                logger.info(f"✅ Deleted {total_deleted} documents from {collection_name}")
-            except Exception as e:
-                logger.error(f"❌ Failed to delete from {collection_name}: {e}")
-                raise
-        else:
-            # Удаление из всех коллекций
-            logger.info(f"🗑️ Deleting {len(document_ids)} IDs from all collections")
-            
-            collections = self.client.list_collections()
-            
-            for collection_obj in collections:
-                if not collection_obj.name.startswith(self.base_collection_name):
-                    continue
-                
-                try:
-                    # Проверяем, какие ID существуют в этой коллекции
-                    results = collection_obj.get(ids=document_ids)
-                    
-                    if results and results.get('ids'):
-                        existing_ids = results['ids']
-                        collection_obj.delete(ids=existing_ids)
-                        deleted_count = len(existing_ids)
-                        total_deleted += deleted_count
-                        logger.info(
-                            f"   ✅ Deleted {deleted_count} documents from {collection_obj.name}"
-                        )
-                        
-                except Exception as e:
-                    logger.warning(f"   ⚠️ Failed to delete from {collection_obj.name}: {e}")
-                    continue
-            
-            logger.info(f"✅ Total deleted: {total_deleted} documents")
-        
-        return total_deleted
+        embedding_query: List[float],
+        top_k: int,
+        filter_dict: Optional[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        all_results: List[Dict[str, Any]] = []
 
-# Singleton instance
-vectorstore_manager = VectorStoreManager()
+        _ = self._ensure_collection(embedding_query)
+
+        for dim in list(self._collections_cache.keys()):
+            try:
+                collection = self._collections_cache[dim]
+                safe_filter = self._sanitize(filter_dict or {}, mode="where") if filter_dict else None
+
+                query_params = {"query_embeddings": [embedding_query], "n_results": top_k}
+                if safe_filter:
+                    query_params["where"] = self._normalize_where(safe_filter)
+
+                results = collection.query(**query_params)
+                all_results.extend(self._parse_results(results))
+            except Exception:
+                continue
+
+        try:
+            all_results = sorted(all_results, key=lambda x: float(x.get("distance", 1e9)))[:top_k]
+        except Exception:
+            all_results = all_results[:top_k]
+
+        return all_results
+
+    def _parse_results(self, results: Dict[str, Any]) -> List[Dict[str, Any]]:
+        try:
+            ids = (results.get("ids") or [[]])[0]
+            docs = (results.get("documents") or [[]])[0]
+            metas = (results.get("metadatas") or [[]])[0]
+            dists = (results.get("distances") or [[]])[0]
+        except Exception:
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for i in range(min(len(ids), len(docs), len(metas), len(dists))):
+            out.append(
+                {"id": ids[i], "content": docs[i], "metadata": metas[i] or {}, "distance": dists[i]}
+            )
+        return out

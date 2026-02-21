@@ -8,8 +8,8 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 MIN_CHUNK_SIZE = 50
-DEFAULT_CHUNK_SIZE = getattr(settings, "CHUNK_SIZE", 2000) or 2000  # ИСПРАВЛЕНИЕ: увеличено с 1000 до 2000
-DEFAULT_CHUNK_OVERLAP = getattr(settings, "CHUNK_OVERLAP", 400) or 400  # ИСПРАВЛЕНИЕ: увеличено с 200 до 400
+DEFAULT_CHUNK_SIZE = getattr(settings, "CHUNK_SIZE", 800) or 800
+DEFAULT_CHUNK_OVERLAP = getattr(settings, "CHUNK_OVERLAP", 200) or 200
 
 
 class SmartTextSplitter:
@@ -59,12 +59,10 @@ class SmartTextSplitter:
         )
 
         logger.info(
-            f"✅ SmartTextSplitter initialized: "
-            f"chunk_size={self.chunk_size}, overlap={self.chunk_overlap}"
+            f"✅ SmartTextSplitter initialized: chunk_size={self.chunk_size}, overlap={self.chunk_overlap}"
         )
 
     def split_text(self, text: str) -> List[str]:
-        """Разбить текст на chunks"""
         try:
             if not text or not text.strip():
                 logger.warning("⚠️ Empty text provided for splitting")
@@ -81,8 +79,9 @@ class SmartTextSplitter:
 
     def split_documents(self, documents: List[Document]) -> List[Document]:
         """
-        ИСПРАВЛЕНО: Разбить список Document объектов с учетом типа файла
-        Для Excel файлов используется специальная логика
+        Разбить список Document объектов с учетом типа файла.
+        FIX: Для Excel/CSV НЕ увеличиваем chunk_size в 3 раза.
+        Так как loader уже режет Excel/CSV на блоки строк.
         """
         try:
             if not documents:
@@ -93,24 +92,21 @@ class SmartTextSplitter:
             all_chunks = []
 
             for doc_idx, doc in enumerate(documents):
-                file_type = doc.metadata.get('file_type', '')
+                file_type = (doc.metadata.get('file_type') or '').lower()
 
-                # ИСПРАВЛЕНИЕ 4: Специальная обработка для Excel
                 if file_type in ['xlsx', 'xls', 'csv']:
-                    logger.info(f"📊 Using optimized splitting for {file_type} file")
-                    # Для табличных данных используем увеличенный chunk_size
-                    excel_splitter = RecursiveCharacterTextSplitter(
-                        chunk_size=self.chunk_size * 3,  # Увеличиваем в 3 раза
-                        chunk_overlap=self.chunk_overlap,
-                        separators=["\n===", "\n---", "\n\n", "\n"],  # Разбиваем по логическим блокам
+                    # FIX: мягкая нарезка по логическим разделителям, без раздувания chunk_size
+                    logger.info(f"📊 Using table-aware splitting for {file_type}")
+                    table_splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=self.chunk_size,
+                        chunk_overlap=min(self.chunk_overlap, 100),
+                        separators=["\n" + "=" * 70, "\n" + "-" * 70, "\n\n", "\n"],
                         length_function=len
                     )
-                    text_chunks = excel_splitter.split_text(doc.page_content)
+                    text_chunks = table_splitter.split_text(doc.page_content)
                 else:
-                    # Стандартная разбивка для других типов
                     text_chunks = self.text_splitter.split_text(doc.page_content)
 
-                # Создать Document объекты для каждого chunk
                 for chunk_idx, chunk_text in enumerate(text_chunks):
                     metadata = doc.metadata.copy()
                     metadata.update({
@@ -120,11 +116,7 @@ class SmartTextSplitter:
                         'chunk_size': len(chunk_text)
                     })
 
-                    chunk_doc = Document(
-                        page_content=chunk_text,
-                        metadata=metadata
-                    )
-                    all_chunks.append(chunk_doc)
+                    all_chunks.append(Document(page_content=chunk_text, metadata=metadata))
 
             logger.info(f"✅ Created {len(all_chunks)} document chunks")
             return all_chunks
@@ -133,64 +125,20 @@ class SmartTextSplitter:
             logger.error(f"❌ Error splitting documents: {e}")
             raise
 
-    def create_documents_from_text(
-            self,
-            text: str,
-            metadata: Dict[str, Any] = None
-    ) -> List[Document]:
-        """Создать список Document объектов из текста с метаданными"""
-        try:
-            if not text or not text.strip():
-                logger.warning("⚠️ Empty text provided")
-                return []
-
-            metadata = metadata or {}
-            logger.info(f"📄 Creating documents from text ({len(text)} chars)...")
-
-            chunks = self.split_text(text)
-
-            documents = []
-            for idx, chunk in enumerate(chunks):
-                doc_metadata = metadata.copy()
-                doc_metadata.update({
-                    'chunk_index': idx,
-                    'total_chunks': len(chunks),
-                    'chunk_size': len(chunk)
-                })
-
-                doc = Document(
-                    page_content=chunk,
-                    metadata=doc_metadata
-                )
-                documents.append(doc)
-
-            logger.info(f"✅ Created {len(documents)} documents")
-            return documents
-
-        except Exception as e:
-            logger.error(f"❌ Error creating documents: {e}")
-            raise
-
-    def split_by_file_type(
-            self,
-            text: str,
-            file_type: str,
-            metadata: Dict[str, Any] = None
-    ) -> List[Document]:
+    def split_by_file_type(self, text: str, file_type: str, metadata: Dict[str, Any] = None) -> List[Document]:
         """
-        ИСПРАВЛЕНО: Разбить текст с учетом типа файла
+        Разбить текст с учетом типа файла.
+        FIX: Табличные данные не раздуваем в 3 раза — лучше больше релевантных кусков.
         """
         try:
             metadata = metadata or {}
             metadata['file_type'] = file_type
 
-            # ИСПРАВЛЕНИЕ 5: Улучшенная обработка для разных типов
             if file_type in ['csv', 'xlsx', 'xls']:
-                # Для табличных данных - значительно больший chunk size
                 splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=self.chunk_size * 3,  # Увеличено с *2 до *3
-                    chunk_overlap=self.chunk_overlap,
-                    separators=["\n===", "\n---", "\n\n", "\n"],
+                    chunk_size=self.chunk_size,
+                    chunk_overlap=min(self.chunk_overlap, 100),
+                    separators=["\n" + "=" * 70, "\n" + "-" * 70, "\n\n", "\n"],
                     length_function=len
                 )
                 chunks = splitter.split_text(text)
@@ -224,17 +172,9 @@ class SmartTextSplitter:
                     'total_chunks': len(chunks),
                     'chunk_size': len(chunk)
                 })
+                documents.append(Document(page_content=chunk, metadata=doc_metadata))
 
-                doc = Document(
-                    page_content=chunk,
-                    metadata=doc_metadata
-                )
-                documents.append(doc)
-
-            logger.info(
-                f"✅ Split {file_type} file into {len(documents)} chunks "
-                f"(avg size: {sum(len(c) for c in chunks) // len(chunks) if chunks else 0})"
-            )
+            logger.info(f"✅ Split {file_type} into {len(documents)} chunks")
             return documents
 
         except Exception as e:
@@ -242,7 +182,6 @@ class SmartTextSplitter:
             raise
 
     def get_chunk_stats(self, documents: List[Document]) -> Dict[str, Any]:
-        """Получить статистику по chunks"""
         if not documents:
             return {
                 'total_chunks': 0,
@@ -253,15 +192,13 @@ class SmartTextSplitter:
             }
 
         chunk_sizes = [len(doc.page_content) for doc in documents]
-
         stats = {
             'total_chunks': len(documents),
             'avg_chunk_size': sum(chunk_sizes) // len(chunk_sizes),
             'min_chunk_size': min(chunk_sizes),
             'max_chunk_size': max(chunk_sizes),
             'total_size': sum(chunk_sizes),
-            'overlap_ratio': self.chunk_overlap / self.chunk_size
+            'overlap_ratio': (self.chunk_overlap / self.chunk_size) if self.chunk_size else 0
         }
-
         logger.info(f"📊 Chunk statistics: {stats}")
         return stats

@@ -52,3 +52,7 @@ temp/
 *.sqlite3
 uploads/
 /dev_test/
+
+docker-compose.db.yml
+/chroma_db/
+/.chromadb/

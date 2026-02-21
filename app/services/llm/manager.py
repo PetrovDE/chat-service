@@ -68,7 +68,8 @@ class LLMManager:
         # Определяем модель
         if not model_name:
             if source == "ollama" or source == "local":
-                model_name = settings.EMBEDDINGS_MODEL
+                # FIX: чат-модель != embedding-модель
+                model_name = settings.OLLAMA_CHAT_MODEL or settings.EMBEDDINGS_MODEL
             elif source == "openai":
                 model_name = settings.OPENAI_MODEL
             elif source == "aihub":
@@ -100,7 +101,8 @@ class LLMManager:
         # Определяем модель
         if not model_name:
             if source == "ollama" or source == "local":
-                model_name = settings.EMBEDDINGS_MODEL
+                # FIX: чат-модель != embedding-модель
+                model_name = settings.OLLAMA_CHAT_MODEL or settings.EMBEDDINGS_MODEL
             elif source == "openai":
                 model_name = settings.OPENAI_MODEL
             elif source == "aihub":
@@ -109,11 +111,11 @@ class LLMManager:
         logger.info(f"🔧 Streaming response: source={source}, model={model_name}")
 
         async for chunk in provider.generate_response_stream(
-                prompt=prompt,
-                model=model_name,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                conversation_history=conversation_history
+            prompt=prompt,
+            model=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            conversation_history=conversation_history
         ):
             yield chunk
 
@@ -131,6 +133,9 @@ class LLMManager:
         if not model_name:
             if source == "aihub":
                 model_name = settings.AIHUB_EMBEDDING_MODEL
+            elif source == "ollama" or source == "local":
+                # FIX: раньше тут оставалось None → и это ломало retrieval
+                model_name = settings.OLLAMA_EMBED_MODEL or settings.EMBEDDINGS_MODEL
 
         logger.info(f"🔮 Generating embedding: source={source}, model={model_name}")
 

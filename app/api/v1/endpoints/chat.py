@@ -1,12 +1,11 @@
 ﻿# app/api/v1/endpoints/chat.py
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 import logging
 import json
 import uuid
-import asyncio
 from datetime import datetime
 
 from app.db.session import get_db
@@ -21,21 +20,92 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _build_conversation_history(messages):
+    return [{"role": msg.role, "content": msg.content} for msg in messages[:-1]]
+
+
+async def _try_build_rag_prompt(
+    *,
+    db: AsyncSession,
+    user_id: Optional[uuid.UUID],
+    conversation_id: uuid.UUID,
+    query: str,
+    top_k: int = 3,
+):
+    final_prompt = query
+    rag_used = False
+    rag_debug = None
+
+    if not user_id:
+        return final_prompt, rag_used, rag_debug
+
+    try:
+        files = await crud_file.get_conversation_files(db, conversation_id=conversation_id, user_id=user_id)
+        logger.info("Conversation files (completed): %d", len(files))
+    except Exception as e:
+        logger.warning("Could not fetch conversation files: %s", e)
+        return final_prompt, rag_used, rag_debug
+
+    if not files:
+        return final_prompt, rag_used, rag_debug
+
+    file_ids = [str(f.id) for f in files]
+
+    try:
+        rag_result = await rag_retriever.query_rag(
+            query,
+            top_k=top_k,
+            user_id=str(user_id),
+            conversation_id=str(conversation_id),
+            file_ids=file_ids,
+            debug_return=True,
+        )
+
+        if isinstance(rag_result, dict) and "docs" in rag_result:
+            context_docs = rag_result.get("docs") or []
+            rag_debug = rag_result.get("debug")
+        else:
+            context_docs = rag_result or []
+
+        if context_docs:
+            final_prompt = rag_retriever.build_context_prompt(query=query, context_documents=context_docs)
+            rag_used = True
+            logger.info("RAG enabled: docs=%d", len(context_docs))
+        else:
+            logger.info("RAG: no relevant chunks")
+
+    except TypeError:
+        context_docs = await rag_retriever.query_rag(
+            query,
+            top_k=top_k,
+            user_id=str(user_id),
+            conversation_id=str(conversation_id),
+            debug_return=True,
+        )
+        if isinstance(context_docs, dict) and "docs" in context_docs:
+            context_docs_list = context_docs.get("docs") or []
+            rag_debug = context_docs.get("debug")
+            if context_docs_list:
+                final_prompt = rag_retriever.build_context_prompt(query=query, context_documents=context_docs_list)
+                rag_used = True
+
+    except Exception as e:
+        logger.warning("RAG retrieval failed: %s", e)
+
+    return final_prompt, rag_used, rag_debug
+
+
 @router.post("/stream")
 async def chat_stream(
-        chat_data: ChatMessage,
-        db: AsyncSession = Depends(get_db),
-        current_user: Optional[User] = Depends(get_current_user_optional)
+    chat_data: ChatMessage,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    """
-    Chat with streaming response + automatic RAG
-    """
     try:
         user_id = current_user.id if current_user else None
         username = current_user.username if current_user else "anonymous"
 
-        logger.info(f"📨 Chat request from {username}: {chat_data.message[:50]}...")
-        logger.info(f"🔧 Request details: model_source={chat_data.model_source}, model_name={chat_data.model_name}")
+        logger.info("Chat(stream) from %s", username)
 
         # Get or create conversation
         if chat_data.conversation_id:
@@ -46,116 +116,54 @@ async def chat_stream(
                 raise HTTPException(status_code=403, detail="Access denied")
             conversation_id = conversation.id
         else:
-            # Create new conversation
             from app.schemas.conversation import ConversationCreate
+
             conv_data = ConversationCreate(
                 title=chat_data.message[:100] if len(chat_data.message) <= 100 else chat_data.message[:97] + "...",
                 model_source=chat_data.model_source or "ollama",
-                model_name=chat_data.model_name or llm_manager.ollama_model
+                model_name=chat_data.model_name or llm_manager.ollama_model,
             )
-            conversation = await crud_conversation.create_for_user(
-                db=db,
-                obj_in=conv_data,
-                user_id=user_id
-            )
+            conversation = await crud_conversation.create_for_user(db=db, obj_in=conv_data, user_id=user_id)
             conversation_id = conversation.id
-            logger.info(f"✅ Created conversation {conversation_id}")
 
         # Save user message
-        await crud_message.create_message(
+        await crud_message.create_message(db=db, conversation_id=conversation_id, role="user", content=chat_data.message)
+
+        # History
+        messages = await crud_message.get_conversation_messages(db, conversation_id=conversation_id)
+        conversation_history = _build_conversation_history(messages)
+
+        # RAG
+        final_prompt, rag_used, rag_debug = await _try_build_rag_prompt(
             db=db,
+            user_id=user_id,
             conversation_id=conversation_id,
-            role="user",
-            content=chat_data.message
+            query=chat_data.message,
+            top_k=3,
         )
 
-        # Get conversation history
-        messages = await crud_message.get_conversation_messages(db, conversation_id=conversation_id)
-        conversation_history = [
-            {"role": msg.role, "content": msg.content}
-            for msg in messages[:-1]  # Exclude the last message we just added
-        ]
-
-        # ✅ ИСПРАВЛЕНО: Check for RAG context ONLY for current conversation
-        conversation_files = []
-        rag_context_used = False
-        final_prompt = chat_data.message
-
-        if user_id:
-            try:
-                # ✅ ИСПРАВЛЕНИЕ: Получаем только файлы ТЕКУЩЕГО чата
-                conversation_files = await crud_file.get_conversation_files(
-                    db,
-                    conversation_id=conversation_id,
-                    user_id=user_id
-                )
-                logger.info(f"📂 Current conversation has {len(conversation_files)} files")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not fetch conversation files: {e}")
-
-        # ✅ ИСПРАВЛЕНО: Use RAG if files are available FOR THIS CONVERSATION
-        if conversation_files and any(f.is_processed == "completed" for f in conversation_files):
-            try:
-                logger.info("🤖 Retrieving RAG context for current conversation...")
-                # ✅ ИСПРАВЛЕНИЕ: передаем conversation_id для фильтрации
-                context_docs = await rag_retriever.query_rag(
-                    chat_data.message,
-                    top_k=3,
-                    user_id=str(user_id) if user_id else None,
-                    conversation_id=str(conversation_id),
-                    model_source = chat_data.model_source
-                )
-
-                if context_docs:
-                    final_prompt = rag_retriever.build_context_prompt(
-                        query=chat_data.message,
-                        context_documents=context_docs
-                    )
-                    rag_context_used = True
-                    logger.info(f"✅ Using RAG with {len(context_docs)} documents from this conversation")
-                else:
-                    logger.info("ℹ️ No relevant context found in this conversation's files")
-            except Exception as e:
-                logger.warning(f"⚠️ RAG retrieval failed: {e}")
-
-        # Generate response ID
         assistant_message_id = uuid.uuid4()
 
-        # Stream generator function
         async def event_stream():
             full_response = ""
             start_time = datetime.utcnow()
 
             try:
-                # Send metadata
-                metadata = {
-                    'type': 'start',
-                    'conversation_id': str(conversation_id),
-                    'message_id': str(assistant_message_id),
-                    'rag_enabled': rag_context_used
-                }
-                yield f"data: {json.dumps(metadata)}\n\n"
+                yield f"data: {json.dumps({'type': 'start','conversation_id': str(conversation_id),'message_id': str(assistant_message_id),'rag_enabled': rag_used,'rag_debug': rag_debug})}\n\n"
 
-                logger.info(
-                    f"🔧 Starting LLM generation: model_source={chat_data.model_source}, model_name={chat_data.model_name}")
-
-                # Generate response
                 async for chunk in llm_manager.generate_response_stream(
-                        prompt=final_prompt,
-                        model_source=chat_data.model_source,
-                        model_name=chat_data.model_name,
-                        temperature=chat_data.temperature or 0.7,
-                        max_tokens=chat_data.max_tokens or 2000,
-                        conversation_history=conversation_history if not rag_context_used else None
+                    prompt=final_prompt,
+                    model_source=chat_data.model_source,
+                    model_name=chat_data.model_name,
+                    temperature=chat_data.temperature or 0.7,
+                    max_tokens=chat_data.max_tokens or 2000,
+                    conversation_history=conversation_history if not rag_used else None,
                 ):
                     full_response += chunk
                     yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
 
-                # Calculate generation time
-                end_time = datetime.utcnow()
-                generation_time = (end_time - start_time).total_seconds()
+                generation_time = (datetime.utcnow() - start_time).total_seconds()
 
-                # Save assistant response
                 await crud_message.create_message(
                     db=db,
                     conversation_id=conversation_id,
@@ -164,64 +172,39 @@ async def chat_stream(
                     model_name=chat_data.model_name or llm_manager.ollama_model,
                     temperature=chat_data.temperature,
                     max_tokens=chat_data.max_tokens,
-                    generation_time=generation_time
+                    generation_time=generation_time,
                 )
 
-                # Send completion
-                completion_data = {
-                    'type': 'done',
-                    'generation_time': generation_time,
-                    'rag_used': rag_context_used
-                }
-                yield f"data: {json.dumps(completion_data)}\n\n"
-
-                logger.info(
-                    f"✅ Streaming completed in {generation_time:.2f}s "
-                    f"{'with RAG' if rag_context_used else 'without RAG'}"
-                )
+                yield f"data: {json.dumps({'type': 'done', 'generation_time': generation_time, 'rag_used': rag_used})}\n\n"
 
             except Exception as e:
-                logger.error(f"❌ Streaming error: {type(e).__name__}: {str(e)}", exc_info=True)
-                error_data = {
-                    'type': 'error',
-                    'message': str(e),
-                    'error_type': type(e).__name__
-                }
-                yield f"data: {json.dumps(error_data)}\n\n"
+                logger.error("Streaming error: %s", e, exc_info=True)
+                yield f"data: {json.dumps({'type':'error','message': str(e), 'error_type': type(e).__name__})}\n\n"
 
         return StreamingResponse(
             event_stream(),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Chat stream error: {type(e).__name__}: {str(e)}", exc_info=True)
+        logger.error("Chat stream error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
 
 
 @router.post("/", response_model=ChatResponse)
 async def chat(
-        chat_data: ChatMessage,
-        db: AsyncSession = Depends(get_db),
-        current_user: Optional[User] = Depends(get_current_user_optional)
+    chat_data: ChatMessage,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    """
-    Chat without streaming (for backward compatibility)
-    """
     try:
         user_id = current_user.id if current_user else None
         username = current_user.username if current_user else "anonymous"
+        logger.info("Chat(non-stream) from %s", username)
 
-        logger.info(f"📨 Chat request (non-stream) from {username}")
-
-        # Get or create conversation
         if chat_data.conversation_id:
             conversation = await crud_conversation.get(db, id=chat_data.conversation_id)
             if not conversation:
@@ -230,90 +213,36 @@ async def chat(
                 raise HTTPException(status_code=403, detail="Access denied")
             conversation_id = conversation.id
         else:
-            # Create new conversation
             from app.schemas.conversation import ConversationCreate
+
             conv_data = ConversationCreate(
                 title=chat_data.message[:100] if len(chat_data.message) <= 100 else chat_data.message[:97] + "...",
                 model_source=chat_data.model_source or "ollama",
-                model_name=chat_data.model_name or llm_manager.ollama_model
+                model_name=chat_data.model_name or llm_manager.ollama_model,
             )
-            conversation = await crud_conversation.create_for_user(
-                db=db,
-                obj_in=conv_data,
-                user_id=user_id
-            )
+            conversation = await crud_conversation.create_for_user(db=db, obj_in=conv_data, user_id=user_id)
             conversation_id = conversation.id
 
-        # Save user message
-        await crud_message.create_message(
-            db=db,
-            conversation_id=conversation_id,
-            role="user",
-            content=chat_data.message
+        await crud_message.create_message(db=db, conversation_id=conversation_id, role="user", content=chat_data.message)
+
+        messages = await crud_message.get_conversation_messages(db, conversation_id=conversation_id)
+        conversation_history = _build_conversation_history(messages)
+
+        final_prompt, rag_used, rag_debug = await _try_build_rag_prompt(
+            db=db, user_id=user_id, conversation_id=conversation_id, query=chat_data.message, top_k=3
         )
 
-        # Get history
-        messages = await crud_message.get_conversation_messages(db, conversation_id=conversation_id)
-        conversation_history = [
-            {"role": msg.role, "content": msg.content}
-            for msg in messages[:-1]
-        ]
-
-        # ✅ ИСПРАВЛЕНО: RAG only for current conversation
-        conversation_files = []
-        rag_context_used = False
-        final_prompt = chat_data.message
-
-        if user_id:
-            try:
-                # ✅ ИСПРАВЛЕНИЕ: Получаем только файлы ТЕКУЩЕГО чата
-                conversation_files = await crud_file.get_conversation_files(
-                    db,
-                    conversation_id=conversation_id,
-                    user_id=user_id
-                )
-                logger.info(f"📂 Current conversation has {len(conversation_files)} files")
-            except Exception as e:
-                logger.warning(f"Files fetch error: {e}")
-
-        # ✅ ИСПРАВЛЕНО: Use RAG if files are available FOR THIS CONVERSATION
-        if conversation_files and any(f.is_processed == "completed" for f in conversation_files):
-            try:
-                # ✅ ИСПРАВЛЕНИЕ: передаем conversation_id для фильтрации
-                context_docs = await rag_retriever.query_rag(
-                    chat_data.message,
-                    top_k=3,
-                    user_id=str(user_id) if user_id else None,
-                    conversation_id=str(conversation_id),
-                    model_source=chat_data.model_source
-                )
-
-                if context_docs:
-                    final_prompt = rag_retriever.build_context_prompt(
-                        query=chat_data.message,
-                        context_documents=context_docs
-                    )
-                    rag_context_used = True
-                    logger.info(f"✅ Using RAG with {len(context_docs)} documents from this conversation")
-            except Exception as e:
-                logger.warning(f"RAG error: {e}")
-
-        # Generate response
         start_time = datetime.utcnow()
-
         result = await llm_manager.generate_response(
             prompt=final_prompt,
             model_source=chat_data.model_source,
             model_name=chat_data.model_name,
             temperature=chat_data.temperature or 0.7,
             max_tokens=chat_data.max_tokens or 2000,
-            conversation_history=conversation_history if not rag_context_used else None
+            conversation_history=conversation_history if not rag_used else None,
         )
+        generation_time = (datetime.utcnow() - start_time).total_seconds()
 
-        end_time = datetime.utcnow()
-        generation_time = (end_time - start_time).total_seconds()
-
-        # Save assistant response
         assistant_message = await crud_message.create_message(
             db=db,
             conversation_id=conversation_id,
@@ -323,10 +252,8 @@ async def chat(
             temperature=chat_data.temperature,
             max_tokens=chat_data.max_tokens,
             tokens_used=result.get("tokens_used"),
-            generation_time=generation_time
+            generation_time=generation_time,
         )
-
-        logger.info(f"✅ Chat completed in {generation_time:.2f}s")
 
         return ChatResponse(
             response=result["response"],
@@ -334,11 +261,11 @@ async def chat(
             message_id=assistant_message.id,
             model_used=result["model"],
             tokens_used=result.get("tokens_used"),
-            generation_time=generation_time
+            generation_time=generation_time,
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Chat error: {type(e).__name__}: {str(e)}", exc_info=True)
+        logger.error("Chat error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")

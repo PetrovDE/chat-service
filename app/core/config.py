@@ -47,7 +47,15 @@ class Settings(BaseSettings):
     # VectorStore / RAG / LLM
     VECTORDB_PATH: str = Field(".chromadb", env="VECTORDB_PATH")
     COLLECTION_NAME: str = Field("documents", env="COLLECTION_NAME")
-    EMBEDDINGS_MODEL: str = Field("llama3.1:8b", env="EMBEDDINGS_MODEL")
+
+    # NOTE: оставляю для обратной совместимости
+    EMBEDDINGS_MODEL: str = Field("nomic-embed-text:latest", env="EMBEDDINGS_MODEL")
+
+    # FIX: разделяем chat и embeddings в Ollama
+    OLLAMA_CHAT_MODEL: str = Field("llama3.2:latest", env="OLLAMA_CHAT_MODEL")
+    OLLAMA_EMBED_MODEL: str = Field("nomic-embed-text:latest", env="OLLAMA_EMBED_MODEL")
+    EMBEDDINGS_DIM: int = Field(0, env="EMBEDDINGS_DIM")  # 0 = auto (не проверяем строго)
+
     EMBEDDINGS_BASEURL: AnyUrl = Field("http://localhost:11434", env="EMBEDDINGS_BASEURL")
     CHUNK_SIZE: int = Field(2000, env="CHUNK_SIZE")
     CHUNK_OVERLAP: int = Field(400, env="CHUNK_OVERLAP")

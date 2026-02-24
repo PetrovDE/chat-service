@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 class ChatMessage(BaseModel):
     message: str = Field(..., min_length=1, max_length=10000)
     conversation_id: Optional[uuid.UUID] = None
-    model_source: Optional[str] = Field(None, pattern=r"^(ollama|openai|local|aihub)$")
+    model_source: Optional[str] = Field(None, pattern=r"^(ollama|openai|local|aihub|corporate)$")
     model_name: Optional[str] = None
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(None, ge=1, le=8192)

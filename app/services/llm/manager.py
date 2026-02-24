@@ -1,6 +1,5 @@
 """
 LLM Manager with Provider Architecture
-Менеджер для работы с различными провайдерами LLM
 """
 import logging
 from typing import Optional, Dict, Any, List, AsyncGenerator
@@ -15,135 +14,130 @@ logger = logging.getLogger(__name__)
 
 
 class LLMManager:
-    """
-    Unified LLM Manager with Provider Architecture
-    Поддерживает: Ollama (local), OpenAI, AI HUB
-    """
+    """Unified LLM manager with pluggable providers."""
 
     def __init__(self):
         self.default_source = settings.DEFAULT_MODEL_SOURCE
-
-        # Регистрация провайдеров
+        self.ollama_model = settings.OLLAMA_CHAT_MODEL or settings.EMBEDDINGS_MODEL
+        self.openai_model = settings.OPENAI_MODEL
+        self.aihub_model = settings.AIHUB_DEFAULT_MODEL
         self.providers: Dict[str, BaseLLMProvider] = {
             "ollama": ollama_provider,
-            "local": ollama_provider,  # Алиас для ollama
+            "local": ollama_provider,
             "openai": openai_provider,
             "aihub": aihub_provider,
+            "corporate": aihub_provider,  # compatibility alias
         }
 
-        logger.info(f"🚀 LLMManager initialized with providers: {list(self.providers.keys())}")
-        logger.info(f"📌 Default source: {self.default_source}")
+        logger.info("LLMManager initialized with providers: %s", list(self.providers.keys()))
+        logger.info("Default source: %s", self.default_source)
+
+    @staticmethod
+    def _normalize_source(source: Optional[str]) -> str:
+        src = (source or "").strip().lower()
+        if not src:
+            src = (settings.DEFAULT_MODEL_SOURCE or "ollama").strip().lower()
+        if src == "corporate":
+            src = "aihub"
+        return src
 
     def _get_provider(self, source: str) -> BaseLLMProvider:
-        """Получить провайдер по имени"""
-        provider = self.providers.get(source)
+        normalized = self._normalize_source(source)
+        provider = self.providers.get(normalized)
         if not provider:
             raise ValueError(f"Unknown model source: {source}. Available: {list(self.providers.keys())}")
         return provider
 
     async def get_available_models(self, source: str = "ollama") -> List[str]:
-        """Получить список доступных моделей от провайдера"""
         try:
-            provider = self._get_provider(source)
+            normalized = self._normalize_source(source)
+            provider = self._get_provider(normalized)
             models = await provider.get_available_models()
-            logger.info(f"📋 Models from {source}: {models}")
+            logger.info("Models from %s: %s", normalized, models)
             return models
         except Exception as e:
-            logger.error(f"❌ Failed to fetch models from {source}: {e}")
+            logger.error("Failed to fetch models from %s: %s", source, e)
             return []
 
     async def generate_response(
-            self,
-            prompt: str,
-            model_source: Optional[str] = None,
-            model_name: Optional[str] = None,
-            temperature: float = 0.7,
-            max_tokens: int = 2000,
-            conversation_history: Optional[List[Dict[str, str]]] = None
+        self,
+        prompt: str,
+        model_source: Optional[str] = None,
+        model_name: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
-        """Генерировать полный ответ (без стриминга)"""
-        source = model_source or self.default_source
+        source = self._normalize_source(model_source or self.default_source)
         provider = self._get_provider(source)
 
-        # Определяем модель
         if not model_name:
-            if source == "ollama" or source == "local":
-                # FIX: чат-модель != embedding-модель
+            if source in ("ollama", "local"):
                 model_name = settings.OLLAMA_CHAT_MODEL or settings.EMBEDDINGS_MODEL
             elif source == "openai":
                 model_name = settings.OPENAI_MODEL
             elif source == "aihub":
                 model_name = settings.AIHUB_DEFAULT_MODEL
 
-        logger.info(f"🔧 Generating response: source={source}, model={model_name}")
+        logger.info("Generating response: source=%s, model=%s", source, model_name)
 
         return await provider.generate_response(
             prompt=prompt,
             model=model_name,
             temperature=temperature,
             max_tokens=max_tokens,
-            conversation_history=conversation_history
+            conversation_history=conversation_history,
         )
 
     async def generate_response_stream(
-            self,
-            prompt: str,
-            model_source: Optional[str] = None,
-            model_name: Optional[str] = None,
-            temperature: float = 0.7,
-            max_tokens: int = 2000,
-            conversation_history: Optional[List[Dict[str, str]]] = None
+        self,
+        prompt: str,
+        model_source: Optional[str] = None,
+        model_name: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> AsyncGenerator[str, None]:
-        """Генерировать ответ со стримингом"""
-        source = model_source or self.default_source
+        source = self._normalize_source(model_source or self.default_source)
         provider = self._get_provider(source)
 
-        # Определяем модель
         if not model_name:
-            if source == "ollama" or source == "local":
-                # FIX: чат-модель != embedding-модель
+            if source in ("ollama", "local"):
                 model_name = settings.OLLAMA_CHAT_MODEL or settings.EMBEDDINGS_MODEL
             elif source == "openai":
                 model_name = settings.OPENAI_MODEL
             elif source == "aihub":
                 model_name = settings.AIHUB_DEFAULT_MODEL
 
-        logger.info(f"🔧 Streaming response: source={source}, model={model_name}")
+        logger.info("Streaming response: source=%s, model=%s", source, model_name)
 
         async for chunk in provider.generate_response_stream(
             prompt=prompt,
             model=model_name,
             temperature=temperature,
             max_tokens=max_tokens,
-            conversation_history=conversation_history
+            conversation_history=conversation_history,
         ):
             yield chunk
 
     async def generate_embedding(
-            self,
-            text: str,
-            model_source: Optional[str] = None,
-            model_name: Optional[str] = None
+        self,
+        text: str,
+        model_source: Optional[str] = None,
+        model_name: Optional[str] = None,
     ) -> Optional[List[float]]:
-        """Генерировать эмбеддинг"""
-        source = model_source or self.default_source
+        source = self._normalize_source(model_source or self.default_source)
         provider = self._get_provider(source)
 
-        # Определяем модель для эмбеддингов
         if not model_name:
             if source == "aihub":
                 model_name = settings.AIHUB_EMBEDDING_MODEL
-            elif source == "ollama" or source == "local":
-                # FIX: раньше тут оставалось None → и это ломало retrieval
+            elif source in ("ollama", "local"):
                 model_name = settings.OLLAMA_EMBED_MODEL or settings.EMBEDDINGS_MODEL
 
-        logger.info(f"🔮 Generating embedding: source={source}, model={model_name}")
+        logger.info("Generating embedding: source=%s, model=%s", source, model_name)
 
-        return await provider.generate_embedding(
-            text=text,
-            model=model_name
-        )
+        return await provider.generate_embedding(text=text, model=model_name)
 
 
-# Create singleton instance
 llm_manager = LLMManager()

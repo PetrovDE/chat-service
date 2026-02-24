@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 class ConversationCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
-    model_source: str = Field("ollama", pattern=r"^(ollama|openai|local|aihub)$")
+    model_source: str = Field("ollama", pattern=r"^(ollama|openai|local|aihub|corporate)$")
     model_name: Optional[str] = None
 
 

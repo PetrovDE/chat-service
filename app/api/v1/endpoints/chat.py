@@ -1,8 +1,8 @@
-﻿# app/api/v1/endpoints/chat.py
+# app/api/v1/endpoints/chat.py
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
+from typing import Optional, List, Tuple
 import logging
 import json
 import uuid
@@ -24,6 +24,45 @@ def _build_conversation_history(messages):
     return [{"role": msg.role, "content": msg.content} for msg in messages[:-1]]
 
 
+def _normalize_source(source: Optional[str]) -> str:
+    src = (source or "").strip().lower()
+    if src == "corporate":
+        return "aihub"
+    if src in ("aihub", "openai", "ollama", "local"):
+        return src
+    return "local"
+
+
+def _parse_file_embedding_meta(raw_value: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    raw = (raw_value or "").strip()
+    if not raw:
+        return None, None
+
+    if ":" in raw:
+        mode_raw, model_raw = raw.split(":", 1)
+        mode = _normalize_source(mode_raw)
+        model = model_raw.strip() or None
+        if mode in ("local", "ollama", "aihub"):
+            return ("local" if mode == "ollama" else mode), model
+
+    # legacy format where only model was stored
+    return None, raw
+
+
+def _resolve_rag_embedding_config(files, requested_model_source: Optional[str]) -> Tuple[str, Optional[str]]:
+    fallback_mode = "aihub" if _normalize_source(requested_model_source) == "aihub" else "local"
+
+    first_model_only: Optional[str] = None
+    for f in files:
+        mode, model = _parse_file_embedding_meta(getattr(f, "embedding_model", None))
+        if model and not first_model_only:
+            first_model_only = model
+        if mode:
+            return mode, model
+
+    return fallback_mode, first_model_only
+
+
 async def _try_build_rag_prompt(
     *,
     db: AsyncSession,
@@ -31,6 +70,8 @@ async def _try_build_rag_prompt(
     conversation_id: uuid.UUID,
     query: str,
     top_k: int = 3,
+    file_ids: Optional[List[str]] = None,
+    model_source: Optional[str] = None,
 ):
     final_prompt = query
     rag_used = False
@@ -46,10 +87,16 @@ async def _try_build_rag_prompt(
         logger.warning("Could not fetch conversation files: %s", e)
         return final_prompt, rag_used, rag_debug
 
+    if file_ids:
+        allowed_ids = {str(x) for x in file_ids}
+        files = [f for f in files if str(f.id) in allowed_ids]
+        logger.info("Conversation files filtered by payload file_ids: %d", len(files))
+
     if not files:
         return final_prompt, rag_used, rag_debug
 
-    file_ids = [str(f.id) for f in files]
+    rag_file_ids = [str(f.id) for f in files]
+    embedding_mode, embedding_model = _resolve_rag_embedding_config(files, model_source)
 
     try:
         rag_result = await rag_retriever.query_rag(
@@ -57,7 +104,9 @@ async def _try_build_rag_prompt(
             top_k=top_k,
             user_id=str(user_id),
             conversation_id=str(conversation_id),
-            file_ids=file_ids,
+            file_ids=rag_file_ids,
+            embedding_mode=embedding_mode,
+            embedding_model=embedding_model,
             debug_return=True,
         )
 
@@ -67,14 +116,20 @@ async def _try_build_rag_prompt(
         else:
             context_docs = rag_result or []
 
+        if isinstance(rag_debug, dict):
+            rag_debug["embedding_mode"] = embedding_mode
+            rag_debug["embedding_model"] = embedding_model
+            rag_debug["file_ids"] = rag_file_ids
+
         if context_docs:
             final_prompt = rag_retriever.build_context_prompt(query=query, context_documents=context_docs)
             rag_used = True
-            logger.info("RAG enabled: docs=%d", len(context_docs))
+            logger.info("RAG enabled: docs=%d mode=%s model=%s", len(context_docs), embedding_mode, embedding_model)
         else:
             logger.info("RAG: no relevant chunks")
 
     except TypeError:
+        # Compatibility fallback for older query_rag signatures
         context_docs = await rag_retriever.query_rag(
             query,
             top_k=top_k,
@@ -140,6 +195,8 @@ async def chat_stream(
             conversation_id=conversation_id,
             query=chat_data.message,
             top_k=3,
+            file_ids=chat_data.file_ids,
+            model_source=chat_data.model_source,
         )
 
         assistant_message_id = uuid.uuid4()
@@ -229,7 +286,13 @@ async def chat(
         conversation_history = _build_conversation_history(messages)
 
         final_prompt, rag_used, rag_debug = await _try_build_rag_prompt(
-            db=db, user_id=user_id, conversation_id=conversation_id, query=chat_data.message, top_k=3
+            db=db,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query=chat_data.message,
+            top_k=3,
+            file_ids=chat_data.file_ids,
+            model_source=chat_data.model_source,
         )
 
         start_time = datetime.utcnow()

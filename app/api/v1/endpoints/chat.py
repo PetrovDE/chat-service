@@ -286,6 +286,7 @@ async def _try_build_rag_prompt(
     file_ids: Optional[List[str]] = None,
     model_source: Optional[str] = None,
     model_name: Optional[str] = None,
+    rag_mode: Optional[str] = None,
 ):
     final_prompt = query
     rag_used = False
@@ -322,6 +323,7 @@ async def _try_build_rag_prompt(
             file_ids=rag_file_ids,
             embedding_mode=embedding_mode,
             embedding_model=embedding_model,
+            rag_mode=rag_mode,
             debug_return=True,
         )
 
@@ -335,6 +337,7 @@ async def _try_build_rag_prompt(
             rag_debug["embedding_mode"] = embedding_mode
             rag_debug["embedding_model"] = embedding_model
             rag_debug["file_ids"] = rag_file_ids
+            rag_debug["rag_mode"] = rag_mode or "auto"
 
         if context_docs:
             retrieval_mode = (rag_debug or {}).get("retrieval_mode") if isinstance(rag_debug, dict) else None
@@ -431,6 +434,7 @@ async def chat_stream(
             file_ids=chat_data.file_ids,
             model_source=chat_data.model_source,
             model_name=chat_data.model_name,
+            rag_mode=chat_data.rag_mode,
         )
 
         assistant_message_id = uuid.uuid4()
@@ -546,6 +550,7 @@ async def chat(
             file_ids=chat_data.file_ids,
             model_source=chat_data.model_source,
             model_name=chat_data.model_name,
+            rag_mode=chat_data.rag_mode,
         )
 
         history_for_generation = conversation_history

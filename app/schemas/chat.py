@@ -3,6 +3,7 @@ import uuid
 from typing import Optional, List
 from pydantic import BaseModel, Field
 
+
 class ChatMessage(BaseModel):
     message: str = Field(..., min_length=1, max_length=10000)
     conversation_id: Optional[uuid.UUID] = None
@@ -10,7 +11,8 @@ class ChatMessage(BaseModel):
     model_name: Optional[str] = None
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(None, ge=1, le=8192)
-    file_ids: Optional[List[str]] = None  # Добавлено для поддержки файлов
+    file_ids: Optional[List[str]] = None
+    rag_mode: Optional[str] = Field(None, pattern=r"^(auto|hybrid|full_file)$")
 
 
 class ChatResponse(BaseModel):

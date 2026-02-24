@@ -42,6 +42,18 @@ FULL_FILE_PATTERNS = [
     "summarize full file",
     "whole file",
     "entire document",
+    "проанализируй файл",
+    "проанализируй документ",
+    "проанализировать файл",
+    "проанализировать документ",
+    "по всем строкам",
+    "все строки",
+    "целиком",
+    "полностью",
+    "сводку по файлу",
+    "summary of file",
+    "analyze file",
+    "analyze document",
 ]
 COMPARE_PATTERNS = ["сравни", "сравнить", "compare", "difference", "разница", "чем отличается"]
 
@@ -87,6 +99,36 @@ class RAGRetriever:
         if any(x in q for x in ["почему", "как связ", "why", "how does", "reason"]):
             return "multi_hop"
         return "fact_lookup"
+
+    def _resolve_intent(
+        self,
+        *,
+        query: str,
+        query_intent: Optional[str],
+        rag_mode: Optional[str],
+        file_ids: Optional[List[str]],
+    ) -> str:
+        """
+        Resolve final retrieval intent with explicit mode override and pragmatic fallback.
+        """
+        mode = (rag_mode or "").strip().lower()
+        if mode == "full_file":
+            return "analyze_full_file"
+        if mode == "hybrid":
+            return "fact_lookup"
+
+        detected = query_intent or self._detect_intent(query)
+
+        # Fallback: if user asks a broad analysis and files are explicitly attached,
+        # force full-file pass even when phrase is not in strict pattern list.
+        q = (query or "").strip().lower()
+        broad_terms = ["анализ", "разбери", "разбор", "свод", "итог", "обзор", "analyze", "summary", "overview"]
+        file_terms = ["файл", "документ", "sheet", "таблиц", "строк"]
+        if file_ids and detected == "fact_lookup":
+            if any(t in q for t in broad_terms) and any(t in q for t in file_terms):
+                return "analyze_full_file"
+
+        return detected
 
     def _build_where(
         self,
@@ -343,6 +385,7 @@ class RAGRetriever:
         score_threshold: Optional[float] = None,
         return_debug: bool = False,
         query_intent: Optional[str] = None,
+        rag_mode: Optional[str] = None,
     ) -> Union[List[Document], Tuple[List[Document], RetrievalDebug]]:
         query = (query or "").strip()
         if not query:
@@ -350,7 +393,12 @@ class RAGRetriever:
             debug = RetrievalDebug(where=None, top_k=top_k, fetch_k=fetch_k or 0, raw_count=0, returned_count=0)
             return (docs, debug) if return_debug else docs
 
-        intent = query_intent or self._detect_intent(query)
+        intent = self._resolve_intent(
+            query=query,
+            query_intent=query_intent,
+            rag_mode=rag_mode,
+            file_ids=file_ids,
+        )
         where = self._build_where(conversation_id=conversation_id, user_id=user_id, file_ids=file_ids)
 
         if intent == "analyze_full_file":
@@ -500,8 +548,14 @@ class RAGRetriever:
         embedding_model: Optional[str] = None,
         score_threshold: Optional[float] = None,
         debug_return: bool = False,
+        rag_mode: Optional[str] = None,
     ) -> Any:
-        intent = self._detect_intent(query)
+        intent = self._resolve_intent(
+            query=query,
+            query_intent=None,
+            rag_mode=rag_mode,
+            file_ids=file_ids,
+        )
 
         if not debug_return:
             docs = await self.retrieve(
@@ -516,6 +570,7 @@ class RAGRetriever:
                 score_threshold=score_threshold,
                 return_debug=False,
                 query_intent=intent,
+                rag_mode=rag_mode,
             )
             return [
                 {
@@ -539,6 +594,7 @@ class RAGRetriever:
             score_threshold=score_threshold,
             return_debug=True,
             query_intent=intent,
+            rag_mode=rag_mode,
         )
         return {
             "docs": [

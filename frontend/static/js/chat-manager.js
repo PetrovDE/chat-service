@@ -47,6 +47,8 @@ class ChatManager {
         }
       }
 
+      const ragMode = this.inferRagMode(message, fileIds);
+
       const payload = {
         message: message,
         conversation_id: conversationId || null,
@@ -54,7 +56,8 @@ class ChatManager {
         model_name: settings.model || 'llama3',
         temperature: settings.temperature || 0.7,
         max_tokens: settings.max_tokens || 2048,
-        file_ids: fileIds  // НОВОЕ: Добавляем file_ids если есть
+        file_ids: fileIds,  // НОВОЕ: Добавляем file_ids если есть
+        rag_mode: ragMode
       };
 
       console.log('📡 Request payload:', payload);
@@ -293,6 +296,35 @@ class ChatManager {
       .replace(/>/g, '&gt;')
       .replace(/\n/g, '<br>')
       .replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;');
+  }
+
+  inferRagMode(message, fileIds) {
+    if (!Array.isArray(fileIds) || fileIds.length === 0) {
+      return 'auto';
+    }
+
+    const text = (message || '').toLowerCase();
+    const fullFileHints = [
+      'весь файл',
+      'по всему файлу',
+      'проанализируй файл',
+      'проанализировать файл',
+      'все строки',
+      'по всем строкам',
+      'analyze the file',
+      'analyze file',
+      'whole file',
+      'all rows',
+      'full file',
+      'summarize the file',
+      'summary of file'
+    ];
+
+    if (fullFileHints.some((hint) => text.includes(hint))) {
+      return 'full_file';
+    }
+
+    return 'auto';
   }
 
   showGenerating(show) {

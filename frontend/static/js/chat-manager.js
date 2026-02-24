@@ -110,6 +110,7 @@ class ChatManager {
       let buffer = '';
       let assistantMessageDiv = null;
       let assistantBubble = null;
+      let streamDone = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -152,8 +153,26 @@ class ChatManager {
               }
             }
             // ===== ФОРМАТИРУЕМ ВЕСЬ ТЕКСТ ОДИН РАЗ КОГДА ГОТОВО =====
+            else if (chunk.type === 'final_refinement' && chunk.content) {
+              console.log('Final refinement received', chunk.critic || {});
+              if (assistantBubble) {
+                assistantBubble.textContent = chunk.content;
+                if (streamDone) {
+                  try {
+                    assistantBubble.innerHTML = formatMessage(chunk.content);
+                  } catch (e) {
+                    console.error('Error formatting refined message:', e);
+                  }
+                }
+                this.scrollToBottom();
+              }
+            }
+            else if (chunk.type === 'critic') {
+              console.log('Critic metadata:', chunk.critic || {});
+            }
             else if (chunk.type === 'done') {
               console.log('✅ Stream completed');
+              streamDone = true;
               this.isGenerating = false;
               this.showGenerating(false);
 

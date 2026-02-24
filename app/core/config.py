@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     AIHUB_VERIFY_SSL: bool = Field(False, env="AIHUB_VERIFY_SSL")
     AIHUB_DEFAULT_MODEL: str = Field("vikhr", env="AIHUB_DEFAULT_MODEL")
     AIHUB_EMBEDDING_MODEL: str = Field("embedding-model", env="AIHUB_EMBEDDING_MODEL")
+    AIHUB_CHAT_STREAM_PATH: str = Field("", env="AIHUB_CHAT_STREAM_PATH")
 
     # LLM/RAG defaults
     default_llm_mode: str = Field("local", env="DEFAULT_LLM_MODE")

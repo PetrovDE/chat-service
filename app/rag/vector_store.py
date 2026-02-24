@@ -289,3 +289,79 @@ class VectorStoreManager:
                 {"id": ids[i], "content": docs[i], "metadata": metas[i] or {}, "distance": dists[i]}
             )
         return out
+
+    def _iter_base_collections(self) -> List[Any]:
+        """
+        Return all Chroma collections that belong to current base_collection_name.
+        Works with different Chroma list_collections return types.
+        """
+        out: List[Any] = []
+        seen = set()
+
+        try:
+            listed = self.client.list_collections()
+        except Exception:
+            logger.warning("Could not list collections from Chroma", exc_info=True)
+            return out
+
+        for item in listed or []:
+            try:
+                name = item.name if hasattr(item, "name") else str(item)
+            except Exception:
+                continue
+
+            if not name.startswith(f"{self.base_collection_name}_"):
+                continue
+            if name in seen:
+                continue
+
+            seen.add(name)
+            try:
+                out.append(self.client.get_collection(name=name))
+            except Exception:
+                logger.warning("Could not open collection %s", name, exc_info=True)
+
+        return out
+
+    def get_by_filter(
+        self,
+        *,
+        filter_dict: Optional[Dict[str, Any]] = None,
+        limit_per_collection: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch documents by metadata filter across all known base collections.
+        Used for hybrid lexical retrieval and full-file analysis.
+        """
+        safe_filter = self._sanitize(filter_dict or {}, mode="where") if filter_dict else None
+        where = self._normalize_where(safe_filter) if safe_filter else None
+
+        results: List[Dict[str, Any]] = []
+        collections = self._iter_base_collections()
+        logger.info("get_by_filter: collections=%d where=%s", len(collections), where if where else None)
+
+        for collection in collections:
+            try:
+                raw = collection.get(
+                    where=where,
+                    include=["documents", "metadatas"],
+                    limit=limit_per_collection,
+                )
+            except Exception:
+                logger.warning("Collection get failed", exc_info=True)
+                continue
+
+            ids = raw.get("ids") or []
+            docs = raw.get("documents") or []
+            metas = raw.get("metadatas") or []
+
+            for i in range(min(len(ids), len(docs), len(metas))):
+                results.append(
+                    {
+                        "id": ids[i],
+                        "content": docs[i],
+                        "metadata": metas[i] or {},
+                    }
+                )
+
+        return results

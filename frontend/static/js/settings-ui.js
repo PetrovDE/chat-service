@@ -1,43 +1,32 @@
-// app/static/js/settings-ui.js
-
-// Глобальные функции для работы с настройками
 window.toggleSettings = function() {
     const settingsPanel = document.getElementById('settingsPanel');
-    if (settingsPanel) {
-        if (settingsPanel.classList.contains('show')) {
-            settingsPanel.classList.remove('show');
-        } else {
-            settingsPanel.classList.add('show');
-        }
-    }
+    if (!settingsPanel) return;
+    settingsPanel.classList.toggle('show');
 };
 
 window.closeSettings = function() {
     const settingsPanel = document.getElementById('settingsPanel');
-    if (settingsPanel) {
-        settingsPanel.classList.remove('show');
-    }
+    if (!settingsPanel) return;
+    settingsPanel.classList.remove('show');
 };
 
 window.saveSettings = function() {
-    if (window.app && window.app.settingsManager) {
+    if (window.app?.settingsManager) {
         window.app.settingsManager.applySettings();
         window.closeSettings();
-        console.log('✅ Settings saved');
     }
 };
 
 window.handleLogout = function() {
-    if (window.app && window.app.authManager) {
+    if (window.app?.authManager) {
         window.app.authManager.logout();
         window.closeSettings();
         location.reload();
     }
 };
 
-// Глобальные функции для разговоров
 window.startNewConversation = function() {
-    if (window.app && window.app.conversationsManager) {
+    if (window.app?.conversationsManager) {
         window.app.conversationsManager.createNewConversation();
     }
 };
@@ -47,9 +36,7 @@ window.toggleSidebar = function() {
 };
 
 window.clearAttachedFiles = function() {
-    if (window.app && window.app.fileManager) {
+    if (window.app?.fileManager) {
         window.app.fileManager.clearAttachedFiles();
     }
 };
-
-console.log('✓ Settings UI functions loaded');

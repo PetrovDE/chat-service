@@ -1,71 +1,32 @@
-/* ================================================
-   Typography
-   ================================================ */
-
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    font-size: var(--font-size-md);
-    line-height: var(--line-height-normal);
-    color: var(--color-black);
-    background-color: var(--color-gray-100);
+    font-family: var(--font-sans);
+    font-size: var(--text-md);
+    line-height: var(--line-normal);
+    color: var(--text);
+    background: var(--bg);
 }
 
-/* Headings */
-h1, h2, h3, h4, h5, h6 {
-    font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
-    color: var(--color-gray-900);
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    color: var(--text);
+    font-weight: 600;
+    line-height: var(--line-tight);
 }
 
-h1 {
-    font-size: var(--font-size-2xl);
-}
-
-h2 {
-    font-size: var(--font-size-xl);
-}
-
-h3 {
-    font-size: var(--font-size-lg);
-}
-
-h4 {
-    font-size: var(--font-size-md);
-}
-
-/* Paragraphs */
 p {
-    margin-bottom: var(--spacing-lg);
-    line-height: var(--line-height-normal);
+    color: var(--text-muted);
+    margin-bottom: var(--space-4);
 }
 
-/* Code */
-code {
-    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 0.9em;
-}
-
-/* Links */
-a {
-    color: var(--color-primary);
-    transition: color var(--transition-fast);
-}
-
-a:hover {
-    color: var(--color-primary-hover);
-}
-
-/* Strong & Emphasis */
-strong {
-    font-weight: var(--font-weight-semibold);
-}
-
-em {
-    font-style: italic;
-}
-
-/* Small text */
 small {
-    font-size: var(--font-size-xs);
-    color: var(--color-gray-600);
+    color: var(--text-muted);
+}
+
+code,
+pre {
+    font-family: var(--font-mono);
 }

@@ -1,69 +1,127 @@
-// frontend/static/js/api-service.js
+class HttpError extends Error {
+    constructor(message, status, payload = null) {
+        super(message);
+        this.name = 'HttpError';
+        this.status = status;
+        this.payload = payload;
+    }
+}
+
 class ApiService {
     constructor() {
         this.baseURL = '/api/v1';
+        this.defaultTimeoutMs = 30000;
     }
 
-    async request(method, endpoint, data = null) {
+    getAuthHeaders(includeJson = true) {
+        const headers = {};
+        if (includeJson) headers['Content-Type'] = 'application/json';
+
+        const token = localStorage.getItem('auth_token');
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+
+        return headers;
+    }
+
+    async request(method, endpoint, data = null, options = {}) {
         const url = `${this.baseURL}${endpoint}`;
-        console.log(`📡 ${method} ${url}`, data || '');
-        try {
-            const headers = { 'Content-Type': 'application/json' };
-            const token = localStorage.getItem('auth_token');
-            if (token) {
-                headers['Authorization'] = `Bearer ${token}`;
-            }
+        const timeoutMs = options.timeoutMs || this.defaultTimeoutMs;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-            const options = {
+        try {
+            const response = await fetch(url, {
                 method,
-                headers: headers
-            };
+                headers: {
+                    ...this.getAuthHeaders(true),
+                    ...(options.headers || {}),
+                },
+                body: data ? JSON.stringify(data) : undefined,
+                signal: options.signal || controller.signal,
+            });
 
-            if (data) options.body = JSON.stringify(data);
-
-            const response = await fetch(url, options);
-            console.log(`✓ ${method} ${url} → ${response.status}`);
+            const contentType = response.headers.get('content-type') || '';
+            const responseBody = contentType.includes('application/json')
+                ? await response.json()
+                : await response.text();
 
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
+                const detail = responseBody?.detail || response.statusText || `HTTP ${response.status}`;
+                throw new HttpError(detail, response.status, responseBody);
             }
 
-            const result = await response.json();
-            return result;
+            return responseBody;
         } catch (error) {
-            console.error(`❌ ${method} ${url} → ERROR:`, error);
+            if (error.name === 'AbortError') {
+                throw new Error('Request timeout');
+            }
             throw error;
+        } finally {
+            clearTimeout(timeoutId);
         }
     }
 
-    async get(endpoint) { return this.request('GET', endpoint); }
-    async post(endpoint, data) { return this.request('POST', endpoint, data); }
-    async put(endpoint, data) { return this.request('PUT', endpoint, data); }
-    async delete(endpoint) { return this.request('DELETE', endpoint); }
+    async get(endpoint, options = {}) {
+        return this.request('GET', endpoint, null, options);
+    }
 
-    // Health check - СПЕЦИАЛЬНЫЙ метод БЕЗ baseURL
+    async post(endpoint, data, options = {}) {
+        return this.request('POST', endpoint, data, options);
+    }
+
+    async put(endpoint, data, options = {}) {
+        return this.request('PUT', endpoint, data, options);
+    }
+
+    async patch(endpoint, data, options = {}) {
+        return this.request('PATCH', endpoint, data, options);
+    }
+
+    async delete(endpoint, options = {}) {
+        return this.request('DELETE', endpoint, null, options);
+    }
+
     async checkHealth() {
-        console.log('📡 GET /health');
-        try {
-            const response = await fetch('/health');
-            console.log(`✓ GET /health → ${response.status}`);
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-            return await response.json();
-        } catch (error) {
-            console.error('❌ GET /health → ERROR:', error);
-            throw error;
+        const response = await fetch('/health');
+        if (!response.ok) {
+            throw new Error(`Health check failed: ${response.status}`);
         }
+        return response.json();
     }
 
-    // Files API - ОБНОВЛЕНО: добавлена поддержка conversation_id параметра
-    async getProcessedFiles(conversationId = null) {
-        let endpoint = '/files/processed';
-        if (conversationId) {
-            endpoint += `?conversation_id=${conversationId}`;
+    async streamChat(payload, signal) {
+        const response = await fetch(`${this.baseURL}/chat/stream`, {
+            method: 'POST',
+            headers: this.getAuthHeaders(true),
+            body: JSON.stringify(payload),
+            signal,
+        });
+
+        if (!response.ok) {
+            let message = `HTTP ${response.status}`;
+            try {
+                const errorPayload = await response.json();
+                message = errorPayload.detail || message;
+            } catch (_) {
+                // no-op
+            }
+            throw new Error(message);
         }
-        return this.get(endpoint);
+
+        return response;
+    }
+
+    async getConversations() {
+        return this.get('/conversations/');
+    }
+
+    async getConversationMessages(conversationId) {
+        return this.get(`/conversations/${conversationId}/messages`);
+    }
+
+    async getProcessedFiles(conversationId = null) {
+        const params = conversationId ? `?conversation_id=${conversationId}` : '';
+        return this.get(`/files/processed${params}`);
     }
 
     async deleteFile(fileId) {
@@ -71,4 +129,4 @@ class ApiService {
     }
 }
 
-export { ApiService };
+export { ApiService, HttpError };

@@ -1,371 +1,313 @@
-// frontend/static/js/chat-manager.js
-// Импортируем функции для форматирования
 import { formatMessage } from './formatters.js';
 
 class ChatManager {
-  constructor(apiService, uiController) {
-    this.apiService = apiService;
-    this.uiController = uiController;
-    this.currentConversation = null;
-    this.isGenerating = false;
-    this.abortController = null;
-    this.conversationsManager = null;
-    console.log('✓ ChatManager initialized');
-  }
-
-  setConversationsManager(conversationsManager) {
-    this.conversationsManager = conversationsManager;
-    console.log('✓ ConversationsManager linked to ChatManager');
-  }
-
-  async sendMessage(message, conversationId, settings) {
-    console.log('📤 Sending message:', message);
-
-    if (this.isGenerating) {
-      console.warn('⚠️ Already generating, please wait');
-      return;
+    constructor(apiService, uiController) {
+        this.apiService = apiService;
+        this.uiController = uiController;
+        this.currentConversation = null;
+        this.isGenerating = false;
+        this.abortController = null;
+        this.conversationsManager = null;
+        this.lastRenderedDate = null;
     }
 
-    try {
-      this.isGenerating = true;
-      this.showGenerating(true);
+    setConversationsManager(conversationsManager) {
+        this.conversationsManager = conversationsManager;
+    }
 
-      // Add user message to UI
-      this.addMessageToUI('user', message);
+    getCurrentConversation() {
+        return this.currentConversation;
+    }
 
-      // Prepare request with correct mapping
-      const modelSource = settings.mode || 'local';
-      console.log('🔌 Model source:', modelSource); // Debug
+    setCurrentConversation(id) {
+        this.currentConversation = id;
+        this.lastRenderedDate = null;
+    }
 
-      // НОВОЕ: Получаем file_ids из FileManager
-      const fileIds = [];
-      if (window.app?.fileManager?.getAttachedFiles) {
-        const attachedFiles = window.app.fileManager.getAttachedFiles();
-        fileIds.push(...attachedFiles.map(f => f.id));
-        if (fileIds.length > 0) {
-          console.log('📎 Attached files:', fileIds);
+    renderWelcomeState() {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return;
+
+        chatMessages.innerHTML = `
+            <section class="chat-empty-state" aria-live="polite">
+                <h2>Start a new conversation</h2>
+                <p>Ask anything or attach a file to work with RAG context.</p>
+            </section>
+        `;
+        this.lastRenderedDate = null;
+    }
+
+    renderConversationHistory(messages) {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return;
+
+        chatMessages.innerHTML = '';
+        this.lastRenderedDate = null;
+
+        if (!messages || messages.length === 0) {
+            this.renderWelcomeState();
+            return;
         }
-      }
 
-      const ragMode = this.inferRagMode(message, fileIds);
+        messages.forEach((message) => {
+            this.addMessageToUI(message.role, message.content, message.timestamp);
+        });
 
-      const payload = {
-        message: message,
-        conversation_id: conversationId || null,
-        model_source: modelSource,
-        model_name: settings.model || 'llama3',
-        temperature: settings.temperature || 0.7,
-        max_tokens: settings.max_tokens || 2048,
-        file_ids: fileIds,  // НОВОЕ: Добавляем file_ids если есть
-        rag_mode: ragMode
-      };
-
-      console.log('📡 Request payload:', payload);
-
-      // Send to streaming endpoint
-      await this.streamResponse(payload);
-
-      // НОВОЕ: После успешной отправки, очищаем прикрепленные файлы
-      if (window.app?.fileManager?.clearAttachedFiles) {
-        window.app.fileManager.clearAttachedFiles();
-      }
-
-      return { success: true };
-    } catch (error) {
-      console.error('❌ Send message error:', error);
-      this.isGenerating = false;
-      this.showGenerating(false);
-      this.addMessageToUI('assistant', `Ошибка: ${error.message}`);
-      throw error;
+        this.scrollToBottom();
     }
-  }
 
-  async streamResponse(payload) {
-    this.abortController = new AbortController();
-    const wasNewConversation = !payload.conversation_id;
-    let newConversationId = null;
+    async sendMessage(message, conversationId, settings) {
+        if (this.isGenerating) return;
 
-    try {
-      // ИСПРАВЛЕНО: Добавляем токен авторизации
-      const token = localStorage.getItem('auth_token');
-      const headers = {
-        'Content-Type': 'application/json',
-      };
+        const normalizedMessage = (message || '').trim();
+        if (!normalizedMessage) return;
 
-      // Добавляем токен если он есть
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
+        try {
+            this.isGenerating = true;
+            this.showGenerating(true);
 
-      const response = await fetch(`${this.apiService.baseURL}/chat/stream`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify(payload),
-        signal: this.abortController.signal
-      });
+            this.addMessageToUI('user', normalizedMessage, new Date().toISOString());
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
+            const attachedFiles = window.app?.fileManager?.getAttachedFiles?.() || [];
+            const fileIds = attachedFiles.map((file) => file.id);
+            const ragMode = this.inferRagMode(normalizedMessage, fileIds);
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let assistantMessageDiv = null;
-      let assistantBubble = null;
-      let streamDone = false;
+            const payload = {
+                message: normalizedMessage,
+                conversation_id: conversationId || null,
+                model_source: settings.mode || 'local',
+                model_name: settings.model || 'llama3',
+                temperature: settings.temperature || 0.7,
+                max_tokens: settings.max_tokens || 2048,
+                prompt_max_chars: settings.prompt_max_chars || null,
+                file_ids: fileIds,
+                rag_mode: ragMode,
+            };
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+            await this.streamResponse(payload);
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.trim() || !line.startsWith('data: ')) continue;
-
-          const data = line.slice(6);
-          if (data === '[DONE]') continue;
-
-          try {
-            const chunk = JSON.parse(data);
-
-            if (chunk.type === 'start') {
-              console.log('🔄 Stream started');
-              if (chunk.conversation_id) {
-                newConversationId = chunk.conversation_id;
-                this.setCurrentConversation(chunk.conversation_id);
-                console.log('✅ Conversation ID set:', chunk.conversation_id);
-
-                // НОВОЕ: Если было загружено файлов БЕЗ conversation_id,
-                // они уже были отправлены в payload и связаны с conversation_id на backend
-              }
-
-              // Create assistant message element
-              assistantMessageDiv = this.createAssistantMessageElement();
-              assistantBubble = assistantMessageDiv.querySelector('.message-bubble');
+            if (window.app?.fileManager?.clearAttachedFiles) {
+                window.app.fileManager.clearAttachedFiles();
             }
-            // ===== НАКАПЛИВАЕМ ТЕКСТ, НЕ ФОРМАТИРУЯ =====
-            else if (chunk.type === 'chunk' && chunk.content) {
-              if (assistantBubble) {
-                // Добавляем текст как есть (без HTML)
-                assistantBubble.textContent += chunk.content;
-                this.scrollToBottom();
-              }
-            }
-            // ===== ФОРМАТИРУЕМ ВЕСЬ ТЕКСТ ОДИН РАЗ КОГДА ГОТОВО =====
-            else if (chunk.type === 'final_refinement' && chunk.content) {
-              console.log('Final refinement received', chunk.critic || {});
-              if (assistantBubble) {
-                assistantBubble.textContent = chunk.content;
-                if (streamDone) {
-                  try {
-                    assistantBubble.innerHTML = formatMessage(chunk.content);
-                  } catch (e) {
-                    console.error('Error formatting refined message:', e);
-                  }
-                }
-                this.scrollToBottom();
-              }
-            }
-            else if (chunk.type === 'critic') {
-              console.log('Critic metadata:', chunk.critic || {});
-            }
-            else if (chunk.type === 'done') {
-              console.log('✅ Stream completed');
-              streamDone = true;
-              this.isGenerating = false;
-              this.showGenerating(false);
+        } catch (error) {
+            this.addMessageToUI('assistant', `Error: ${error.message || 'Failed to send message'}`, new Date().toISOString());
+            throw error;
+        } finally {
+            this.isGenerating = false;
+            this.showGenerating(false);
+        }
+    }
 
-              // ФОРМАТИРУЕМ MARKDOWN И КОД ПОСЛЕ ПОЛУЧЕНИЯ ВСЕХ ДАННЫХ
-              if (assistantBubble) {
-                const rawText = assistantBubble.textContent;
+    async streamResponse(payload) {
+        this.abortController = new AbortController();
+        const wasNewConversation = !payload.conversation_id;
+        let newConversationId = null;
+
+        const assistantMessageDiv = this.createAssistantMessageElement();
+        if (!assistantMessageDiv) {
+            throw new Error('Chat container not found');
+        }
+
+        const assistantBubble = assistantMessageDiv.querySelector('.message-bubble');
+        const response = await this.apiService.streamChat(payload, this.abortController.signal);
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+            throw new Error('Streaming not supported by this browser');
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let rawResponseText = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const data = line.slice(6);
+                if (data === '[DONE]') continue;
+
+                let chunk;
                 try {
-                  assistantBubble.innerHTML = formatMessage(rawText);
-                } catch (e) {
-                  console.error('❌ Error formatting message:', e);
-                  // Если ошибка, оставляем как текст
+                    chunk = JSON.parse(data);
+                } catch (_) {
+                    continue;
                 }
-              }
 
-              // Обновляем список разговоров если был создан новый
-              if (wasNewConversation && newConversationId && this.conversationsManager) {
-                console.log('🔄 Reloading conversations list after creating new conversation');
-                setTimeout(() => {
-                  this.conversationsManager.loadConversations();
-                }, 300);
-              }
-            } else if (chunk.type === 'error') {
-              console.error('❌ Stream error:', chunk.message);
-              throw new Error(chunk.message || 'Stream error');
+                if (chunk.type === 'start' && chunk.conversation_id) {
+                    newConversationId = chunk.conversation_id;
+                    this.setCurrentConversation(chunk.conversation_id);
+                    if (window.app?.filesSidebarManager) {
+                        window.app.filesSidebarManager.setCurrentConversation(chunk.conversation_id);
+                    }
+                }
+
+                if (chunk.type === 'chunk' && chunk.content) {
+                    rawResponseText += chunk.content;
+                    assistantBubble.textContent = rawResponseText;
+                    this.scrollToBottom();
+                }
+
+                if (chunk.type === 'final_refinement' && chunk.content) {
+                    rawResponseText = chunk.content;
+                    assistantBubble.innerHTML = formatMessage(rawResponseText);
+                    this.scrollToBottom();
+                }
+
+                if (chunk.type === 'done') {
+                    if (!assistantBubble.innerHTML.trim()) {
+                        assistantBubble.innerHTML = formatMessage(rawResponseText);
+                    }
+
+                    if (wasNewConversation && newConversationId && this.conversationsManager) {
+                        this.conversationsManager.loadConversations();
+                    }
+                }
+
+                if (chunk.type === 'error') {
+                    throw new Error(chunk.message || 'Streaming failed');
+                }
             }
-          } catch (parseError) {
-            console.error('Parse error:', parseError, 'Line:', data);
-          }
         }
-      }
-    } catch (error) {
-      console.error('❌ Stream error:', error);
-      throw error;
-    } finally {
-      this.abortController = null;
-    }
-  }
 
-  createAssistantMessageElement() {
-    const chatMessages = document.getElementById('chatMessages');
-    if (!chatMessages) return null;
+        if (!assistantBubble.innerHTML.trim()) {
+            assistantBubble.innerHTML = formatMessage(rawResponseText);
+        }
 
-    const welcome = chatMessages.querySelector('[style*="text-align: center"]');
-    if (welcome) {
-      welcome.remove();
+        this.scrollToBottom();
+        this.abortController = null;
     }
 
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message assistant';
-    messageDiv.innerHTML = `
-      <div class="message-bubble"></div>
-      <div class="message-time">${new Date().toLocaleTimeString()}</div>
-    `;
-    chatMessages.appendChild(messageDiv);
-    return messageDiv;
-  }
+    createAssistantMessageElement() {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return null;
 
-  // ===== НОВЫЙ МЕТОД: Для загрузки сохраненных сообщений с форматированием =====
-  addFormattedMessageToUI(role, content) {
-    const chatMessages = document.getElementById('chatMessages');
-    if (!chatMessages) return;
+        const emptyState = chatMessages.querySelector('.chat-empty-state');
+        if (emptyState) emptyState.remove();
 
-    const welcome = chatMessages.querySelector('[style*="text-align: center"]');
-    if (welcome) {
-      welcome.remove();
+        this.ensureDateDivider(new Date().toISOString());
+
+        const messageDiv = document.createElement('article');
+        messageDiv.className = 'message assistant';
+        messageDiv.innerHTML = `
+            <div class="message-bubble"></div>
+            <time class="message-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+        `;
+
+        chatMessages.appendChild(messageDiv);
+        return messageDiv;
     }
 
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${role}`;
+    addMessageToUI(role, content, timestamp = null) {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return;
 
-    let formattedContent;
-    if (role === 'assistant') {
-      // Для ответов ассистента - используем полное форматирование markdown
-      try {
-        formattedContent = formatMessage(content);
-      } catch (e) {
-        console.error('❌ Error formatting assistant message:', e);
-        formattedContent = this.formatMessage(content);
-      }
-    } else {
-      // Для пользовательских сообщений - простое форматирование
-      formattedContent = this.formatMessage(content);
+        const emptyState = chatMessages.querySelector('.chat-empty-state');
+        if (emptyState) emptyState.remove();
+
+        const messageTime = timestamp || new Date().toISOString();
+        this.ensureDateDivider(messageTime);
+
+        const messageDiv = document.createElement('article');
+        messageDiv.className = `message ${role}`;
+
+        const html = role === 'assistant' ? formatMessage(content) : this.escapeText(content).replace(/\n/g, '<br>');
+        const timeLabel = new Date(messageTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        messageDiv.innerHTML = `
+            <div class="message-bubble">${html}</div>
+            <time class="message-time">${timeLabel}</time>
+        `;
+
+        chatMessages.appendChild(messageDiv);
+        this.scrollToBottom();
     }
 
-    messageDiv.innerHTML = `
-      <div class="message-bubble">${formattedContent}</div>
-      <div class="message-time">${new Date().toLocaleTimeString()}</div>
-    `;
-    chatMessages.appendChild(messageDiv);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-  }
+    ensureDateDivider(timestamp) {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return;
 
-  // ===== СТАРЫЙ МЕТОД: для новых сообщений (используется при отправке) =====
-  addMessageToUI(role, content) {
-    const chatMessages = document.getElementById('chatMessages');
-    if (!chatMessages) return;
+        const date = new Date(timestamp);
+        if (Number.isNaN(date.getTime())) return;
 
-    const welcome = chatMessages.querySelector('[style*="text-align: center"]');
-    if (welcome) {
-      welcome.remove();
+        const dateKey = date.toISOString().slice(0, 10);
+        if (dateKey === this.lastRenderedDate) return;
+
+        this.lastRenderedDate = dateKey;
+
+        const divider = document.createElement('div');
+        divider.className = 'date-divider';
+
+        const today = new Date();
+        const isToday = today.toDateString() === date.toDateString();
+        divider.textContent = isToday ? 'Today' : date.toLocaleDateString();
+
+        chatMessages.appendChild(divider);
     }
 
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${role}`;
-    messageDiv.innerHTML = `
-      <div class="message-bubble">${this.formatMessage(content)}</div>
-      <div class="message-time">${new Date().toLocaleTimeString()}</div>
-    `;
-    chatMessages.appendChild(messageDiv);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-  }
+    showGenerating(show) {
+        const sendBtn = document.getElementById('sendMessage');
+        const stopBtn = document.getElementById('stopGeneration');
 
-  formatMessage(text) {
-    // Базовое форматирование для текстовых сообщений (без markdown)
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br>')
-      .replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;');
-  }
-
-  inferRagMode(message, fileIds) {
-    if (!Array.isArray(fileIds) || fileIds.length === 0) {
-      return 'auto';
+        if (sendBtn) {
+            sendBtn.disabled = show;
+            sendBtn.style.display = show ? 'none' : 'inline-flex';
+        }
+        if (stopBtn) {
+            stopBtn.style.display = show ? 'inline-flex' : 'none';
+            stopBtn.classList.toggle('is-generating', show);
+        }
     }
 
-    const text = (message || '').toLowerCase();
-    const fullFileHints = [
-      'весь файл',
-      'по всему файлу',
-      'проанализируй файл',
-      'проанализировать файл',
-      'все строки',
-      'по всем строкам',
-      'analyze the file',
-      'analyze file',
-      'whole file',
-      'all rows',
-      'full file',
-      'summarize the file',
-      'summary of file'
-    ];
+    stopGeneration() {
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+        }
 
-    if (fullFileHints.some((hint) => text.includes(hint))) {
-      return 'full_file';
+        this.isGenerating = false;
+        this.showGenerating(false);
     }
 
-    return 'auto';
-  }
+    inferRagMode(message, fileIds) {
+        if (!Array.isArray(fileIds) || fileIds.length === 0) {
+            return 'auto';
+        }
 
-  showGenerating(show) {
-    const sendBtn = document.getElementById('sendMessage');
-    const stopBtn = document.getElementById('stopGeneration');
+        const text = (message || '').toLowerCase();
+        const fullFileHints = [
+            'whole file',
+            'full file',
+            'all rows',
+            'analyze file',
+            'summarize the file',
+            'ves fail',
+            'po vsemu failu',
+            'proanaliziruy fail',
+        ];
 
-    if (show) {
-      if (sendBtn) sendBtn.style.display = 'none';
-      if (stopBtn) stopBtn.style.display = 'block';
-    } else {
-      if (sendBtn) sendBtn.style.display = 'block';
-      if (stopBtn) stopBtn.style.display = 'none';
+        return fullFileHints.some((hint) => text.includes(hint)) ? 'full_file' : 'auto';
     }
-  }
 
-  getCurrentConversation() {
-    return this.currentConversation;
-  }
-
-  setCurrentConversation(id) {
-    this.currentConversation = id;
-    console.log('✓ Current conversation set:', id);
-  }
-
-  stopGeneration() {
-    console.log('⏹️ Stopping generation');
-    this.isGenerating = false;
-    this.showGenerating(false);
-
-    if (this.abortController) {
-      this.abortController.abort();
-      this.abortController = null;
+    escapeText(text) {
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
     }
-  }
 
-  scrollToBottom() {
-    const chatMessages = document.getElementById('chatMessages');
-    if (chatMessages) {
-      chatMessages.scrollTop = chatMessages.scrollHeight;
+    scrollToBottom() {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return;
+
+        chatMessages.scrollTop = chatMessages.scrollHeight;
     }
-  }
 }
 
 export { ChatManager };

@@ -1,299 +1,240 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI HUB / Ollama RAG Chat</title>
-
-    <!-- Main CSS - Modular Structure -->
+    <title>AI HUB Chat</title>
     <link rel="stylesheet" href="/static/css/main.css">
-
-    <!-- Favicon -->
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
-
-    <!-- Syntax highlighting theme -->
     <link rel="stylesheet" href="/static/libs/github-dark.min.css">
-
-    <!-- Markdown parser -->
     <script src="/static/libs/marked.min.js"></script>
-
-    <!-- Code syntax highlighter -->
     <script src="/static/libs/highlight.min.js"></script>
 </head>
-<body>
-    <!-- Header -->
-    <header class="header">
-        <div class="logo">
-            <span class="logo-icon">🤖</span>
-            <span>AI HUB</span>
+<body class="sidebar-collapsed-mobile">
+<header class="header" role="banner">
+    <div class="header-left">
+        <button id="mobileSidebarToggle" class="header-icon-btn" type="button" aria-label="Open chat list">Menu</button>
+        <div class="logo" aria-label="AI HUB">AI HUB</div>
+    </div>
+
+    <div class="header-right">
+        <div class="health-status" aria-live="polite">
+            <span id="healthIndicator" class="status-indicator is-unhealthy"></span>
+            <span id="healthStatus">Checking</span>
         </div>
 
-        <div class="health-status">
-            <span id="healthIndicator" class="status-indicator"></span>
-            <span id="healthStatus">Проверка...</span>
-            <button id="settingsBtn" class="toggle-settings">⚙️ Настройки</button>
+        <button id="themeToggle" class="header-btn" type="button" aria-label="Toggle theme">System</button>
+        <button id="settingsBtn" class="header-btn" type="button" aria-label="Open settings">Settings</button>
 
-            <!-- User Profile / Login -->
-            <div id="userProfileContainer">
-                <button id="loginBtn" class="login-btn">Войти</button>
+        <div id="userProfileContainer">
+            <button id="loginBtn" class="login-btn" type="button">Login</button>
+        </div>
+    </div>
+</header>
+
+<aside class="sidebar" id="sidebar" aria-label="Conversations">
+    <div class="sidebar-header">
+        <h2>Chats</h2>
+        <button id="sidebarToggle" class="header-icon-btn" type="button" aria-label="Collapse sidebar">Hide</button>
+    </div>
+
+    <div class="sidebar-actions">
+        <button class="new-chat-btn" onclick="startNewConversation()" type="button">+ New chat</button>
+        <label class="visually-hidden" for="conversationsSearch">Search chats</label>
+        <input id="conversationsSearch" class="sidebar-search" type="search" placeholder="Search" aria-label="Search chats">
+    </div>
+
+    <div id="conversationsList" class="conversations-list" role="listbox" aria-label="Conversations"></div>
+</aside>
+<button id="sidebarRestore" class="sidebar-restore-btn" type="button" aria-label="Show chats">Show chats</button>
+
+<aside class="files-sidebar" id="filesSidebar" aria-label="Files">
+    <div class="sidebar-header">
+        <h3>Files</h3>
+        <button class="close-files-sidebar" onclick="toggleFilesSidebar()" type="button" aria-label="Close files panel">X</button>
+    </div>
+
+    <div class="files-sidebar-info">
+        <p>Uploaded and processed files</p>
+    </div>
+
+    <div id="filesSidebarList" class="files-sidebar-list"></div>
+</aside>
+<button class="files-sidebar-toggle" onclick="toggleFilesSidebar()" type="button" aria-label="Toggle files panel">
+    Files
+</button>
+
+<main class="main-container" role="main">
+    <section class="chat-container">
+        <div id="chatMessages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions text">
+            <section class="chat-empty-state">
+                <h2>Start a new conversation</h2>
+                <p>Select a chat or create one to begin.</p>
+            </section>
+        </div>
+    </section>
+
+    <section class="input-area" aria-label="Message composer">
+        <div id="attachedFilesContainer" class="attached-files-container" style="display: none;">
+            <div class="attached-files-header">
+                <span>Attachments</span>
+                <button class="icon-btn" onclick="clearAttachedFiles()" type="button">Clear all</button>
             </div>
-        </div>
-    </header>
-
-    <!-- Sidebar Toggle Button (Conversations) -->
-    <button class="sidebar-toggle" onclick="toggleSidebar()">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="3" y1="12" x2="21" y2="12"></line>
-            <line x1="3" y1="6" x2="21" y2="6"></line>
-            <line x1="3" y1="18" x2="21" y2="18"></line>
-        </svg>
-    </button>
-
-    <!-- Sidebar (Conversations) -->
-    <aside class="sidebar" id="sidebar">
-        <div class="sidebar-header">
-            <h3>💬 Разговоры</h3>
+            <div id="attachedFilesList" class="attached-files-list"></div>
         </div>
 
-        <div class="sidebar-actions">
-            <button class="new-chat-btn" onclick="startNewConversation()">
-                ➕ Новый разговор
+        <div class="input-container">
+            <div class="composer-controls">
+                <label class="visually-hidden" for="mode-selector">Mode</label>
+                <select id="mode-selector" aria-label="Model source">
+                    <option value="local">Local models (Ollama)</option>
+                    <option value="aihub">Corporate AI HUB</option>
+                </select>
+
+                <label class="visually-hidden" for="model-selector">Model</label>
+                <select id="model-selector" aria-label="Model"></select>
+
+                <small id="modelCapsHint">Model limits: loading...</small>
+            </div>
+
+            <button class="attach-btn" type="button" aria-label="Attach file">File</button>
+
+            <label class="visually-hidden" for="messageInput">Message</label>
+            <textarea
+                id="messageInput"
+                class="message-input"
+                placeholder="Message... Enter to send, Shift+Enter for newline"
+                rows="1"
+                aria-label="Message input"
+            ></textarea>
+
+            <button id="sendMessage" class="send-button icon-action-btn" type="button" aria-label="Send message" title="Send">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path d="M3 20L21 12L3 4L3 10L15 12L3 14Z" fill="currentColor"></path>
+                </svg>
+            </button>
+            <button id="stopGeneration" class="stop-button icon-action-btn" style="display: none;" type="button" aria-label="Stop generation" title="Stop">
+                <span class="btn-spinner" aria-hidden="true"></span>
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                    <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect>
+                </svg>
             </button>
         </div>
+    </section>
+</main>
 
-        <div id="conversationsList" class="conversations-list">
-            <div class="conversations-loading">Загрузка разговоров...</div>
-        </div>
-    </aside>
+<input type="file" id="fileInput" style="display: none;" accept=".pdf,.docx,.txt,.md,.csv,.json,.xlsx">
 
-    <!-- Files Sidebar Toggle Button -->
-    <button class="files-sidebar-toggle" onclick="toggleFilesSidebar()">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
-            <polyline points="13 2 13 9 20 9"></polyline>
-        </svg>
-    </button>
-
-    <!-- Files Sidebar (Right) -->
-    <aside class="files-sidebar" id="filesSidebar">
-        <div class="sidebar-header">
-            <h3>📁 Мои файлы</h3>
-            <button class="close-files-sidebar" onclick="toggleFilesSidebar()">✕</button>
-        </div>
-
-        <div class="files-sidebar-info">
-            <p>Загруженные и обработанные документы</p>
-        </div>
-
-        <div id="filesSidebarList" class="files-sidebar-list">
-            <div class="files-loading">Загрузка файлов...</div>
-        </div>
-    </aside>
-
-    <!-- Main Container -->
-    <div class="main-container">
-        <div class="chat-container">
-            <!-- Chat Messages -->
-            <div id="chatMessages" class="chat-messages">
-                <!-- Welcome message -->
-                <div style="text-align: center; padding: 4rem 2rem; color: #8e8e93;">
-                    <h2 style="font-size: 2rem; margin-bottom: 1rem; color: #1f2937;">👋 Добро пожаловать в AI HUB!</h2>
-                    <p style="margin-bottom: 2rem;">Выберите модель и начните разговор</p>
-                    <div style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;">
-                        <button onclick="startNewConversation()" style="padding: 0.75rem 1.5rem; background: #007aff; color: white; border: none; border-radius: 12px; cursor: pointer; font-weight: 500;">
-                            💬 Новый разговор
-                        </button>
-                        <button onclick="document.getElementById('fileInput').click()" style="padding: 0.75rem 1.5rem; background: #f5f5f7; color: #1f2937; border: 1px solid #e1e5e9; border-radius: 12px; cursor: pointer; font-weight: 500;">
-                            📄 Загрузить документ
-                        </button>
-                    </div>
-                </div>
+<div id="authOverlay" class="auth-overlay">
+    <div id="loginModal" class="auth-modal">
+        <div class="auth-modal-content">
+            <div class="auth-header">
+                <h2>Login</h2>
+                <button class="close-button" onclick="closeAuthModals()" type="button">X</button>
             </div>
-        </div>
-
-        <!-- Input Area -->
-        <div class="input-area">
-            <!-- Attached Files Section (hidden by default) -->
-            <div id="attachedFilesContainer" class="attached-files-container" style="display: none;">
-                <div class="attached-files-header">
-                    <span>📎 Прикрепленные файлы</span>
-                    <button class="icon-btn" onclick="clearAttachedFiles()">✕ Очистить все</button>
-                </div>
-                <div id="attachedFilesList" class="attached-files-list"></div>
-            </div>
-
-            <!-- Input Container -->
-            <div class="input-container">
-                <!-- Mode & Model Selector -->
-                <div style="display: flex; gap: 0.5rem; flex-direction: column;">
-                    <select id="mode-selector" style="padding: 0.5rem; border: 1px solid #e1e5e9; border-radius: 8px; font-size: 0.9rem;">
-                        <option value="local">Локальные модели (Ollama)</option>
-                        <option value="aihub">Корпоративный AI HUB</option>
-                    </select>
-                    <select id="model-selector" style="padding: 0.5rem; border: 1px solid #e1e5e9; border-radius: 8px; font-size: 0.9rem;">
-                        <option value="">Загрузка моделей...</option>
-                    </select>
-                </div>
-
-                <!-- Attach File Button -->
-                <button class="attach-btn" title="Прикрепить файл">
-                    📎
-                </button>
-
-                <!-- Message Input -->
-                <textarea
-                    id="messageInput"
-                    class="message-input"
-                    placeholder="Введите сообщение... (Enter для отправки, Shift+Enter для новой строки)"
-                    rows="1"
-                ></textarea>
-
-                <!-- Send Button -->
-                <button id="sendMessage" class="send-button">
-                    Отправить
-                </button>
-
-                <!-- Stop Button (hidden by default) -->
-                <button id="stopGeneration" class="stop-button" style="display: none;">
-                    ⏹ Остановить
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Hidden File Input -->
-    <input type="file" id="fileInput" style="display: none;" accept=".pdf,.docx,.txt,.md,.csv,.json,.xlsx">
-
-    <!-- Auth Overlay -->
-    <div id="authOverlay" class="auth-overlay">
-        <!-- Login Modal -->
-        <div id="loginModal" class="auth-modal">
-            <div class="auth-modal-content">
-                <div class="auth-header">
-                    <h2>🔐 Вход</h2>
-                    <button class="close-button" onclick="closeAuthModals()">×</button>
-                </div>
-                <div class="auth-body">
-                    <form id="loginForm">
-                        <div id="loginError" class="auth-error"></div>
-
-                        <div class="form-group">
-                            <label for="loginUsername">Имя пользователя</label>
-                            <input type="text" id="loginUsername" class="auth-input" required autocomplete="username">
-                        </div>
-
-                        <div class="form-group">
-                            <label for="loginPassword">Пароль</label>
-                            <input type="password" id="loginPassword" class="auth-input" required autocomplete="current-password">
-                        </div>
-
-                        <button type="submit" class="auth-submit-btn">Войти</button>
-
-                        <div class="auth-switch">
-                            Нет аккаунта? <a href="javascript:void(0);" onclick="switchToRegister()">Зарегистрироваться</a>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </div>
-
-        <!-- Register Modal -->
-        <div id="registerModal" class="auth-modal">
-            <div class="auth-modal-content">
-                <div class="auth-header">
-                    <h2>📝 Регистрация</h2>
-                    <button class="close-button" onclick="closeAuthModals()">×</button>
-                </div>
-                <div class="auth-body">
-                    <form id="registerForm">
-                        <div id="registerError" class="auth-error"></div>
-
-                        <div class="form-group">
-                            <label for="registerUsername">Имя пользователя</label>
-                            <input type="text" id="registerUsername" class="auth-input" required autocomplete="username">
-                            <small>Минимум 3 символа</small>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="registerPassword">Пароль</label>
-                            <input type="password" id="registerPassword" class="auth-input" required autocomplete="new-password">
-                            <small>Минимум 8 символов</small>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="registerPasswordConfirm">Подтвердите пароль</label>
-                            <input type="password" id="registerPasswordConfirm" class="auth-input" required autocomplete="new-password">
-                        </div>
-
-                        <button type="submit" class="auth-submit-btn">Зарегистрироваться</button>
-
-                        <div class="auth-switch">
-                            Уже есть аккаунт? <a href="javascript:void(0);" onclick="switchToLogin()">Войти</a>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Settings Panel -->
-    <div id="settingsPanel" class="settings-panel">
-        <div class="settings-overlay" onclick="closeSettings()"></div>
-        <div class="settings-content">
-            <div class="settings-header">
-                <h2>⚙️ Настройки</h2>
-                <button class="close-button" onclick="closeSettings()">×</button>
-            </div>
-
-            <div class="settings-body">
-                <div class="settings-section">
-                    <h3>🤖 Параметры модели</h3>
-
+            <div class="auth-body">
+                <form id="loginForm">
+                    <div id="loginError" class="auth-error"></div>
                     <div class="form-group">
-                        <label for="temperatureSlider">
-                            Температура: <span id="temperatureValue">0.7</span>
-                        </label>
-                        <input type="range" id="temperatureSlider" class="settings-slider" min="0" max="2" step="0.1" value="0.7">
-                        <small>Контролирует креативность ответов (0 - строго, 2 - творчески)</small>
+                        <label for="loginUsername">Username</label>
+                        <input type="text" id="loginUsername" class="auth-input" required autocomplete="username">
                     </div>
-
                     <div class="form-group">
-                        <label for="maxTokensInput">Максимум токенов</label>
-                        <input type="number" id="maxTokensInput" class="settings-input" value="2048" min="128" max="8192" step="128">
-                        <small>Максимальная длина ответа</small>
+                        <label for="loginPassword">Password</label>
+                        <input type="password" id="loginPassword" class="auth-input" required autocomplete="current-password">
                     </div>
-                </div>
-
-                <div class="settings-section">
-                    <h3>👤 Профиль</h3>
-                    <div class="form-group">
-                        <p><strong>Пользователь:</strong> <span id="profileUsername">Гость</span></p>
-                        <button id="logoutBtn" class="settings-btn secondary" onclick="handleLogout()" style="display: none;">
-                            Выйти из аккаунта
-                        </button>
+                    <button type="submit" class="auth-submit-btn">Login</button>
+                    <div class="auth-switch">
+                        No account? <a href="javascript:void(0);" onclick="switchToRegister()">Sign up</a>
                     </div>
-                </div>
-            </div>
-
-            <div class="settings-footer">
-                <button class="settings-btn secondary" onclick="closeSettings()">Отмена</button>
-                <button class="settings-btn primary" onclick="saveSettings()">Сохранить</button>
+                </form>
             </div>
         </div>
     </div>
 
-    <!-- Loading Overlay -->
-    <div id="loadingOverlay" class="loading-overlay">
-        <div class="loading-content">
-            <div class="spinner"></div>
-            <p>Загрузка...</p>
+    <div id="registerModal" class="auth-modal">
+        <div class="auth-modal-content">
+            <div class="auth-header">
+                <h2>Sign up</h2>
+                <button class="close-button" onclick="closeAuthModals()" type="button">X</button>
+            </div>
+            <div class="auth-body">
+                <form id="registerForm">
+                    <div id="registerError" class="auth-error"></div>
+                    <div class="form-group">
+                        <label for="registerUsername">Username</label>
+                        <input type="text" id="registerUsername" class="auth-input" required autocomplete="username">
+                        <small>At least 3 characters</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="registerPassword">Password</label>
+                        <input type="password" id="registerPassword" class="auth-input" required autocomplete="new-password">
+                        <small>At least 8 characters</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="registerPasswordConfirm">Confirm password</label>
+                        <input type="password" id="registerPasswordConfirm" class="auth-input" required autocomplete="new-password">
+                    </div>
+                    <button type="submit" class="auth-submit-btn">Create account</button>
+                    <div class="auth-switch">
+                        Already have an account? <a href="javascript:void(0);" onclick="switchToLogin()">Login</a>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
+</div>
 
-    <!-- Toast Container -->
-    <div id="toastContainer"></div>
+<div id="settingsPanel" class="settings-panel">
+    <div class="settings-overlay" onclick="closeSettings()"></div>
+    <div class="settings-content">
+        <div class="settings-header">
+            <h2>Settings</h2>
+            <button class="close-button" onclick="closeSettings()" type="button">X</button>
+        </div>
 
-    <!-- Scripts -->
-    <script type="module" src="/static/js/app.js"></script>
+        <div class="settings-body">
+            <div class="settings-section">
+                <h3>Model parameters</h3>
+                <div class="form-group">
+                    <label for="temperatureSlider">Temperature: <span id="temperatureValue">0.7</span></label>
+                    <input type="range" id="temperatureSlider" class="settings-slider" min="0" max="2" step="0.1" value="0.7">
+                </div>
+                <div class="form-group">
+                    <label for="maxTokensInput">Max tokens</label>
+                    <input type="number" id="maxTokensInput" class="settings-input" value="2048" min="128" max="8192" step="128">
+                </div>
+                <div class="form-group">
+                    <label for="promptMaxCharsInput">Prompt max chars</label>
+                    <input type="number" id="promptMaxCharsInput" class="settings-input" value="50000" min="2000" max="200000" step="1000">
+                    <small id="settingsModelCapsHint">Model limits: loading...</small>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3>Profile</h3>
+                <p><strong>User:</strong> <span id="profileUsername">Guest</span></p>
+                <button id="logoutBtn" class="settings-btn secondary" onclick="handleLogout()" type="button" style="display: none;">Logout</button>
+            </div>
+        </div>
+
+        <div class="settings-footer">
+            <button class="settings-btn secondary" onclick="closeSettings()" type="button">Cancel</button>
+            <button class="settings-btn primary" onclick="saveSettings()" type="button">Save</button>
+        </div>
+    </div>
+</div>
+
+<div id="loadingOverlay" class="loading-overlay">
+    <div class="loading-content">
+        <div class="spinner"></div>
+        <p>Loading...</p>
+    </div>
+</div>
+
+<div id="toastContainer"></div>
+
+<script type="module" src="/static/js/app.js"></script>
 </body>
 </html>
+
+

@@ -1,312 +1,226 @@
-// frontend/static/js/files-sidebar-manager.js
-export class FilesSidebarManager {
+﻿export class FilesSidebarManager {
     constructor(apiService, uiController) {
         this.apiService = apiService;
         this.uiController = uiController;
         this.files = [];
         this.refreshInterval = null;
-        this.currentConversationId = null; // НОВОЕ: отслеживание текущего чата
+        this.currentConversationId = null;
     }
 
-    // ОБНОВЛЕНО: добавлен параметр conversationId
     initialize(conversationId = null) {
-        console.log('📁 Initializing Files Sidebar Manager');
-        this.currentConversationId = conversationId; // НОВОЕ
-
-        // Устанавливаем делегирование событий один раз
+        this.currentConversationId = conversationId;
         this.attachFileEventListeners();
-
-        // Загружаем файлы
         this.loadFiles();
 
-        // Auto-refresh every 10 seconds
         this.refreshInterval = setInterval(() => {
             this.loadFiles(true);
         }, 10000);
     }
 
     attachFileEventListeners() {
-        // Event delegation на контейнере для всех кликов
         const container = document.getElementById('filesSidebarList');
-        if (!container) {
-            console.error('Files sidebar list container not found');
-            return;
-        }
+        if (!container) return;
 
-        console.log('📌 Attaching file event listeners via delegation');
+        container.addEventListener('click', async (event) => {
+            const deleteBtn = event.target.closest('[data-action="delete"]');
+            if (!deleteBtn) return;
 
-        // Используем делегирование событий
-        container.addEventListener('click', async (e) => {
-            console.log('🖱️ Click detected in files sidebar:', e.target);
+            event.preventDefault();
+            event.stopPropagation();
 
-            // Ищем кнопку удаления
-            const deleteBtn = e.target.closest('[data-action="delete"]');
-            if (deleteBtn) {
-                e.preventDefault();
-                e.stopPropagation();
-                const fileId = deleteBtn.dataset.fileId;
-                console.log('🗑️ Delete button clicked for file:', fileId);
-                if (fileId && fileId !== 'undefined') {
-                    await this.handleDeleteFile(fileId);
-                } else {
-                    console.error('File ID not found on delete button');
-                }
-                return;
-            }
+            const fileId = deleteBtn.dataset.fileId;
+            if (!fileId) return;
+
+            await this.handleDeleteFile(fileId);
         });
-
-        console.log('✅ File event listeners attached successfully');
     }
 
-    // ОБНОВЛЕНО: передаёт currentConversationId в API
     async loadFiles(silent = false) {
         try {
-            if (!silent) {
-                this.showLoading();
-            }
-
-            const response = await this.apiService.getProcessedFiles(this.currentConversationId); // ОБНОВЛЕНО
-            this.files = response || [];
-            console.log('📦 Loaded files:', this.files);
-
+            if (!silent) this.showLoading();
+            const response = await this.apiService.getProcessedFiles(this.currentConversationId);
+            this.files = Array.isArray(response) ? response : [];
             this.render();
-
-            if (!silent) {
-                console.log(`✓ Loaded ${this.files.length} processed files`);
-            }
         } catch (error) {
-            console.error('Error loading files:', error);
-            if (!silent) {
-                this.showError('Не удалось загрузить файлы');
-            }
+            if (!silent) this.showError(error.message || 'Failed to load files');
         }
     }
 
     showLoading() {
         const container = document.getElementById('filesSidebarList');
-        if (container) {
-            container.innerHTML = `
-                <div class="files-loading">
-                    <p>Загрузка файлов...</p>
-                </div>
-            `;
-        }
+        if (!container) return;
+
+        container.innerHTML = `
+            <div class="files-loading">
+                <p>Loading files...</p>
+            </div>
+        `;
     }
 
     showError(message) {
         const container = document.getElementById('filesSidebarList');
-        if (container) {
-            container.innerHTML = `
-                <div class="files-empty">
-                    <div class="files-empty-icon">⚠️</div>
-                    <p>${message}</p>
-                </div>
-            `;
-        }
+        if (!container) return;
+
+        container.innerHTML = `
+            <div class="files-empty">
+                <div class="files-empty-icon">!</div>
+                <p>${this.escapeHtml(message)}</p>
+            </div>
+        `;
     }
 
     render() {
         const container = document.getElementById('filesSidebarList');
-        if (!container) {
-            console.error('Files sidebar list container not found');
-            return;
-        }
+        if (!container) return;
 
         if (this.files.length === 0) {
             container.innerHTML = `
                 <div class="files-empty">
-                    <div class="files-empty-icon">📭</div>
-                    <p>Нет загруженных файлов</p>
-                    <p style="font-size: 0.8rem; margin-top: 0.5rem; color: #6b7280;">
-                        Загрузите документы для работы с RAG
-                    </p>
+                    <div class="files-empty-icon">No files</div>
+                    <p>There are no uploaded files</p>
+                    <p style="font-size: 0.8rem; margin-top: 0.5rem; color: #6b7280;">Upload documents for RAG context.</p>
                 </div>
             `;
             return;
         }
 
-        container.innerHTML = this.files.map(file => this.renderFileItem(file)).join('');
-        console.log(`✓ Rendered ${this.files.length} files in sidebar`);
+        container.innerHTML = this.files.map((file) => this.renderFileItem(file)).join('');
     }
 
-    // ОБНОВЛЕНО: добавлено отображение информации о чатах (НОВОЕ ПОЛЕ conversation_ids)
     renderFileItem(file) {
         const icon = this.getFileIcon(file.file_type);
         const statusBadge = this.getStatusBadge(file.is_processed);
         const fileSize = this.formatFileSize(file.file_size);
         const uploadDate = this.formatDate(file.uploaded_at);
-        const conversationInfo = this.renderConversationInfo(file.conversation_ids); // НОВОЕ
+        const conversationInfo = this.renderConversationInfo(file.conversation_ids);
 
-        // ВАЖНО: используем file.id, а не file.file_id
         return `
             <div class="file-item" data-file-id="${file.id}">
                 <div class="file-item-header">
                     <div class="file-item-icon">${icon}</div>
                     <div class="file-item-info">
-                        <h4 class="file-item-name" title="${this.escapeHtml(file.original_filename)}">
-                            ${this.escapeHtml(file.original_filename)}
-                        </h4>
+                        <h4 class="file-item-name" title="${this.escapeHtml(file.original_filename)}">${this.escapeHtml(file.original_filename)}</h4>
                         <div class="file-item-meta">
-                            <span>📊 ${fileSize}</span>
-                            <span>📅 ${uploadDate}</span>
+                            <span>Size: ${fileSize}</span>
+                            <span>Date: ${uploadDate}</span>
                         </div>
                         ${statusBadge}
-                        ${file.chunks_count > 0 ? `
-                            <div class="file-item-chunks">
-                                📦 ${file.chunks_count} фрагментов
-                            </div>
-                        ` : ''}
+                        ${file.chunks_count > 0 ? `<div class="file-item-chunks">Chunks: ${file.chunks_count}</div>` : ''}
                         ${conversationInfo}
                     </div>
                 </div>
                 <div class="file-item-actions">
-                    <button 
-                        class="file-item-btn delete" 
-                        data-action="delete" 
-                        data-file-id="${file.id}"
-                        type="button">
-                        🗑️ Удалить
-                    </button>
+                    <button class="file-item-btn delete" data-action="delete" data-file-id="${file.id}" type="button">Delete</button>
                 </div>
             </div>
         `;
     }
 
-    // НОВОЕ: Рендер информации о чатах
     renderConversationInfo(conversationIds) {
-        if (!conversationIds || conversationIds.length === 0) {
-            return `<div class="file-item-chats">💬 Не используется</div>`;
+        if (!Array.isArray(conversationIds) || conversationIds.length === 0) {
+            return '<div class="file-item-chats">Chats: not used</div>';
         }
 
-        const count = conversationIds.length;
-        return `<div class="file-item-chats">💬 В ${count} чатах</div>`;
+        return `<div class="file-item-chats">Chats: ${conversationIds.length}</div>`;
     }
 
     escapeHtml(text) {
         const div = document.createElement('div');
-        div.textContent = text;
+        div.textContent = text || '';
         return div.innerHTML;
     }
 
-
     getFileIcon(fileType) {
-      const icons = {
-        'pdf': '📕',
-        'docx': '📘',
-        'doc': '📘',
-        'txt': '📄',
-        'md': '📝',
-        'csv': '📊',
-        'xlsx': '📗',
-        'xls': '📗',
-        'json': '📋',
-      };
-      return icons[fileType?.toLowerCase()] || '📄';
+        const icons = {
+            pdf: 'PDF',
+            docx: 'DOCX',
+            doc: 'DOC',
+            txt: 'TXT',
+            md: 'MD',
+            csv: 'CSV',
+            xlsx: 'XLSX',
+            xls: 'XLS',
+            json: 'JSON',
+        };
+
+        return icons[(fileType || '').toLowerCase()] || 'FILE';
     }
 
-    getStatusBadge(is_processed) {
-      if (is_processed === true || is_processed === 'completed') {
-        return '<span class="file-item-status completed">✅ Обработан</span>';
-      } else if (is_processed === 'processing') {
-        return '<span class="file-item-status processing">⏳ Обработка...</span>';
-      } else if (is_processed === 'failed') {
-        return '<span class="file-item-status failed">❌ Ошибка</span>';
-      }
-      return '<span class="file-item-status pending">⏸️ Ожидание</span>';
+    getStatusBadge(status) {
+        if (status === true || status === 'completed') {
+            return '<span class="file-item-status completed">Completed</span>';
+        }
+        if (status === 'processing') {
+            return '<span class="file-item-status processing">Processing</span>';
+        }
+        if (status === 'failed') {
+            return '<span class="file-item-status failed">Failed</span>';
+        }
+        return '<span class="file-item-status pending">Pending</span>';
     }
 
     formatFileSize(bytes) {
-      if (!bytes) return '0 B';
-      const sizes = ['B', 'KB', 'MB', 'GB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(1024));
-      return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
+        if (!bytes) return '0 B';
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
     }
 
     formatDate(dateString) {
-      if (!dateString) return '';
-      const date = new Date(dateString);
-      const now = new Date();
-      const diffMs = now - date;
-      const diffMins = Math.floor(diffMs / 60000);
-      const diffHours = Math.floor(diffMs / 3600000);
-      const diffDays = Math.floor(diffMs / 86400000);
+        if (!dateString) return '';
 
-      if (diffMins < 1) return 'только что';
-      if (diffMins < 60) return `${diffMins} мин назад`;
-      if (diffHours < 24) return `${diffHours} ч назад`;
-      if (diffDays < 7) return `${diffDays} дн назад`;
+        const date = new Date(dateString);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
 
-      return date.toLocaleDateString('ru-RU', {
-        day: 'numeric',
-        month: 'short',
-        year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
-      });
+        if (diffMins < 1) return 'just now';
+        if (diffMins < 60) return `${diffMins} min ago`;
+        if (diffHours < 24) return `${diffHours} h ago`;
+        if (diffDays < 7) return `${diffDays} d ago`;
+
+        return date.toLocaleDateString();
     }
 
     async handleDeleteFile(fileId) {
-      console.log('🗑️ Starting file deletion for ID:', fileId);
-      // ВАЖНО: используем file.id для поиска
-      const file = this.files.find(f => f.id === fileId);
-      if (!file) {
-        console.error('File not found:', fileId);
-        console.log('Available files:', this.files);
-        this.uiController.showToast('❌ Файл не найден', 'error');
-        return;
-      }
+        const file = this.files.find((item) => String(item.id) === String(fileId));
+        if (!file) {
+            this.uiController.showToast('File not found', 'error');
+            return;
+        }
 
-      const confirmed = confirm(
-        `Вы уверены, что хотите удалить файл "${file.original_filename}"?\n\n` +
-        `Это удалит:\n` +
-        `• Файл с сервера\n` +
-        `• Все embeddings из ChromaDB\n` +
-        `• Все embeddings из PostgreSQL\n` +
-        `• Запись из базы данных\n\n` +
-        `Это действие нельзя отменить!`
-      );
+        const confirmed = confirm(`Delete file "${file.original_filename}"? This action cannot be undone.`);
+        if (!confirmed) return;
 
-      if (!confirmed) {
-        console.log('Deletion cancelled by user');
-        return;
-      }
-
-      try {
-        console.log('🔄 Deleting file via API...');
-        this.uiController.showLoading('Удаление файла...');
-        await this.apiService.deleteFile(fileId);
-        this.uiController.hideLoading();
-        this.uiController.showToast('✅ Файл успешно удален', 'success');
-        console.log('✅ File deleted successfully');
-        // Reload files list
-        await this.loadFiles();
-      } catch (error) {
-        console.error('❌ Error deleting file:', error);
-        this.uiController.hideLoading();
-        this.uiController.showToast(
-          `❌ Ошибка удаления: ${error.message}`,
-          'error'
-        );
-      }
+        try {
+            this.uiController.showLoading('Deleting file...');
+            await this.apiService.deleteFile(fileId);
+            this.uiController.hideLoading();
+            this.uiController.showToast('File deleted', 'success');
+            await this.loadFiles();
+        } catch (error) {
+            this.uiController.hideLoading();
+            this.uiController.showToast(`Delete failed: ${error.message}`, 'error');
+        }
     }
 
     setCurrentConversation(conversationId) {
-      this.currentConversationId = conversationId;
-      console.log('📌 Current conversation set to:', conversationId);
+        this.currentConversationId = conversationId;
     }
 
     destroy() {
-      if (this.refreshInterval) {
-        clearInterval(this.refreshInterval);
-        this.refreshInterval = null;
-      }
-      console.log('📁 Files Sidebar Manager destroyed');
+        if (this.refreshInterval) {
+            clearInterval(this.refreshInterval);
+            this.refreshInterval = null;
+        }
     }
-  }
+}
 
-  // Global toggle function
-  window.toggleFilesSidebar = function() {
+window.toggleFilesSidebar = function() {
     const sidebar = document.getElementById('filesSidebar');
     if (sidebar) {
-      sidebar.classList.toggle('active');
-      console.log('Files sidebar toggled:', sidebar.classList.contains('active'));
+        sidebar.classList.toggle('active');
     }
-  };
+};

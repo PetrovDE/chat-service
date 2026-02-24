@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     AIHUB_DEFAULT_MODEL: str = Field("vikhr", env="AIHUB_DEFAULT_MODEL")
     AIHUB_EMBEDDING_MODEL: str = Field("embedding-model", env="AIHUB_EMBEDDING_MODEL")
     AIHUB_CHAT_STREAM_PATH: str = Field("", env="AIHUB_CHAT_STREAM_PATH")
+    AIHUB_MAX_PROMPT_CHARS: int = Field(50000, env="AIHUB_MAX_PROMPT_CHARS")
+    AIHUB_MAX_HISTORY_MESSAGE_CHARS: int = Field(2000, env="AIHUB_MAX_HISTORY_MESSAGE_CHARS")
 
     # LLM/RAG defaults
     default_llm_mode: str = Field("local", env="DEFAULT_LLM_MODE")

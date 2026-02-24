@@ -47,7 +47,9 @@ class OllamaProvider(BaseLLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 2000,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        prompt_max_chars: Optional[int] = None,
     ) -> Dict[str, Any]:
+        _ = prompt_max_chars
         messages: List[Dict[str, str]] = []
         if conversation_history:
             messages.extend(conversation_history)
@@ -79,7 +81,9 @@ class OllamaProvider(BaseLLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 2000,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        prompt_max_chars: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
+        _ = prompt_max_chars
         messages: List[Dict[str, str]] = []
         if conversation_history:
             messages.extend(conversation_history)

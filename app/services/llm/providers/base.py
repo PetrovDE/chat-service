@@ -21,7 +21,8 @@ class BaseLLMProvider(ABC):
             model: str,
             temperature: float = 0.7,
             max_tokens: int = 2000,
-            conversation_history: Optional[List[Dict[str, str]]] = None
+            conversation_history: Optional[List[Dict[str, str]]] = None,
+            prompt_max_chars: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Генерировать полный ответ (без стриминга)"""
         pass
@@ -33,7 +34,8 @@ class BaseLLMProvider(ABC):
             model: str,
             temperature: float = 0.7,
             max_tokens: int = 2000,
-            conversation_history: Optional[List[Dict[str, str]]] = None
+            conversation_history: Optional[List[Dict[str, str]]] = None,
+            prompt_max_chars: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """Генерировать ответ со стримингом"""
         pass

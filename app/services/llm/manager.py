@@ -67,6 +67,7 @@ class LLMManager:
         temperature: float = 0.7,
         max_tokens: int = 2000,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        prompt_max_chars: Optional[int] = None,
     ) -> Dict[str, Any]:
         source = self._normalize_source(model_source or self.default_source)
         provider = self._get_provider(source)
@@ -87,6 +88,7 @@ class LLMManager:
             temperature=temperature,
             max_tokens=max_tokens,
             conversation_history=conversation_history,
+            prompt_max_chars=prompt_max_chars,
         )
 
     async def generate_response_stream(
@@ -97,6 +99,7 @@ class LLMManager:
         temperature: float = 0.7,
         max_tokens: int = 2000,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        prompt_max_chars: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         source = self._normalize_source(model_source or self.default_source)
         provider = self._get_provider(source)
@@ -117,8 +120,25 @@ class LLMManager:
             temperature=temperature,
             max_tokens=max_tokens,
             conversation_history=conversation_history,
+            prompt_max_chars=prompt_max_chars,
         ):
             yield chunk
+
+    async def get_available_models_detailed(self, source: str = "ollama") -> List[Dict[str, Any]]:
+        normalized = self._normalize_source(source)
+        provider = self._get_provider(normalized)
+
+        detailed_fn = getattr(provider, "get_available_models_detailed", None)
+        if callable(detailed_fn):
+            try:
+                result = await detailed_fn()
+                if isinstance(result, list):
+                    return result
+            except Exception as e:
+                logger.warning("Detailed models fetch failed for %s: %s", normalized, e)
+
+        names = await provider.get_available_models()
+        return [{"name": n} for n in names]
 
     async def generate_embedding(
         self,

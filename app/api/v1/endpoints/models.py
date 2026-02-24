@@ -47,19 +47,26 @@ async def list_models(mode: str = "local") -> Dict[str, Any]:
             logger.info(f"🏢 Querying AI HUB for models")
 
             try:
-                # ✅ ИСПРАВЛЕНО: используем llm_manager для получения моделей
-                logger.info("📡 Using llm_manager to get AI HUB models...")
+                logger.info("📡 Using llm_manager to get detailed AI HUB models...")
+                detailed_models = await llm_manager.get_available_models_detailed(source="aihub")
 
-                models_list = await llm_manager.get_available_models(source="aihub")
-
-                if models_list:
-                    aihub_models = [{"name": model, "size": 0} for model in models_list]
+                if detailed_models:
+                    aihub_models = []
+                    for model in detailed_models:
+                        aihub_models.append(
+                            {
+                                "name": model.get("name"),
+                                "size": 0,
+                                "context_window": model.get("context_window"),
+                                "max_output_tokens": model.get("max_output_tokens"),
+                            }
+                        )
                     logger.info(f"✅ Got {len(aihub_models)} models from AI HUB via llm_manager")
                 else:
                     logger.warning("⚠️ No models returned from AI HUB, using defaults")
                     aihub_models = [
-                        {"name": "vikhr", "size": 0},
-                        {"name": "gpt-4", "size": 0}
+                        {"name": "vikhr", "size": 0, "context_window": None, "max_output_tokens": None},
+                        {"name": "gpt-4", "size": 0, "context_window": None, "max_output_tokens": None}
                     ]
 
                 return {

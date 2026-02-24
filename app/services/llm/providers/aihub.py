@@ -131,7 +131,8 @@ class AIHubProvider(BaseLLMProvider):
     def _prepare_messages(
             self,
             conversation_history: Optional[List[Dict[str, str]]],
-            prompt: str
+            prompt: str,
+            prompt_max_chars: Optional[int] = None,
     ) -> List[Dict[str, str]]:
         """
         Подготовить сообщения в формате AI HUB API.
@@ -139,20 +140,38 @@ class AIHubProvider(BaseLLMProvider):
         """
         messages = []
 
+        max_history_chars = max(200, int(getattr(settings, "AIHUB_MAX_HISTORY_MESSAGE_CHARS", 2000) or 2000))
+        configured_prompt_chars = int(getattr(settings, "AIHUB_MAX_PROMPT_CHARS", 50000) or 50000)
+        request_prompt_chars = int(prompt_max_chars or 0)
+        if request_prompt_chars > 0:
+            max_prompt_chars = max(2000, min(configured_prompt_chars, request_prompt_chars))
+        else:
+            max_prompt_chars = max(2000, configured_prompt_chars)
+
         # Добавляем историю
         if conversation_history:
             for msg in conversation_history:
                 role = msg.get("role", "user")[:20]  # Макс 20 символов
                 content = msg.get("content") or msg.get("text", "")
-                text = content[:1000]  # Макс 1000 символов
+                text = content[:max_history_chars]
 
                 if text:
                     messages.append({"role": role, "text": text})
 
         # Добавляем текущий запрос
+        prompt_text = (prompt or "")
+        original_len = len(prompt_text)
+        if original_len > max_prompt_chars:
+            logger.warning(
+                "AI HUB prompt truncated: %d -> %d chars (set AIHUB_MAX_PROMPT_CHARS to increase)",
+                original_len,
+                max_prompt_chars,
+            )
+            prompt_text = prompt_text[:max_prompt_chars]
+
         messages.append({
             "role": "user",
-            "text": prompt[:1000]
+            "text": prompt_text
         })
 
         # Ограничение API: максимум 10 сообщений
@@ -166,37 +185,88 @@ class AIHubProvider(BaseLLMProvider):
         return messages
 
     async def get_available_models(self) -> List[str]:
-        """Получить список доступных моделей из AI HUB"""
+        detailed = await self.get_available_models_detailed()
+        names: List[str] = []
+        for m in detailed:
+            name = str(m.get("name") or "").strip()
+            if name:
+                names.append(name)
+        return names
+
+    async def get_available_models_detailed(self) -> List[Dict[str, Any]]:
+        """Return model list with optional limits (if AI HUB provides them)."""
         try:
             headers = await self._get_headers()
             url = f"{self.base_url}/models"
 
-            logger.info(f"📊 Fetching models from: {url}")
+            logger.info(f"Fetching models from: {url}")
 
             async with httpx.AsyncClient(verify=self.verify_ssl) as client:
                 response = await client.get(
                     url,
                     headers=headers,
                     params={"type": "chatbot"},
-                    timeout=self.timeout
+                    timeout=self.timeout,
                 )
 
-                logger.info(f"📥 Response: {response.status_code}")
+                logger.info(f"Models response: {response.status_code}")
 
                 if response.status_code == 200:
                     data = response.json()
-                    # ✅ ИСПРАВЛЕНО: API возвращает список объектов моделей
                     models = data if isinstance(data, list) else data.get("models", [])
-                    model_names = [m.get("id") if isinstance(m, dict) else m for m in models]
-                    logger.info(f"✅ Available models: {model_names}")
-                    return model_names
-                else:
-                    logger.error(f"❌ Failed to get models: {response.status_code}")
-                    logger.error(f"Response: {response.text[:500]}")
-                    return []
+                    out: List[Dict[str, Any]] = []
+
+                    for item in models:
+                        if isinstance(item, str):
+                            out.append({"name": item, "context_window": None, "max_output_tokens": None})
+                            continue
+                        if not isinstance(item, dict):
+                            continue
+
+                        name = item.get("id") or item.get("name") or item.get("model") or item.get("slug")
+                        if not name:
+                            continue
+
+                        context_window = (
+                            item.get("contextWindow")
+                            or item.get("context_window")
+                            or item.get("maxContextTokens")
+                            or item.get("maxInputTokens")
+                            or item.get("inputTokenLimit")
+                        )
+                        max_output_tokens = (
+                            item.get("maxOutputTokens")
+                            or item.get("outputTokenLimit")
+                            or item.get("max_new_tokens")
+                        )
+
+                        try:
+                            context_window = int(context_window) if context_window is not None else None
+                        except Exception:
+                            context_window = None
+
+                        try:
+                            max_output_tokens = int(max_output_tokens) if max_output_tokens is not None else None
+                        except Exception:
+                            max_output_tokens = None
+
+                        out.append(
+                            {
+                                "name": str(name),
+                                "context_window": context_window,
+                                "max_output_tokens": max_output_tokens,
+                            }
+                        )
+
+                    logger.info("Available AI HUB models(detailed): %d", len(out))
+                    return out
+
+                logger.error("Failed to get models: %s", response.status_code)
+                logger.error("Response: %s", response.text[:500])
+                return []
 
         except Exception as e:
-            logger.error(f"❌ Error getting models: {type(e).__name__}: {e}", exc_info=True)
+            logger.error("Error getting models: %s: %s", type(e).__name__, e, exc_info=True)
             return []
 
     async def generate_response(
@@ -205,11 +275,12 @@ class AIHubProvider(BaseLLMProvider):
             model: str,
             temperature: float = 0.7,
             max_tokens: int = 2000,
-            conversation_history: Optional[List[Dict[str, str]]] = None
+            conversation_history: Optional[List[Dict[str, str]]] = None,
+            prompt_max_chars: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Генерировать полный ответ через AI HUB (без стриминга)"""
 
-        messages = self._prepare_messages(conversation_history, prompt)
+        messages = self._prepare_messages(conversation_history, prompt, prompt_max_chars=prompt_max_chars)
 
         payload = {
             "messages": messages,
@@ -267,14 +338,15 @@ class AIHubProvider(BaseLLMProvider):
             model: str,
             temperature: float = 0.7,
             max_tokens: int = 2000,
-            conversation_history: Optional[List[Dict[str, str]]] = None
+            conversation_history: Optional[List[Dict[str, str]]] = None,
+            prompt_max_chars: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Stream response via dedicated AI HUB stream endpoint if configured,
         otherwise fallback to non-stream /chat endpoint.
         """
 
-        messages = self._prepare_messages(conversation_history, prompt)
+        messages = self._prepare_messages(conversation_history, prompt, prompt_max_chars=prompt_max_chars)
 
         payload_stream = {
             "messages": messages,

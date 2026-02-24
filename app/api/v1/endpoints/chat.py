@@ -209,8 +209,14 @@ async def _build_full_file_map_reduce_prompt(
     context_documents: List[Dict[str, Any]],
     model_source: Optional[str],
     model_name: Optional[str],
+    prompt_max_chars: Optional[int] = None,
 ) -> str:
     batches = _batch_context_docs(context_documents, max_docs=12, max_chars=7000)
+    logger.info(
+        "RAG full_file map-reduce: docs=%d batches=%d",
+        len(context_documents),
+        len(batches),
+    )
     if not batches:
         return query
 
@@ -250,6 +256,7 @@ async def _build_full_file_map_reduce_prompt(
                 temperature=0.1,
                 max_tokens=900,
                 conversation_history=None,
+                prompt_max_chars=prompt_max_chars,
             )
             partial_text = (map_result.get("response") or "").strip()
             if partial_text:
@@ -258,6 +265,7 @@ async def _build_full_file_map_reduce_prompt(
             logger.warning("Map step failed for batch %d", i, exc_info=True)
 
     if not partials:
+        logger.warning("RAG full_file map-reduce: no partial summaries produced")
         return query
 
     reduce_context = "\n\n=====\n\n".join(partials)
@@ -287,6 +295,7 @@ async def _try_build_rag_prompt(
     model_source: Optional[str] = None,
     model_name: Optional[str] = None,
     rag_mode: Optional[str] = None,
+    prompt_max_chars: Optional[int] = None,
 ):
     final_prompt = query
     rag_used = False
@@ -349,6 +358,7 @@ async def _try_build_rag_prompt(
                     context_documents=context_docs,
                     model_source=model_source,
                     model_name=model_name,
+                    prompt_max_chars=prompt_max_chars,
                 )
             else:
                 final_prompt = rag_retriever.build_context_prompt(query=query, context_documents=context_docs)
@@ -435,6 +445,7 @@ async def chat_stream(
             model_source=chat_data.model_source,
             model_name=chat_data.model_name,
             rag_mode=chat_data.rag_mode,
+            prompt_max_chars=chat_data.prompt_max_chars,
         )
 
         assistant_message_id = uuid.uuid4()
@@ -457,6 +468,7 @@ async def chat_stream(
                     temperature=chat_data.temperature or 0.7,
                     max_tokens=chat_data.max_tokens or 2000,
                     conversation_history=history_for_generation,
+                    prompt_max_chars=chat_data.prompt_max_chars,
                 ):
                     full_response += chunk
                     yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
@@ -551,6 +563,7 @@ async def chat(
             model_source=chat_data.model_source,
             model_name=chat_data.model_name,
             rag_mode=chat_data.rag_mode,
+            prompt_max_chars=chat_data.prompt_max_chars,
         )
 
         history_for_generation = conversation_history
@@ -565,6 +578,7 @@ async def chat(
             temperature=chat_data.temperature or 0.7,
             max_tokens=chat_data.max_tokens or 2000,
             conversation_history=history_for_generation,
+            prompt_max_chars=chat_data.prompt_max_chars,
         )
 
         critic_meta: Optional[Dict[str, Any]] = None

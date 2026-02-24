@@ -9,6 +9,8 @@ class ChatManager {
         this.abortController = null;
         this.conversationsManager = null;
         this.lastRenderedDate = null;
+        this.autoScrollObserver = null;
+        this.initAutoScroll();
     }
 
     setConversationsManager(conversationsManager) {
@@ -307,6 +309,24 @@ class ChatManager {
         if (!chatMessages) return;
 
         chatMessages.scrollTop = chatMessages.scrollHeight;
+        requestAnimationFrame(() => {
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        });
+    }
+
+    initAutoScroll() {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages || this.autoScrollObserver) return;
+
+        this.autoScrollObserver = new MutationObserver(() => {
+            this.scrollToBottom();
+        });
+
+        this.autoScrollObserver.observe(chatMessages, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+        });
     }
 }
 

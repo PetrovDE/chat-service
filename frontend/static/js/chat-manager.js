@@ -305,12 +305,12 @@ class ChatManager {
     }
 
     scrollToBottom() {
-        const chatMessages = document.getElementById('chatMessages');
-        if (!chatMessages) return;
+        const scrollContainer = this.getScrollContainer();
+        if (!scrollContainer) return;
 
-        chatMessages.scrollTop = chatMessages.scrollHeight;
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
         requestAnimationFrame(() => {
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            scrollContainer.scrollTop = scrollContainer.scrollHeight;
         });
     }
 
@@ -327,6 +327,13 @@ class ChatManager {
             subtree: true,
             characterData: true,
         });
+    }
+
+    getScrollContainer() {
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return null;
+
+        return chatMessages.closest('.chat-container') || chatMessages;
     }
 }
 

@@ -163,9 +163,11 @@ class ChatManager {
                 }
 
                 if (chunk.type === 'done') {
-                    if (!assistantBubble.innerHTML.trim()) {
-                        assistantBubble.innerHTML = formatMessage(rawResponseText);
+                    if (chunk.content) {
+                        rawResponseText = chunk.content;
                     }
+                    assistantBubble.innerHTML = formatMessage(rawResponseText);
+                    this.scrollToBottom();
 
                     if (wasNewConversation && newConversationId && this.conversationsManager) {
                         this.conversationsManager.loadConversations();
@@ -178,9 +180,7 @@ class ChatManager {
             }
         }
 
-        if (!assistantBubble.innerHTML.trim()) {
-            assistantBubble.innerHTML = formatMessage(rawResponseText);
-        }
+        assistantBubble.innerHTML = formatMessage(rawResponseText);
 
         this.scrollToBottom();
         this.abortController = null;

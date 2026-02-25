@@ -96,7 +96,33 @@ class DocumentLoader:
         import pandas as pd
 
         # FIX: dtype=str, keep_default_na=False чтобы не превращать всё в NaN/float
-        df = pd.read_csv(filepath, dtype=str, keep_default_na=False, encoding="utf-8", engine="python")
+        csv_attempts = [
+            {"encoding": "utf-8"},
+            {"encoding": "utf-8-sig"},
+            {"encoding": "cp1251"},
+            {"encoding": "latin-1"},
+        ]
+
+        df = None
+        last_error: Optional[Exception] = None
+        for attempt in csv_attempts:
+            try:
+                df = pd.read_csv(
+                    filepath,
+                    dtype=str,
+                    keep_default_na=False,
+                    engine="python",
+                    sep=None,
+                    on_bad_lines="skip",
+                    **attempt,
+                )
+                break
+            except Exception as e:
+                last_error = e
+                continue
+
+        if df is None:
+            raise ValueError(f"Failed to read CSV file: {filepath}. Last error: {last_error}")
         if df.empty:
             raise ValueError(f"No readable data found in CSV file: {filepath}")
 

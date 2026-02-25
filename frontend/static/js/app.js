@@ -53,7 +53,20 @@ class App {
             await this.conversationsManager.loadConversations();
             this.filesSidebarManager.initialize();
         } else {
-            this.chatManager.renderWelcomeState();
+            const renderWelcome = this.chatManager.renderWelcomeState || this.chatManager.renderWelcome;
+            if (typeof renderWelcome === 'function') {
+                renderWelcome.call(this.chatManager);
+            } else {
+                const chatMessages = document.getElementById('chatMessages');
+                if (chatMessages) {
+                    chatMessages.innerHTML = `
+                        <section class="chat-empty-state" aria-live="polite">
+                            <h2>Start a new conversation</h2>
+                            <p>Select a chat or create one to begin.</p>
+                        </section>
+                    `;
+                }
+            }
         }
 
         await this.settingsManager.loadAvailableModels();

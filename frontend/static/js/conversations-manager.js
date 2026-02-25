@@ -124,7 +124,12 @@ class ConversationsManager {
         try {
             const messages = await this.apiService.getConversationMessages(conversationId);
             this.chatManager.setCurrentConversation(conversationId);
-            this.chatManager.renderConversationHistory(messages);
+            const renderHistory = this.chatManager.renderConversationHistory || this.chatManager.renderConversationHistori;
+            if (typeof renderHistory === 'function') {
+                renderHistory.call(this.chatManager, messages);
+            } else {
+                throw new Error('Chat render method is unavailable');
+            }
 
             if (window.app?.filesSidebarManager) {
                 window.app.filesSidebarManager.setCurrentConversation(conversationId);
@@ -140,7 +145,20 @@ class ConversationsManager {
 
     createNewConversation() {
         this.chatManager.setCurrentConversation(null);
-        this.chatManager.renderWelcomeState();
+        const renderWelcome = this.chatManager.renderWelcomeState || this.chatManager.renderWelcome;
+        if (typeof renderWelcome === 'function') {
+            renderWelcome.call(this.chatManager);
+        } else {
+            const chatMessages = document.getElementById('chatMessages');
+            if (chatMessages) {
+                chatMessages.innerHTML = `
+                    <section class="chat-empty-state" aria-live="polite">
+                        <h2>Start a new conversation</h2>
+                        <p>Ask anything or attach a file to work with RAG context.</p>
+                    </section>
+                `;
+            }
+        }
         this.renderConversations();
 
         if (window.app?.filesSidebarManager) {

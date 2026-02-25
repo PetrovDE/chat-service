@@ -58,6 +58,11 @@ class ChatManager {
         this.scrollToBottom();
     }
 
+    // Backward-compatible alias for mixed cached frontend bundles.
+    renderConversationHistori(messages) {
+        this.renderConversationHistory(messages);
+    }
+
     async sendMessage(message, conversationId, settings) {
         if (this.isGenerating) return;
 

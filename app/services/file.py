@@ -1,10 +1,10 @@
 """
-File Processing Service
-Сервис обработки файлов: extraction -> chunking -> embeddings -> vector store
+File processing service: extraction -> chunking -> embeddings -> vector store.
 
-FIX:
-- Для local/ollama embeddings берём settings.OLLAMA_EMBED_MODEL (а не EMBEDDINGS_MODEL).
-- Параметр embedding_model из endpoint — override, но если похож на chat-модель, игнорируем.
+Notes:
+- For local/ollama embeddings use settings.OLLAMA_EMBED_MODEL first.
+- embedding_model from endpoint is treated as an override, but chat-model
+  names are ignored for embedding workflows.
 """
 
 from __future__ import annotations
@@ -51,9 +51,7 @@ def _looks_like_chat_model(model_name: str) -> bool:
 
 
 def _resolve_embedding_model(mode: str, override: Optional[str]) -> str:
-    """
-    Решаем, какую модель использовать именно для ЭМБЕДДИНГОВ.
-    """
+    """Resolve which model should be used for embeddings."""
     mode = (mode or "local").lower().strip()
     if mode == "corporate":
         mode = "aihub"
@@ -67,7 +65,7 @@ def _resolve_embedding_model(mode: str, override: Optional[str]) -> str:
 
     if override:
         if _looks_like_chat_model(override):
-            logger.warning("⚠️ embedding_model override looks like chat model (%s). Using %s", override, base)
+            logger.warning("embedding_model override looks like chat model (%s). Using %s", override, base)
             return base
         return override
 
@@ -82,7 +80,7 @@ async def process_file_async(
 ) -> None:
     resolved = _resolve_embedding_model(embedding_mode, embedding_model)
     logger.info(
-        "🚀 Scheduling file processing: file_id=%s mode=%s model_override=%s resolved_model=%s path=%s",
+        "Scheduling file processing: file_id=%s mode=%s model_override=%s resolved_model=%s path=%s",
         file_id, embedding_mode, embedding_model, resolved, file_path
     )
     asyncio.create_task(_process_file(file_id, file_path, embedding_mode, resolved))
@@ -96,7 +94,7 @@ async def process_file_background(
 ) -> None:
     resolved = _resolve_embedding_model(embedding_mode, embedding_model)
     logger.info(
-        "🧱 Running file processing (await): file_id=%s mode=%s model_override=%s resolved_model=%s path=%s",
+        "Running file processing (await): file_id=%s mode=%s model_override=%s resolved_model=%s path=%s",
         file_id, embedding_mode, embedding_model, resolved, file_path
     )
     await _process_file(file_id, file_path, embedding_mode, resolved)
@@ -116,7 +114,7 @@ async def _process_file(
             )
             await crud_file.update_processing_status(db, file_id=file_id, status="processing")
 
-            # conversation_id для фильтра retrieval
+            # conversation_id is used by retrieval filters
             q = select(ConversationFile.conversation_id).where(ConversationFile.file_id == file_id)
             r = await db.execute(q)
             conv_ids = r.scalars().all()

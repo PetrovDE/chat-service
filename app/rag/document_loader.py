@@ -48,13 +48,11 @@ class DocumentLoader:
 
         docs = await self.supported_loaders[ext](filepath, metadata)
 
-        # гарантируем source/file_type в metadata
         for d in docs:
             d.metadata = d.metadata or {}
             d.metadata.setdefault("source", filepath)
             d.metadata.setdefault("file_type", ext.lstrip("."))
 
-        # минимальная защита от пустоты
         if not docs or not any((d.page_content or "").strip() for d in docs):
             raise ValueError(f"No readable content extracted from file: {filepath}")
 
@@ -91,11 +89,10 @@ class DocumentLoader:
 
     async def load_csv(self, filepath: str, metadata: Optional[Dict[str, Any]]) -> List[Document]:
         """
-        CSV -> делаем блоки строками, чтобы RAG мог попадать в нужные строки/колонки.
+        CSV -> split into row blocks so RAG can target specific rows and columns.
         """
         import pandas as pd
 
-        # FIX: dtype=str, keep_default_na=False чтобы не превращать всё в NaN/float
         csv_attempts = [
             {"encoding": "utf-8"},
             {"encoding": "utf-8-sig"},
@@ -126,7 +123,7 @@ class DocumentLoader:
         if df.empty:
             raise ValueError(f"No readable data found in CSV file: {filepath}")
 
-        max_rows_per_doc = 50  # можно вынести в settings
+        max_rows_per_doc = 50  # can be moved to settings
         docs: List[Document] = []
 
         cols = [str(c) for c in df.columns.tolist()]
@@ -140,8 +137,8 @@ class DocumentLoader:
             lines.append("=" * 60)
             lines.append("CSV")
             lines.append("=" * 60)
-            lines.append(f"Колонки: {', '.join(cols)}")
-            lines.append(f"Строки: {start + 1}-{end} / {total_rows}")
+            lines.append(f"Columns: {', '.join(cols)}")
+            lines.append(f"Rows: {start + 1}-{end} / {total_rows}")
             lines.append("-" * 60)
 
             for ridx in range(len(block)):
@@ -177,14 +174,11 @@ class DocumentLoader:
 
     async def load_excel(self, filepath: str, metadata: Optional[Dict[str, Any]]) -> List[Document]:
         """
-        FIX: Excel больше НЕ собираем в один огромный документ.
-
-        Теперь стратегия:
-        - читаем каждый лист
-        - режем по блокам строк (например по 30–50)
-        - каждый блок превращаем в отдельный Document с metadata: sheet_name, row_start/row_end, columns
-
-        Это резко повышает точность RAG (и уменьшает "слипание" контекста).
+        Excel parsing strategy:
+        - read each sheet separately
+        - split by row blocks (for example 30-50)
+        - create a separate Document per block with metadata:
+          sheet_name, row_start/row_end, columns
         """
         import pandas as pd
 
@@ -196,15 +190,14 @@ class DocumentLoader:
         sheet_names = excel_file.sheet_names
         logger.info("Processing Excel: sheets=%d", len(sheet_names))
 
-        max_rows_per_doc = 40  # можно вынести в settings
+        max_rows_per_doc = 40  # can be moved to settings
         docs: List[Document] = []
 
         for sheet_name in sheet_names:
             try:
-                # FIX: dtype=str + keep_default_na=False чтобы не ломать текстовые значения
                 df = pd.read_excel(filepath, sheet_name=sheet_name, dtype=str, keep_default_na=False)
             except Exception:
-                logger.warning(f"⚠️ Failed to read sheet '{sheet_name}'", exc_info=True)
+                logger.warning("Failed to read sheet '%s'", sheet_name, exc_info=True)
                 continue
 
             if df is None or df.empty:
@@ -219,13 +212,12 @@ class DocumentLoader:
 
                 lines: List[str] = []
                 lines.append("=" * 70)
-                lines.append(f"EXCEL | ЛИСТ: {sheet_name}")
+                lines.append(f"EXCEL | SHEET: {sheet_name}")
                 lines.append("=" * 70)
-                lines.append(f"Колонки: {', '.join(cols)}")
-                lines.append(f"Строки: {start + 1}-{end} / {total_rows}")
+                lines.append(f"Columns: {', '.join(cols)}")
+                lines.append(f"Rows: {start + 1}-{end} / {total_rows}")
                 lines.append("-" * 70)
 
-                # компактная сериализация строк
                 for ridx in range(len(block)):
                     row = block.iloc[ridx]
                     parts = []
@@ -273,7 +265,6 @@ class DocumentLoader:
         return docs
 
     async def load_markdown(self, filepath: str, metadata: Optional[Dict[str, Any]]) -> List[Document]:
-        # Сначала пробуем Markdown loader, потом fallback в TextLoader с энкодингами
         try:
             from langchain_community.document_loaders import UnstructuredMarkdownLoader
 

@@ -1,4 +1,4 @@
-﻿# app/rag/retriever.py
+# app/rag/retriever.py
 from __future__ import annotations
 
 import logging

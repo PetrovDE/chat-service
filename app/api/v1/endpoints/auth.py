@@ -1,4 +1,4 @@
-﻿# app/api/v1/endpoints/auth.py
+# app/api/v1/endpoints/auth.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import timedelta

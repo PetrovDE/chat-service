@@ -1,4 +1,4 @@
-﻿# app/api/v1/endpoints/models.py
+# app/api/v1/endpoints/models.py
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any, List
 import requests

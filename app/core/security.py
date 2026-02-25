@@ -1,4 +1,4 @@
-﻿# app/core/security.py
+# app/core/security.py
 from datetime import datetime, timedelta
 from typing import Any, Optional, Union
 from argon2 import PasswordHasher  # НОВОЕ

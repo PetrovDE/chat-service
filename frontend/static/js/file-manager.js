@@ -1,4 +1,4 @@
-﻿class FileManager {
+class FileManager {
     constructor(chatManager) {
         this.chatManager = chatManager;
         this.attachedFiles = [];

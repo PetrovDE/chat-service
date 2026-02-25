@@ -1,4 +1,4 @@
-﻿export class FilesSidebarManager {
+export class FilesSidebarManager {
     constructor(apiService, uiController) {
         this.apiService = apiService;
         this.uiController = uiController;

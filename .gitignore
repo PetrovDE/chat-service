@@ -56,3 +56,4 @@ uploads/
 docker-compose.db.yml
 /chroma_db/
 /.chromadb/
+.editorconfig

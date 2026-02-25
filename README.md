@@ -1,72 +1,61 @@
 # llama-service
 
-AI HUB chat backend on FastAPI with:
-- multi-provider LLM (`ollama`, `openai`, `aihub`)
-- RAG over uploaded files (ChromaDB)
-- JWT auth and multi-user conversations
-- streaming responses via SSE
+FastAPI backend for chat with multi-provider LLM, RAG, JWT auth, and SSE streaming.
 
 ## Features
-- FastAPI async API (`/api/v1/*`) + static frontend serving
-- Chat with optional RAG context from conversation files
-- File upload, processing, indexing, status tracking
-- Provider abstraction for LLM and embeddings
-- PostgreSQL persistence + Alembic migrations
-- Request-id aware logging and unified error payloads
+- Async API under `/api/v1/*` plus static frontend serving.
+- Multi-provider chat: `ollama`/`local`, `openai`, `aihub` (`corporate` alias supported).
+- RAG over uploaded files (ChromaDB) with mixed-embedding retrieval.
+- Chat orchestration moved to service layer: `app/services/chat_orchestrator.py`.
+- File ingestion worker with queue, retries, graceful shutdown, and stats.
+- Unified error handling and request observability middleware.
+- In-memory metrics snapshot and Prometheus-compatible metrics export.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[Client Web UI / API Consumer] --> B[FastAPI app.main]
+    A[Client / Frontend] --> B[FastAPI app.main]
     B --> C[API Routers /api/v1]
-    C --> D[Dependencies\nJWT/Auth/DB session]
-    C --> E[CRUD Layer]
-    C --> F[LLM Manager]
-    C --> G[RAG Retriever]
-
-    E --> H[(PostgreSQL)]
-    G --> I[Embeddings Manager]
-    G --> J[VectorStore Manager]
-    I --> F
-    J --> K[(ChromaDB)]
-
-    F --> L[Ollama]
-    F --> M[OpenAI]
-    F --> N[AI HUB]
-
-    B --> O[Static frontend/]
+    C --> D[Dependencies JWT/Auth/DB]
+    C --> E[CRUD]
+    C --> F[Chat Orchestrator]
+    F --> G[LLM Manager]
+    F --> H[RAG Retriever]
+    H --> I[Embeddings + Vector Store]
+    E --> J[(PostgreSQL)]
+    I --> K[(ChromaDB)]
 ```
 
-## Layered Structure
-- `app/main.py`: app bootstrap, middleware, CORS, health, static mount.
-- `app/api`: HTTP layer (routers/endpoints/dependencies).
-- `app/crud`: data access for DB models.
-- `app/services/llm`: provider abstraction and model routing.
-- `app/rag`: loaders, splitter, embeddings, retrieval, vector store.
-- `app/core`: typed settings, security, logging, error handlers.
-- `app/db`: SQLAlchemy models and async session.
-- `alembic`: DB migration scripts.
+## Key Modules
+- `app/main.py`: bootstrap, CORS, middleware, `/health`, `/metrics`, static mount.
+- `app/api/v1/endpoints/chat.py`: thin HTTP layer for chat APIs.
+- `app/services/chat_orchestrator.py`: chat flow orchestration (conversation, RAG, generation, persistence).
+- `app/api/v1/endpoints/stats.py`: user/system/admin stats and observability snapshot.
+- `app/observability/metrics.py`: in-memory counters/timers + Prometheus text renderer.
+- `app/services/file.py`: async file processing worker, queue, retries, worker stats.
+- `app/services/llm/*`: provider abstraction and retries.
+- `app/rag/*`: retrieval, vector store, chunking, indexing.
 
 ## Repository Structure
 ```text
 .
-├── app/
-│   ├── api/
-│   ├── core/
-│   ├── crud/
-│   ├── db/
-│   ├── observability/
-│   ├── rag/
-│   ├── schemas/
-│   └── services/
-├── alembic/
-├── config/
-├── frontend/
-├── scripts/
-├── tests/
-├── docker-compose.db.yml
-└── requirements.txt
+|-- app/
+|   |-- api/
+|   |-- core/
+|   |-- crud/
+|   |-- db/
+|   |-- observability/
+|   |-- rag/
+|   |-- schemas/
+|   `-- services/
+|-- alembic/
+|-- config/
+|-- frontend/
+|-- scripts/
+|-- tests/
+|-- docker-compose.db.yml
+`-- requirements.txt
 ```
 
 ## Quick Start (Local)
@@ -74,16 +63,14 @@ flowchart LR
 ### Prerequisites
 - Python 3.10+
 - PostgreSQL 14+
-- Ollama (optional but recommended for local mode)
+- Optional: Ollama for local model mode
 
 ### Install
 ```bash
 pip install -r requirements.txt
 ```
 
-### Configure environment
-Create `.env` in project root and set required values.
-
+### Configure `.env`
 Minimal required:
 ```env
 DATABASE_URL=postgresql+asyncpg://user:password@localhost/llama_chat_db
@@ -105,121 +92,47 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 Open:
 - Swagger: `http://localhost:8000/docs`
 - Health: `http://localhost:8000/health`
-
-## Environment Variables
-
-| Name | Required | Default | Description | Example |
-|---|---|---|---|---|
-| `DATABASE_URL` | yes | - | async SQLAlchemy DB URL | `postgresql+asyncpg://u:p@localhost/db` |
-| `ALEMBIC_DATABASE_URL` | yes | - | sync URL for migrations/tools | `postgresql://u:p@localhost/db` |
-| `JWT_SECRET_KEY` | yes | - | JWT signing key | `super-secret` |
-| `JWT_ALGORITHM` | no | `HS256` | JWT algorithm | `HS256` |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | no | `10080` | token TTL minutes | `10080` |
-| `allowed_origins` | no | localhost list | CORS origins CSV or `*` | `http://localhost:8000` |
-| `LOG_LEVEL` | no | `INFO` | app log level | `DEBUG` |
-| `DEFAULT_MODEL_SOURCE` | no | `ollama` | default LLM source | `aihub` |
-| `EMBEDDINGS_BASEURL` | no | `http://localhost:11434` | Ollama base URL | `http://localhost:11434` |
-| `OLLAMA_CHAT_MODEL` | no | `llama3.2:latest` | local chat model | `llama3.2:latest` |
-| `OLLAMA_EMBED_MODEL` | no | `nomic-embed-text:latest` | local embedding model | `nomic-embed-text:latest` |
-| `OPENAI_API_KEY` | no | empty | OpenAI token | `sk-...` |
-| `OPENAI_MODEL` | no | `gpt-4` | OpenAI chat model | `gpt-4o` |
-| `AIHUB_URL` | no | empty | AI HUB base URL | `https://...` |
-| `AIHUB_KEYCLOAK_HOST` | no | empty | Keycloak token endpoint | `https://.../token` |
-| `AIHUB_USERNAME` | no | empty | AI HUB username | `svc_user` |
-| `AIHUB_PASSWORD` | no | empty | AI HUB password | `***` |
-| `AIHUB_CLIENT_ID` | no | empty | OAuth client id | `client-id` |
-| `AIHUB_CLIENT_SECRET` | no | empty | OAuth client secret | `***` |
-| `AIHUB_VERIFY_SSL` | no | `false` | TLS verify for AI HUB | `true` |
-| `MAX_FILESIZE_MB` | no | `50` | upload size limit | `50` |
-| `CHUNK_SIZE` | no | `2000` | text split chunk size | `2000` |
-| `CHUNK_OVERLAP` | no | `400` | chunk overlap | `400` |
-| `VECTORDB_PATH` | no | `.chromadb` | Chroma persistence path | `.chromadb` |
-| `COLLECTION_NAME` | no | `documents` | base Chroma collection name | `documents` |
+- Prometheus metrics: `http://localhost:8000/metrics`
 
 ## API Overview
 
 Base prefix: `/api/v1`
 
-- `POST /auth/register`
-- `POST /auth/login`
-- `GET /auth/me`
-- `POST /chat`
-- `POST /chat/stream`
-- `GET /conversations`
-- `PATCH /conversations/{conversation_id}`
-- `DELETE /conversations/{conversation_id}`
-- `POST /files/upload`
-- `GET /files`
-- `GET /files/status/{file_id}`
-- `DELETE /files/{file_id}`
-- `GET /models/list?mode=local|ollama|aihub|openai`
-- `GET /models/status`
-- `GET /stats/user`
-- `GET /stats/system`
+- Auth: `POST /auth/register`, `POST /auth/login`, `GET /auth/me`
+- Chat: `POST /chat`, `POST /chat/stream`
+- Conversations: `GET /conversations`, `PATCH /conversations/{id}`, `DELETE /conversations/{id}`
+- Files: `POST /files/upload`, `GET /files`, `GET /files/status/{file_id}`, `DELETE /files/{file_id}`
+- Models: `GET /models/list?mode=local|ollama|aihub|openai|corporate`, `GET /models/status`
+- Stats: `GET /stats/user`, `GET /stats/system`, `GET /stats/observability` (admin)
 
-### curl examples
+Public root endpoints:
+- `GET /health`
+- `GET /metrics` (Prometheus text format)
 
-Login:
-```bash
-curl -X POST http://localhost:8000/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"admin123456"}'
-```
-
-Chat:
-```bash
-curl -X POST http://localhost:8000/api/v1/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message":"Hello","model_source":"ollama"}'
-```
-
-Streaming chat (SSE):
-```bash
-curl -N -X POST http://localhost:8000/api/v1/chat/stream \
-  -H "Content-Type: application/json" \
-  -d '{"message":"Summarize attached file","model_source":"aihub"}'
-```
-
-Health:
-```bash
-curl http://localhost:8000/health
-```
+## Metrics and Observability
+- Middleware records:
+  - `http_requests_total` counter (labels: method, path, status)
+  - `http_request_duration_ms` timer aggregates
+- Admin snapshot endpoint:
+  - `GET /api/v1/stats/observability` returns in-memory metrics + file worker stats.
+- Prometheus scrape endpoint:
+  - `GET /metrics` returns text format `version=0.0.4`.
 
 ## Development
 
-Run smoke tests:
+Run tests:
+```bash
+pytest -q
+```
+
+Run smoke tests only:
 ```bash
 pytest tests/smoke -q
 ```
 
-Recommended local quality checks:
-```bash
-ruff check .
-ruff format .
-pytest -q
-```
-
-If you add pre-commit:
-```bash
-pre-commit install
-pre-commit run --all-files
-```
-
 ## Troubleshooting
-- `422 / validation_error`: request payload does not match schema.
-- `401 / Not authenticated`: missing/invalid Bearer token.
-- Empty model list in `GET /models/list`: check provider URL/credentials.
-- File processing stuck at `failed`: inspect server logs and file content quality.
-- Slow responses: verify provider availability and model load state.
-
-## How To Verify Changes
-- Start app: `uvicorn app.main:app --reload`
-- Check health: `GET /health` should return `{"status":"healthy", ...}`
-- Check models status: `GET /api/v1/models/status` returns `ollama/aihub/openai` keys
-- Run smoke tests: `pytest tests/smoke -q`
-
-## Roadmap
-- Move chat endpoint orchestration into dedicated service layer.
-- Add integration tests with mocked LLM providers and DB fixtures.
-- Add retry/timeout policy abstraction for all provider calls.
-- Harden deployment templates (`nginx` and systemd) to current route layout.
+- `422 validation_error`: request body does not match schema.
+- `401 Not authenticated`: missing/invalid Bearer token.
+- Empty model list in `/api/v1/models/list`: check provider URL/credentials.
+- File processing `failed`: inspect logs and worker stats in `/api/v1/stats/observability`.
+- Slow responses: verify provider availability and model readiness.

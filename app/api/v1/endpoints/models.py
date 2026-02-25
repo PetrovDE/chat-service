@@ -1,13 +1,14 @@
 # app/api/v1/endpoints/models.py
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any, List
-import requests
+import httpx
 import logging
 from app.core.config import settings
 from app.services.llm.manager import llm_manager  # ← ДОБАВИТЬ
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+HTTP_TIMEOUT_MODELS = httpx.Timeout(10.0, connect=3.0)
 
 
 @router.get("/list")
@@ -23,9 +24,10 @@ async def list_models(mode: str = "local") -> Dict[str, Any]:
             logger.info(f"🔌 Querying Ollama: {ollama_url}")
 
             try:
-                response = requests.get(f"{ollama_url}/api/tags", timeout=5)
-                response.raise_for_status()
-                data = response.json()
+                async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_MODELS) as client:
+                    response = await client.get(f"{ollama_url}/api/tags")
+                    response.raise_for_status()
+                    data = response.json()
                 models = data.get("models", [])
                 logger.info(f"✅ Got {len(models)} models from Ollama")
 
@@ -120,8 +122,9 @@ async def models_status() -> Dict[str, Any]:
 
     try:
         ollama_url = str(settings.EMBEDDINGS_BASEURL).rstrip('/')
-        response = requests.get(f"{ollama_url}/api/tags", timeout=3)
-        ollama_available = response.status_code == 200
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_MODELS) as client:
+            response = await client.get(f"{ollama_url}/api/tags")
+            ollama_available = response.status_code == 200
     except:
         pass
 

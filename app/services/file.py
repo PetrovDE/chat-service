@@ -10,6 +10,7 @@ Notes:
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,6 +26,7 @@ from app.rag.document_loader import DocumentLoader
 from app.rag.embeddings import EmbeddingsManager
 from app.rag.text_splitter import SmartTextSplitter
 from app.rag.vector_store import VectorStoreManager
+from app.observability.metrics import inc_counter, observe_ms
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,12 @@ text_splitter = SmartTextSplitter(chunk_size=settings.CHUNK_SIZE, chunk_overlap=
 vector_store = VectorStoreManager()
 
 EMBED_BATCH_SIZE = 32
+MAX_BACKGROUND_RETRIES = 3
+RETRY_DELAY_SECONDS = 2.0
+
+_job_queue: Optional[asyncio.Queue[Tuple[UUID, Path, str, str, int]]] = None
+_worker_task: Optional[asyncio.Task] = None
+_worker_lock = asyncio.Lock()
 
 
 def _batch(items: List[Any], size: int) -> List[List[Any]]:
@@ -83,7 +91,11 @@ async def process_file_async(
         "Scheduling file processing: file_id=%s mode=%s model_override=%s resolved_model=%s path=%s",
         file_id, embedding_mode, embedding_model, resolved, file_path
     )
-    asyncio.create_task(_process_file(file_id, file_path, embedding_mode, resolved))
+    await _ensure_worker_started()
+    assert _job_queue is not None
+    await _job_queue.put((file_id, file_path, embedding_mode, resolved, 0))
+    inc_counter("file_processing_enqueued_total", mode=embedding_mode)
+    observe_ms("file_processing_queue_depth", float(_job_queue.qsize()))
 
 
 async def process_file_background(
@@ -100,12 +112,95 @@ async def process_file_background(
     await _process_file(file_id, file_path, embedding_mode, resolved)
 
 
+async def _ensure_worker_started() -> None:
+    global _job_queue, _worker_task
+    if _worker_task is not None and not _worker_task.done():
+        return
+
+    async with _worker_lock:
+        if _worker_task is not None and not _worker_task.done():
+            return
+        _job_queue = asyncio.Queue()
+        _worker_task = asyncio.create_task(_file_processing_worker(), name="file-processing-worker")
+        logger.info("File processing worker started")
+
+
+async def _file_processing_worker() -> None:
+    assert _job_queue is not None
+    while True:
+        try:
+            file_id, file_path, embedding_mode, embedding_model, attempt = await _job_queue.get()
+        except asyncio.CancelledError:
+            logger.info("File processing worker cancelled")
+            break
+        try:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            ok = await _process_file(file_id, file_path, embedding_mode, embedding_model)
+            if (not ok) and attempt < MAX_BACKGROUND_RETRIES:
+                delay = RETRY_DELAY_SECONDS * (attempt + 1)
+                inc_counter("file_processing_retry_total", mode=embedding_mode)
+                logger.warning(
+                    "Retrying file processing: file_id=%s attempt=%d/%d delay=%.1fs",
+                    file_id,
+                    attempt + 1,
+                    MAX_BACKGROUND_RETRIES,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                await _job_queue.put((file_id, file_path, embedding_mode, embedding_model, attempt + 1))
+            elif ok:
+                inc_counter("file_processing_completed_total", mode=embedding_mode)
+            else:
+                inc_counter("file_processing_failed_total", mode=embedding_mode)
+            observe_ms("file_processing_job_duration_ms", (loop.time() - started) * 1000.0, mode=embedding_mode)
+        except Exception:
+            logger.exception("Unexpected worker failure while processing file_id=%s", file_id)
+            inc_counter("file_processing_worker_errors_total")
+        finally:
+            _job_queue.task_done()
+
+
+def get_file_processing_worker_stats() -> Dict[str, Any]:
+    queue_size = _job_queue.qsize() if _job_queue is not None else 0
+    running = bool(_worker_task is not None and not _worker_task.done())
+    return {
+        "worker_running": running,
+        "queue_size": queue_size,
+        "max_retries": MAX_BACKGROUND_RETRIES,
+        "retry_delay_seconds": RETRY_DELAY_SECONDS,
+    }
+
+
+async def shutdown_file_processing_worker(timeout_seconds: float = 15.0) -> None:
+    global _job_queue, _worker_task
+    if _worker_task is None:
+        return
+
+    queue = _job_queue
+    if queue is not None:
+        try:
+            await asyncio.wait_for(queue.join(), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            logger.warning("File worker shutdown timeout: queue still has pending tasks")
+
+    task = _worker_task
+    _worker_task = None
+    _job_queue = None
+
+    if task is not None and not task.done():
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+    logger.info("File processing worker stopped")
+
+
 async def _process_file(
     file_id: UUID,
     file_path: Path,
     embedding_mode: str,
     embedding_model: str,
-) -> None:
+) -> bool:
     async with AsyncSessionLocal() as db:
         try:
             logger.info(
@@ -227,7 +322,9 @@ async def _process_file(
                 "File processed successfully: file_id=%s stored_chunks=%d failed_embeddings=%d deleted_old=%d conversation_id=%s embedding_model=%s",
                 file_id, stored, failed, deleted, conversation_id, embedding_model
             )
+            return True
 
         except Exception as e:
             logger.error("File processing failed: file_id=%s err=%s: %s", file_id, type(e).__name__, str(e), exc_info=True)
             await crud_file.update_processing_status(db, file_id=file_id, status="failed")
+            return False

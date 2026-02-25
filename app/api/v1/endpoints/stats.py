@@ -8,6 +8,8 @@ from typing import Dict, Any
 from app.db.session import get_db
 from app.db.models import User, Conversation, Message, File
 from app.api.dependencies import get_current_user
+from app.observability.metrics import snapshot_metrics
+from app.services.file import get_file_processing_worker_stats
 
 router = APIRouter()
 
@@ -95,4 +97,18 @@ async def get_system_stats(
         "active_users_30d": active_users,
         "total_conversations": total_conversations,
         "total_messages": total_messages
+    }
+
+
+@router.get("/observability")
+async def get_observability_stats(
+        current_user: User = Depends(get_current_user)
+):
+    """Get in-memory observability metrics (admin only)."""
+    if not current_user.is_admin:
+        return {"error": "Admin access required"}
+
+    return {
+        "metrics": snapshot_metrics(),
+        "file_processing": get_file_processing_worker_stats(),
     }

@@ -1,220 +1,225 @@
-# LLaMA Chat Service
+# llama-service
 
-AI-powered chat service with Retrieval Augmented Generation (RAG), поддержка локальных (Ollama) и внешних (OpenAI) LLM, файловый storage, мультипользовательские чаты и расширяемый API.
+AI HUB chat backend on FastAPI with:
+- multi-provider LLM (`ollama`, `openai`, `aihub`)
+- RAG over uploaded files (ChromaDB)
+- JWT auth and multi-user conversations
+- streaming responses via SSE
 
----
+## Features
+- FastAPI async API (`/api/v1/*`) + static frontend serving
+- Chat with optional RAG context from conversation files
+- File upload, processing, indexing, status tracking
+- Provider abstraction for LLM and embeddings
+- PostgreSQL persistence + Alembic migrations
+- Request-id aware logging and unified error payloads
 
-## 📋 Requirements
+## Architecture
 
+```mermaid
+flowchart LR
+    A[Client Web UI / API Consumer] --> B[FastAPI app.main]
+    B --> C[API Routers /api/v1]
+    C --> D[Dependencies\nJWT/Auth/DB session]
+    C --> E[CRUD Layer]
+    C --> F[LLM Manager]
+    C --> G[RAG Retriever]
+
+    E --> H[(PostgreSQL)]
+    G --> I[Embeddings Manager]
+    G --> J[VectorStore Manager]
+    I --> F
+    J --> K[(ChromaDB)]
+
+    F --> L[Ollama]
+    F --> M[OpenAI]
+    F --> N[AI HUB]
+
+    B --> O[Static frontend/]
+```
+
+## Layered Structure
+- `app/main.py`: app bootstrap, middleware, CORS, health, static mount.
+- `app/api`: HTTP layer (routers/endpoints/dependencies).
+- `app/crud`: data access for DB models.
+- `app/services/llm`: provider abstraction and model routing.
+- `app/rag`: loaders, splitter, embeddings, retrieval, vector store.
+- `app/core`: typed settings, security, logging, error handlers.
+- `app/db`: SQLAlchemy models and async session.
+- `alembic`: DB migration scripts.
+
+## Repository Structure
+```text
+.
+├── app/
+│   ├── api/
+│   ├── core/
+│   ├── crud/
+│   ├── db/
+│   ├── observability/
+│   ├── rag/
+│   ├── schemas/
+│   └── services/
+├── alembic/
+├── config/
+├── frontend/
+├── scripts/
+├── tests/
+├── docker-compose.db.yml
+└── requirements.txt
+```
+
+## Quick Start (Local)
+
+### Prerequisites
 - Python 3.10+
 - PostgreSQL 14+
-- Ollama (for local LLM)
-- (Опционально) OpenAI API key
+- Ollama (optional but recommended for local mode)
 
----
-
-## 🚀 Quick Start
-
-1. **Install dependencies**
-    ```
-    pip install -r requirements.txt
-    ```
-
-2. **Set up environment**
-    ```
-    # Копировать и настроить переменные окружения
-    cp .env.example .env
-    # Пример содержимого .env:
-    # DATABASE_URL=postgresql+asyncpg://user:password@localhost/llama_db
-    # JWT_SECRET_KEY=your-secret-key-change-this
-    # EMBEDDINGS_BASEURL=http://localhost:11434
-    # OPENAI_API_KEY=sk-xxx (опционально)
-    # etc.
-    ```
-
-3. **Initialize database**
-    ```
-    # Создать таблицы
-    python scripts/init_db.py
-
-    # Создать администратора
-    python scripts/create_admin.py
-    ```
-
-4. **Run server**
-    ```
-    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-    ```
-
----
-
-## 📚 API Documentation
-
-- Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
-- ReDoc: [http://localhost:8000/redoc](http://localhost:8000/redoc)
-
----
-
-## 🏗 Project Structure
+### Install
+```bash
+pip install -r requirements.txt
 ```
-app/
-├── api/
-│ └── v1/
-│ ├── endpoints/ # API endpoints (auth, chat, files, etc.)
-│ └── router.py # Main API router
-├── core/ # Core configuration
-│ ├── config.py # Settings and environment variables
-│ ├── security.py # JWT and password hashing
-│ ├── logging.py # Logging configuration
-│ └── exceptions.py # Custom exceptions
-├── crud/ # Database CRUD operations
-│ ├── conversation.py # Conversation operations
-│ ├── message.py # Message operations
-│ ├── user.py # User operations
-│ └── file.py # File operations
-├── db/ # Database layer
-│ ├── models/ # SQLAlchemy models
-│ ├── session.py # Database session management
-│ └── base.py # Base model
-├── schemas/ # Pydantic schemas
-│ ├── chat.py # Chat request/response schemas
-│ ├── user.py # User schemas
-│ ├── conversation.py # Conversation schemas
-│ └── file.py # File schemas
-├── services/ # Business logic
-│ ├── llm/ # LLM management
-│ │ ├── manager.py # Main LLM manager
-│ │ └── providers/ # Provider implementations
-│ ├── chat.py # Chat service
-│ ├── file.py # File service
-│ └── stats.py # Statistics service
-├── rag/ # Retrieval Augmented Generation
-│ ├── embeddings.py # Embedding generation
-│ ├── retriever.py # Document retrieval
-│ ├── vector_store.py # Vector database operations
-│ ├── document_loader.py # Document loading and parsing
-│ └── text_splitter.py # Text chunking
-├── utils/ # Utility functions
-└── main.py # FastAPI application entry point
 
-frontend/
-├── static/
-│ ├── css/ # Stylesheets
-│ ├── js/ # JavaScript modules
-│ └── index.html # Main HTML page
+### Configure environment
+Create `.env` in project root and set required values.
 
-scripts/
-├── init_db.py # Database initialization
-└── create_admin.py # Admin user creation
-
-alembic/ # Database migrations
-├── versions/ # Migration files
-└── env.py # Alembic configuration
+Minimal required:
+```env
+DATABASE_URL=postgresql+asyncpg://user:password@localhost/llama_chat_db
+ALEMBIC_DATABASE_URL=postgresql://user:password@localhost/llama_chat_db
+JWT_SECRET_KEY=change-me
 ```
----
 
-## 🔑 Default Admin
+### Init DB
+```bash
+alembic upgrade head
+python scripts/create_admin.py
+```
 
-- Username: `admin`
-- Password: `admin123456`
+### Run API
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
 
-⚠️ **Не забудьте сменить пароль администратора после первого запуска!**
+Open:
+- Swagger: `http://localhost:8000/docs`
+- Health: `http://localhost:8000/health`
 
----
+## Environment Variables
 
-## 🌐 Главные возможности
+| Name | Required | Default | Description | Example |
+|---|---|---|---|---|
+| `DATABASE_URL` | yes | - | async SQLAlchemy DB URL | `postgresql+asyncpg://u:p@localhost/db` |
+| `ALEMBIC_DATABASE_URL` | yes | - | sync URL for migrations/tools | `postgresql://u:p@localhost/db` |
+| `JWT_SECRET_KEY` | yes | - | JWT signing key | `super-secret` |
+| `JWT_ALGORITHM` | no | `HS256` | JWT algorithm | `HS256` |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | no | `10080` | token TTL minutes | `10080` |
+| `allowed_origins` | no | localhost list | CORS origins CSV or `*` | `http://localhost:8000` |
+| `LOG_LEVEL` | no | `INFO` | app log level | `DEBUG` |
+| `DEFAULT_MODEL_SOURCE` | no | `ollama` | default LLM source | `aihub` |
+| `EMBEDDINGS_BASEURL` | no | `http://localhost:11434` | Ollama base URL | `http://localhost:11434` |
+| `OLLAMA_CHAT_MODEL` | no | `llama3.2:latest` | local chat model | `llama3.2:latest` |
+| `OLLAMA_EMBED_MODEL` | no | `nomic-embed-text:latest` | local embedding model | `nomic-embed-text:latest` |
+| `OPENAI_API_KEY` | no | empty | OpenAI token | `sk-...` |
+| `OPENAI_MODEL` | no | `gpt-4` | OpenAI chat model | `gpt-4o` |
+| `AIHUB_URL` | no | empty | AI HUB base URL | `https://...` |
+| `AIHUB_KEYCLOAK_HOST` | no | empty | Keycloak token endpoint | `https://.../token` |
+| `AIHUB_USERNAME` | no | empty | AI HUB username | `svc_user` |
+| `AIHUB_PASSWORD` | no | empty | AI HUB password | `***` |
+| `AIHUB_CLIENT_ID` | no | empty | OAuth client id | `client-id` |
+| `AIHUB_CLIENT_SECRET` | no | empty | OAuth client secret | `***` |
+| `AIHUB_VERIFY_SSL` | no | `false` | TLS verify for AI HUB | `true` |
+| `MAX_FILESIZE_MB` | no | `50` | upload size limit | `50` |
+| `CHUNK_SIZE` | no | `2000` | text split chunk size | `2000` |
+| `CHUNK_OVERLAP` | no | `400` | chunk overlap | `400` |
+| `VECTORDB_PATH` | no | `.chromadb` | Chroma persistence path | `.chromadb` |
+| `COLLECTION_NAME` | no | `documents` | base Chroma collection name | `documents` |
 
-- Асинхронная работа FastAPI на Python 3.10+
-- Поддержка сетевых и локальных LLM: Ollama (через API) и OpenAI (GPT-4, 3.5-turbo)
-- Retrieval Augmented Generation (файловый и личный RAG, векторные БД)
-- Режим стриминга (Server-Sent Events)
-- Многоуровневая аутентификация (JWT)
-- Управление файлами (загрузка, чтение, прослеживание статуса embeddings)
-- Гибкая маршрутизация и DI через Depends
-- Логирование и кастомные обработчики ошибок
-- Swagger/OpenAPI по умолчанию
+## API Overview
 
----
+Base prefix: `/api/v1`
 
-## 📑 Основные Endpoint API
+- `POST /auth/register`
+- `POST /auth/login`
+- `GET /auth/me`
+- `POST /chat`
+- `POST /chat/stream`
+- `GET /conversations`
+- `PATCH /conversations/{conversation_id}`
+- `DELETE /conversations/{conversation_id}`
+- `POST /files/upload`
+- `GET /files`
+- `GET /files/status/{file_id}`
+- `DELETE /files/{file_id}`
+- `GET /models/list?mode=local|ollama|aihub|openai`
+- `GET /models/status`
+- `GET /stats/user`
+- `GET /stats/system`
 
-| Метод | Endpoint                        | Описание                                             | Авторизация    |
-|-------|----------------------------------|------------------------------------------------------|----------------|
-| POST  | /api/v1/chat/stream              | Стриминговый чат c RAG                               | Необязательно  |
-| POST  | /api/v1/chat/                    | Классический чат завершённый (json ответ)            | Необязательно  |
-| POST  | /api/v1/auth/login               | Вход (получить JWT)                                 | Нет            |
-| POST  | /api/v1/auth/register            | Регистрация пользователя                            | Нет            |
-| GET   | /api/v1/auth/me                  | Инфо о пользователе                                 | Да             |
-| GET   | /api/v1/models/                  | Получить все доступные языковые модели               | Нет            |
-| POST  | /api/v1/files/upload             | Загрузка файлов пользователя                        | Да             |
-| GET   | /api/v1/files/                   | Список файлов пользователя                          | Да             |
-| GET   | /api/v1/files/{file_id}          | Получить инфо/статус определённого файла             | Да             |
-| POST  | /api/v1/files/process/{file_id}  | Запустить обработку файла для embeddings             | Да             |
-| DELETE| /api/v1/files/{file_id}          | Удаление файла пользователя                         | Да             |
-| GET   | /api/v1/conversations/           | Список всех диалогов пользователя                   | Да             |
-| POST  | /api/v1/conversations/           | Создать новый диалог                                 | Да             |
-| GET   | /api/v1/conversations/{conv_id}  | Получить сообщения диалога                          | Да             |
-| GET   | /api/v1/stats/                   | Получить статистику по чатам/файлам                  | Да             |
+### curl examples
 
-> Примеры можно видеть в Swagger UI — структура моделей описана автоматически.
+Login:
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123456"}'
+```
 
----
+Chat:
+```bash
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Hello","model_source":"ollama"}'
+```
 
-## 🗂 Пример .env
+Streaming chat (SSE):
+```bash
+curl -N -X POST http://localhost:8000/api/v1/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Summarize attached file","model_source":"aihub"}'
+```
 
-Database
-DATABASE_URL=postgresql+asyncpg://user:password@localhost/llama_db
+Health:
+```bash
+curl http://localhost:8000/health
+```
 
-Secret keys
-JWT_SECRET_KEY=your-secret-key-change-this
+## Development
 
-LLM и Embeddings
-EMBEDDINGS_BASEURL=http://localhost:11434
-EMBEDDINGS_MODEL=llama3
+Run smoke tests:
+```bash
+pytest tests/smoke -q
+```
 
-OpenAI (опционально)
-OPENAI_API_KEY=sk-xxxxxx
-OPENAI_MODEL=gpt-4
+Recommended local quality checks:
+```bash
+ruff check .
+ruff format .
+pytest -q
+```
 
-Application
-ALLOWED_ORIGINS=*
+If you add pre-commit:
+```bash
+pre-commit install
+pre-commit run --all-files
+```
 
-text
+## Troubleshooting
+- `422 / validation_error`: request payload does not match schema.
+- `401 / Not authenticated`: missing/invalid Bearer token.
+- Empty model list in `GET /models/list`: check provider URL/credentials.
+- File processing stuck at `failed`: inspect server logs and file content quality.
+- Slow responses: verify provider availability and model load state.
 
----
+## How To Verify Changes
+- Start app: `uvicorn app.main:app --reload`
+- Check health: `GET /health` should return `{"status":"healthy", ...}`
+- Check models status: `GET /api/v1/models/status` returns `ollama/aihub/openai` keys
+- Run smoke tests: `pytest tests/smoke -q`
 
-## ☑️ Примеры запросов
-
-**Чат (stream):**
-curl -X POST http://localhost:8000/api/v1/chat/stream
--H "Authorization: Bearer <your_JWT_here>"
--H "Content-Type: application/json"
--d '{"message": "Привет!", "model_source": "ollama", "model_name": "llama3"}'
-
-text
-
-**Загрузка файла:**
-curl -X POST http://localhost:8000/api/v1/files/upload
--H "Authorization: Bearer <your_JWT_here>"
--F "file=@mydoc.pdf"
-
-text
-
-**Получить список моделей:**
-curl http://localhost:8000/api/v1/models/
-
-text
-
----
-
-## 📒 Особенности
-
-- **RAG**: Можно загружать файлы (pdf, txt, docx, xlsx), после их индексации — использовать как знания для чата.
-- **LLM-Выбор**: Можно явно передавать model_source/model_name или использовать default.
-- **История и восстановление**: Все сообщения хранятся построчно, последовательность сохраняется для каждой сессии.
-
----
-
-## 📝 License
-
-MIT
+## Roadmap
+- Move chat endpoint orchestration into dedicated service layer.
+- Add integration tests with mocked LLM providers and DB fixtures.
+- Add retry/timeout policy abstraction for all provider calls.
+- Harden deployment templates (`nginx` and systemd) to current route layout.

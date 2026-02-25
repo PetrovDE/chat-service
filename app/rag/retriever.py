@@ -1,9 +1,11 @@
 # app/rag/retriever.py
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -24,6 +26,7 @@ except Exception:  # pragma: no cover
 
 from app.rag.embeddings import EmbeddingsManager
 from app.rag.vector_store import VectorStoreManager
+from app.observability.metrics import inc_counter, observe_ms
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +390,7 @@ class RAGRetriever:
         query_intent: Optional[str] = None,
         rag_mode: Optional[str] = None,
     ) -> Union[List[Document], Tuple[List[Document], RetrievalDebug]]:
+        t0 = time.perf_counter()
         query = (query or "").strip()
         if not query:
             docs: List[Document] = []
@@ -408,6 +412,8 @@ class RAGRetriever:
                 user_id=user_id,
                 file_ids=file_ids,
             )
+            inc_counter("rag_retrieve_total", intent=intent, mode="full_file")
+            observe_ms("rag_retrieve_duration_ms", (time.perf_counter() - t0) * 1000.0, intent=intent)
             debug = RetrievalDebug(
                 where=where,
                 top_k=top_k,
@@ -418,10 +424,14 @@ class RAGRetriever:
             return (docs, debug) if return_debug else docs
 
         embedder = EmbeddingsManager(mode=embedding_mode, model=embedding_model)
+        t_embed = time.perf_counter()
         q_vecs = await embedder.embedd_documents_async([query])
+        observe_ms("rag_embed_duration_ms", (time.perf_counter() - t_embed) * 1000.0, mode=embedding_mode)
         if not q_vecs:
             docs = []
             debug = RetrievalDebug(where=where, top_k=top_k, fetch_k=fetch_k or 0, raw_count=0, returned_count=0)
+            inc_counter("rag_retrieve_total", intent=intent, mode="hybrid", result="empty_embedding")
+            observe_ms("rag_retrieve_duration_ms", (time.perf_counter() - t0) * 1000.0, intent=intent)
             return (docs, debug) if return_debug else docs
         q_vec = q_vecs[0]
 
@@ -430,22 +440,30 @@ class RAGRetriever:
 
         logger.info("RAG.retrieve(hybrid): intent=%s top_k=%d fetch_k=%d where=%s", intent, top_k, fetch_k, where)
 
-        dense_rows = self.vectorstore.query(
+        t_denselex = time.perf_counter()
+        dense_rows_task = asyncio.to_thread(
+            self.vectorstore.query,
             embedding_query=q_vec,
             top_k=fetch_k,
             filter_dict=where,
         )
-
-        lexical_pool = self.vectorstore.get_by_filter(
+        lexical_pool_task = asyncio.to_thread(
+            self.vectorstore.get_by_filter,
             filter_dict=where,
             limit_per_collection=max(fetch_k * 6, 300),
         )
-        lc_docs = self._rerank_with_langchain(
+        dense_rows, lexical_pool = await asyncio.gather(dense_rows_task, lexical_pool_task)
+        observe_ms("rag_candidates_duration_ms", (time.perf_counter() - t_denselex) * 1000.0, mode="hybrid")
+
+        t_rerank = time.perf_counter()
+        lc_docs = await asyncio.to_thread(
+            self._rerank_with_langchain,
             query=query,
             dense_rows=dense_rows,
             lexical_rows=lexical_pool,
             top_k=top_k,
         )
+        observe_ms("rag_rerank_duration_ms", (time.perf_counter() - t_rerank) * 1000.0, backend="langchain")
 
         if lc_docs is not None:
             # Coverage-aware selection by file for LangChain-ranked docs
@@ -491,6 +509,8 @@ class RAGRetriever:
             raw_count=merged_count,
             returned_count=len(docs),
         )
+        inc_counter("rag_retrieve_total", intent=intent, mode="hybrid", result="ok")
+        observe_ms("rag_retrieve_duration_ms", (time.perf_counter() - t0) * 1000.0, intent=intent)
 
         return (docs, debug) if return_debug else docs
 
@@ -503,9 +523,15 @@ class RAGRetriever:
         file_ids: Optional[List[str]] = None,
         max_chunks: int = 800,
     ) -> List[Document]:
+        t0 = time.perf_counter()
         _ = query
         where = self._build_where(conversation_id=conversation_id, user_id=user_id, file_ids=file_ids)
-        rows = self.vectorstore.get_by_filter(filter_dict=where, limit_per_collection=max_chunks)
+        rows = await asyncio.to_thread(
+            self.vectorstore.get_by_filter,
+            filter_dict=where,
+            limit_per_collection=max_chunks,
+        )
+        full_file_limit_hit = bool(max_chunks and len(rows) >= max_chunks)
 
         def sort_key(item: Dict[str, Any]) -> Tuple[str, int]:
             meta = item.get("metadata") or {}
@@ -530,9 +556,12 @@ class RAGRetriever:
             meta["distance"] = 0.0
             meta["similarity_score"] = 1.0
             meta["retrieval_mode"] = "full_file"
+            meta["full_file_max_chunks"] = max_chunks
+            meta["full_file_limit_hit"] = full_file_limit_hit
             docs.append(Document(page_content=content, metadata=meta))
 
         logger.info("RAG.retrieve_full_file: where=%s chunks=%d", where, len(docs))
+        observe_ms("rag_retrieve_full_file_duration_ms", (time.perf_counter() - t0) * 1000.0)
         return docs
 
     async def query_rag(
@@ -596,6 +625,13 @@ class RAGRetriever:
             query_intent=intent,
             rag_mode=rag_mode,
         )
+        full_file_limit_hit = False
+        full_file_max_chunks = None
+        if docs and intent == "analyze_full_file":
+            first_meta = docs[0].metadata or {}
+            full_file_limit_hit = bool(first_meta.get("full_file_limit_hit", False))
+            full_file_max_chunks = first_meta.get("full_file_max_chunks")
+
         return {
             "docs": [
                 {
@@ -615,6 +651,8 @@ class RAGRetriever:
                 "score_threshold": score_threshold,
                 "intent": intent,
                 "retrieval_mode": "full_file" if intent == "analyze_full_file" else "hybrid",
+                "full_file_limit_hit": full_file_limit_hit,
+                "full_file_max_chunks": full_file_max_chunks,
             },
         }
 

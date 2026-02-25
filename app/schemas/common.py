@@ -1,6 +1,6 @@
 # app/schemas/common.py
 from typing import Generic, TypeVar, Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar('T')
 
@@ -13,8 +13,7 @@ class PaginatedResponse(BaseModel, Generic[T]):
     per_page: int = Field(ge=1, le=100)
     pages: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SuccessResponse(BaseModel):

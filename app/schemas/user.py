@@ -2,7 +2,7 @@
 import uuid
 from typing import Optional
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserBase(BaseModel):
@@ -27,8 +27,7 @@ class UserInDB(UserBase):
     is_admin: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserResponse(UserBase):
@@ -37,5 +36,4 @@ class UserResponse(UserBase):
     is_admin: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

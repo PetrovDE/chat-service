@@ -191,22 +191,33 @@ class VectorStoreManager:
             logger.error("Failed to add document: %s", e, exc_info=True)
             return False
 
-    def delete_by_metadata(self, metadata_filter: Dict[str, Any]) -> bool:
+    def delete_by_metadata(self, metadata_filter: Dict[str, Any]) -> int:
         if not metadata_filter:
-            return False
+            return 0
 
         safe_filter = self._sanitize(metadata_filter, mode="where")
+        deleted_total = 0
         try:
-            for _, collection in self._collections_cache.items():
+            collections = list(self._collections_cache.values()) + self._iter_base_collections()
+            seen = set()
+            for collection in collections:
                 try:
+                    name = getattr(collection, "name", None)
+                    if name and name in seen:
+                        continue
+                    if name:
+                        seen.add(name)
+                    before = collection.count()
                     collection.delete(where=self._normalize_where(safe_filter))
+                    after = collection.count()
+                    deleted_total += max(0, int(before - after))
                 except Exception:
                     continue
-            logger.info("Deleted by metadata filter: %s", safe_filter)
-            return True
+            logger.info("Deleted by metadata filter: %s deleted=%d", safe_filter, deleted_total)
+            return deleted_total
         except Exception as e:
             logger.error("Failed to delete by metadata: %s", e, exc_info=True)
-            return False
+            return 0
 
     def query(
         self,

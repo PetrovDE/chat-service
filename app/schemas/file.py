@@ -3,7 +3,7 @@
 import uuid
 from typing import Optional, List
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class FileUploadResponse(BaseModel):
@@ -18,8 +18,7 @@ class FileUploadResponse(BaseModel):
     chunks_count: int
     uploaded_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class FileInfo(BaseModel):
@@ -36,8 +35,7 @@ class FileInfo(BaseModel):
     # Новое поле: список ID бесед, где используется файл
     conversation_ids: List[uuid.UUID] = Field(default_factory=list)
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class FileProcessingStatus(BaseModel):
@@ -47,5 +45,4 @@ class FileProcessingStatus(BaseModel):
     chunks_count: int
     error_message: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

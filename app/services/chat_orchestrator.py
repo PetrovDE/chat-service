@@ -5,12 +5,14 @@ import json
 import logging
 import uuid
 from datetime import datetime
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.crud import crud_conversation, crud_file, crud_message
 from app.db.models import User
 from app.rag.retriever import rag_retriever
@@ -106,6 +108,89 @@ def _build_rag_conversation_memory(history: List[Dict[str, str]], max_messages: 
         return []
     tail = history[-max_messages:]
     return [{"role": m.get("role", "user"), "content": (m.get("content") or "")[:1500]} for m in tail]
+
+
+def _build_sources_list(context_documents: List[Dict[str, Any]], max_items: int = 8) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for d in context_documents:
+        meta = d.get("metadata") or {}
+        filename = str(meta.get("filename") or meta.get("source") or "unknown")
+        sheet = meta.get("sheet_name")
+        chunk_index = meta.get("chunk_index", "?")
+        if sheet:
+            src = f"{filename} | sheet={sheet} | chunk={chunk_index}"
+        else:
+            src = f"{filename} | chunk={chunk_index}"
+        if src in seen:
+            continue
+        seen.add(src)
+        out.append(src)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _build_top_chunks_debug(context_documents: List[Dict[str, Any]], max_items: int = 8) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for d in context_documents[:max_items]:
+        meta = d.get("metadata") or {}
+        rows.append(
+            {
+                "score": float(d.get("similarity_score", meta.get("similarity_score", 0.0)) or 0.0),
+                "file_id": str(meta.get("file_id") or ""),
+                "filename": str(meta.get("filename") or meta.get("source") or "unknown"),
+                "sheet_name": meta.get("sheet_name"),
+                "chunk_index": meta.get("chunk_index"),
+                "preview": (d.get("content") or "")[:220],
+            }
+        )
+    return rows
+
+
+def _build_rag_caveats(
+    *,
+    files: List[Any],
+    context_documents: List[Dict[str, Any]],
+    rag_debug: Optional[Dict[str, Any]],
+) -> List[str]:
+    caveats: List[str] = []
+    partial_files = []
+    for f in files:
+        status = str(getattr(f, "is_processed", "") or "")
+        if status == "partial_success":
+            progress = {}
+            custom_meta = getattr(f, "custom_metadata", None)
+            if isinstance(custom_meta, dict):
+                progress = custom_meta.get("ingestion_progress") if isinstance(custom_meta.get("ingestion_progress"), dict) else {}
+            expected = int(progress.get("total_chunks_expected", 0) or 0)
+            failed = int(progress.get("chunks_failed", 0) or 0)
+            partial_files.append(f"{getattr(f, 'original_filename', 'unknown')} (bad={failed}, expected={expected})")
+
+    if partial_files:
+        caveats.append("Some files were indexed partially: " + "; ".join(partial_files[:5]))
+    if not context_documents:
+        caveats.append("No relevant chunks were retrieved for this query.")
+    if isinstance(rag_debug, dict) and rag_debug.get("truncated"):
+        caveats.append("Context was truncated by retrieval limits; answer may be incomplete.")
+    return caveats
+
+
+def _append_caveats_and_sources(answer: str, caveats: List[str], sources: List[str]) -> str:
+    lines = [answer.strip()]
+    lines.append("\n\n### Ограничения/нехватка данных")
+    if caveats:
+        for c in caveats:
+            lines.append(f"- {c}")
+    else:
+        lines.append("- Существенных ограничений контекста не обнаружено.")
+    lines.append("\n### Источники (кратко)")
+    if sources:
+        for s in sources:
+            lines.append(f"- {s}")
+    else:
+        lines.append("- Релевантные источники не найдены.")
+    return "\n".join(lines).strip()
 
 
 def _build_critic_context(context_documents: List[Dict[str, Any]], max_chars: int = 12000) -> str:
@@ -332,11 +417,11 @@ async def _build_full_file_map_reduce_prompt(
     reduce_context = "\n\n=====\n\n".join(partials)
     final_prompt = (
         "You are a document analyst. You received summaries of all document parts.\n"
-        "Produce a complete, consistent answer to the user question.\n"
+        "Produce a complete, consistent and detailed answer to the user question.\n"
         "Rules:\n"
         "1) Do not invent facts outside provided context.\n"
         "2) Explicitly mention missing information when needed.\n"
-        "3) Provide a structured answer with key findings.\n"
+        "3) Return sections in order: Ответ, Ограничения/нехватка данных, Источники (кратко).\n"
         "4) Use all available summaries, not a single fragment.\n\n"
         f"User question:\n{query}\n\n"
         f"All partial summaries:\n{reduce_context}\n\n"
@@ -370,16 +455,18 @@ async def _try_build_rag_prompt(
     rag_used = False
     rag_debug = None
     context_docs: List[Dict[str, Any]] = []
+    rag_caveats: List[str] = []
+    rag_sources: List[str] = []
 
     if not user_id:
-        return final_prompt, rag_used, rag_debug, context_docs
+        return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
 
     try:
         files = await crud_file.get_conversation_files(db, conversation_id=conversation_id, user_id=user_id)
         logger.info("Conversation files (completed): %d", len(files))
     except Exception as e:
         logger.warning("Could not fetch conversation files: %s", e)
-        return final_prompt, rag_used, rag_debug, context_docs
+        return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
 
     if file_ids:
         allowed_ids = {str(x) for x in file_ids}
@@ -387,7 +474,7 @@ async def _try_build_rag_prompt(
         logger.info("Conversation files filtered by payload file_ids: %d", len(files))
 
     if not files:
-        return final_prompt, rag_used, rag_debug, context_docs
+        return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
 
     rag_file_ids = [str(f.id) for f in files]
     groups = _group_files_by_embedding_config(files, model_source)
@@ -446,6 +533,8 @@ async def _try_build_rag_prompt(
         rag_debug = (debug_groups[0] if debug_groups else {}) if isinstance(debug_groups, list) else {}
         if not isinstance(rag_debug, dict):
             rag_debug = {}
+        else:
+            rag_debug = deepcopy(rag_debug)
         rag_debug["embedding_mode"] = embedding_mode
         rag_debug["embedding_model"] = embedding_model
         rag_debug["file_ids"] = rag_file_ids
@@ -456,7 +545,8 @@ async def _try_build_rag_prompt(
         ]
         rag_debug["mixed_embeddings"] = len(groups) > 1
         rag_debug["group_count"] = len(groups)
-        rag_debug["group_debug"] = debug_groups
+        # Keep debug payload JSON-serializable and avoid self-references.
+        rag_debug["group_debug"] = [deepcopy(d) if isinstance(d, dict) else d for d in debug_groups]
 
         if context_docs:
             retrieval_mode = (rag_debug or {}).get("retrieval_mode") if isinstance(rag_debug, dict) else None
@@ -479,6 +569,8 @@ async def _try_build_rag_prompt(
                 final_prompt = rag_retriever.build_context_prompt(query=query, context_documents=context_docs)
 
             rag_used = True
+            rag_sources = _build_sources_list(context_docs, max_items=12)
+            rag_caveats = _build_rag_caveats(files=files, context_documents=context_docs, rag_debug=rag_debug)
             logger.info(
                 "RAG enabled: docs=%d mode=%s model=%s retrieval_mode=%s",
                 len(context_docs),
@@ -503,11 +595,13 @@ async def _try_build_rag_prompt(
             if context_docs_list:
                 final_prompt = rag_retriever.build_context_prompt(query=query, context_documents=context_docs_list)
                 rag_used = True
+                rag_sources = _build_sources_list(context_docs_list, max_items=12)
+                rag_caveats = _build_rag_caveats(files=files, context_documents=context_docs_list, rag_debug=rag_debug)
 
     except Exception as e:
         logger.warning("RAG retrieval failed: %s", e)
 
-    return final_prompt, rag_used, rag_debug, context_docs
+    return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
 
 
 class ChatOrchestrator:
@@ -553,7 +647,7 @@ class ChatOrchestrator:
         messages = await crud_message.get_conversation_messages(db, conversation_id=conversation_id)
         conversation_history = _build_conversation_history(messages)
 
-        final_prompt, rag_used, rag_debug, context_docs = await _try_build_rag_prompt(
+        final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = await _try_build_rag_prompt(
             db=db,
             user_id=user_id,
             conversation_id=conversation_id,
@@ -571,9 +665,29 @@ class ChatOrchestrator:
         async def event_stream():
             full_response = ""
             start_time = datetime.utcnow()
+            summary_text: Optional[str] = None
 
             try:
-                yield f"data: {json.dumps({'type': 'start', 'conversation_id': str(conversation_id), 'message_id': str(assistant_message_id), 'rag_enabled': rag_used, 'rag_debug': rag_debug})}\n\n"
+                start_payload = {
+                    "type": "start",
+                    "conversation_id": str(conversation_id),
+                    "message_id": str(assistant_message_id),
+                    "rag_enabled": rag_used,
+                    "rag_debug": rag_debug,
+                }
+                if chat_data.rag_debug:
+                    start_payload["rag_debug"] = {
+                        **(rag_debug or {}),
+                        "top_chunks": _build_top_chunks_debug(context_docs, max_items=8),
+                        "sources": rag_sources,
+                    }
+                try:
+                    start_payload_json = json.dumps(start_payload)
+                except ValueError:
+                    logger.warning("RAG start payload is not JSON-serializable; sending reduced debug payload", exc_info=True)
+                    start_payload["rag_debug"] = {"serialization_error": True}
+                    start_payload_json = json.dumps(start_payload)
+                yield f"data: {start_payload_json}\n\n"
 
                 history_for_generation = conversation_history
                 if rag_used:
@@ -593,17 +707,20 @@ class ChatOrchestrator:
 
                 generation_time = (datetime.utcnow() - start_time).total_seconds()
 
-                if rag_used and context_docs:
-                    refined_response, critic_meta = await _run_answer_critic(
+                if rag_used:
+                    full_response = _append_caveats_and_sources(full_response, rag_caveats, rag_sources)
+
+                if chat_data.summarize and rag_used and context_docs and settings.ENABLE_POST_ANSWER_SUMMARIZE:
+                    summarized_response, critic_meta = await _run_answer_critic(
                         query=chat_data.message,
                         answer=full_response,
                         context_documents=context_docs,
                         model_source=chat_data.model_source,
                         model_name=chat_data.model_name,
                     )
-                    if refined_response != full_response:
-                        full_response = refined_response
-                        yield f"data: {json.dumps({'type': 'final_refinement', 'content': refined_response, 'critic': critic_meta})}\n\n"
+                    if summarized_response and summarized_response != full_response:
+                        summary_text = summarized_response
+                        yield f"data: {json.dumps({'type': 'summary', 'content': summary_text, 'critic': critic_meta})}\n\n"
                     else:
                         yield f"data: {json.dumps({'type': 'critic', 'critic': critic_meta})}\n\n"
 
@@ -618,7 +735,7 @@ class ChatOrchestrator:
                     generation_time=generation_time,
                 )
 
-                yield f"data: {json.dumps({'type': 'done', 'generation_time': generation_time, 'rag_used': rag_used, 'critic_applied': bool(rag_used and context_docs)})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'generation_time': generation_time, 'rag_used': rag_used, 'summary_available': bool(summary_text), 'caveats': rag_caveats, 'sources': rag_sources})}\n\n"
 
             except Exception as e:
                 logger.error("Streaming error: %s", e, exc_info=True)
@@ -648,7 +765,7 @@ class ChatOrchestrator:
         messages = await crud_message.get_conversation_messages(db, conversation_id=conversation_id)
         conversation_history = _build_conversation_history(messages)
 
-        final_prompt, rag_used, _rag_debug, context_docs = await _try_build_rag_prompt(
+        final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = await _try_build_rag_prompt(
             db=db,
             user_id=user_id,
             conversation_id=conversation_id,
@@ -676,16 +793,23 @@ class ChatOrchestrator:
             prompt_max_chars=chat_data.prompt_max_chars,
         )
 
-        if rag_used and context_docs:
-            refined_answer, critic_meta = await _run_answer_critic(
+        answer_text = result.get("response", "")
+        if rag_used:
+            answer_text = _append_caveats_and_sources(answer_text, rag_caveats, rag_sources)
+            result["response"] = answer_text
+
+        summary_text: Optional[str] = None
+        if chat_data.summarize and rag_used and context_docs and settings.ENABLE_POST_ANSWER_SUMMARIZE:
+            summarized_answer, critic_meta = await _run_answer_critic(
                 query=chat_data.message,
-                answer=result.get("response", ""),
+                answer=answer_text,
                 context_documents=context_docs,
                 model_source=chat_data.model_source,
                 model_name=chat_data.model_name,
             )
-            result["response"] = refined_answer
-            logger.info("RAG critic(non-stream): %s", critic_meta)
+            if summarized_answer and summarized_answer != answer_text:
+                summary_text = summarized_answer
+            logger.info("RAG critic(non-stream, summarize=%s): %s", chat_data.summarize, critic_meta)
 
         generation_time = (datetime.utcnow() - start_time).total_seconds()
 
@@ -708,6 +832,17 @@ class ChatOrchestrator:
             model_used=result["model"],
             tokens_used=result.get("tokens_used"),
             generation_time=generation_time,
+            summary=summary_text,
+            caveats=rag_caveats,
+            sources=rag_sources,
+            rag_debug=(
+                {
+                    **(rag_debug or {}),
+                    "top_chunks": _build_top_chunks_debug(context_docs, max_items=8),
+                }
+                if chat_data.rag_debug
+                else None
+            ),
         )
 
 

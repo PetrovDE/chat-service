@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 from datetime import datetime
 
@@ -85,7 +85,7 @@ class CRUDFile(CRUDBase[File, dict, dict]):
         """Get all processed files for a user"""
         query = (
             select(File)
-            .where(and_(File.user_id == user_id, File.is_processed == "completed"))
+            .where(and_(File.user_id == user_id, File.is_processed.in_(["completed", "partial_success"])))
             .order_by(File.processed_at.desc())
         )
         result = await db.execute(query)
@@ -106,7 +106,7 @@ class CRUDFile(CRUDBase[File, dict, dict]):
                 and_(
                     ConversationFile.conversation_id == conversation_id,
                     File.user_id == user_id,
-                    File.is_processed == "completed",
+                    File.is_processed.in_(["completed", "partial_success"]),
                 )
             )
             .order_by(File.uploaded_at.desc())
@@ -163,6 +163,7 @@ class CRUDFile(CRUDBase[File, dict, dict]):
         status: str,
         chunks_count: Optional[int] = None,
         embedding_model: Optional[str] = None,
+        metadata_patch: Optional[Dict[str, Any]] = None,
     ) -> Optional[File]:
         """Update file processing status"""
         file = await self.get(db, id=file_id)
@@ -172,7 +173,12 @@ class CRUDFile(CRUDBase[File, dict, dict]):
                 file.chunks_count = chunks_count
             if embedding_model:
                 file.embedding_model = embedding_model
+            if metadata_patch:
+                existing = file.custom_metadata if isinstance(file.custom_metadata, dict) else {}
+                file.custom_metadata = {**existing, **metadata_patch}
             if status == "completed":
+                file.processed_at = datetime.utcnow()
+            if status == "partial_success":
                 file.processed_at = datetime.utcnow()
             await db.commit()
             await db.refresh(file)

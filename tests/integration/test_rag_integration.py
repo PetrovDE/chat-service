@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from types import SimpleNamespace
 
@@ -46,7 +47,7 @@ def test_mixed_embedding_groups_merge(monkeypatch):
     monkeypatch.setattr(chat_service.crud_file, "get_conversation_files", fake_get_files)
     monkeypatch.setattr(chat_service.rag_retriever, "query_rag", fake_query_rag)
 
-    final_prompt, rag_used, rag_debug, context_docs = asyncio.run(
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
         chat_service._try_build_rag_prompt(
             db=None,
             user_id=user_id,
@@ -62,6 +63,10 @@ def test_mixed_embedding_groups_merge(monkeypatch):
     assert len(context_docs) >= 2
     assert rag_debug["mixed_embeddings"] is True
     assert rag_debug["group_count"] == 2
+    assert isinstance(rag_caveats, list)
+    assert isinstance(rag_sources, list)
+    # Regression guard for SSE start payload serialization.
+    json.dumps(rag_debug)
 
 
 def test_full_file_truncation_flag(monkeypatch):
@@ -132,7 +137,7 @@ def test_mixed_group_partial_failure_fallback(monkeypatch):
     monkeypatch.setattr(chat_service.crud_file, "get_conversation_files", fake_get_files)
     monkeypatch.setattr(chat_service.rag_retriever, "query_rag", fake_query_rag)
 
-    final_prompt, rag_used, rag_debug, context_docs = asyncio.run(
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
         chat_service._try_build_rag_prompt(
             db=None,
             user_id=user_id,
@@ -147,3 +152,5 @@ def test_mixed_group_partial_failure_fallback(monkeypatch):
     assert context_docs
     assert "survived-group" in final_prompt
     assert rag_debug["mixed_embeddings"] is True
+    assert isinstance(rag_caveats, list)
+    assert isinstance(rag_sources, list)

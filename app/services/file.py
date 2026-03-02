@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -26,6 +27,7 @@ from app.rag.document_loader import DocumentLoader
 from app.rag.embeddings import EmbeddingsManager
 from app.rag.text_splitter import SmartTextSplitter
 from app.rag.vector_store import VectorStoreManager
+from app.observability.context import file_id_ctx
 from app.observability.metrics import inc_counter, observe_ms
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,112 @@ _worker_lock = asyncio.Lock()
 
 def _batch(items: List[Any], size: int) -> List[List[Any]]:
     return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _safe_ratio(numerator: int, denominator: int) -> float:
+    return float(numerator / denominator) if denominator > 0 else 0.0
+
+
+def _extract_xlsx_stats(docs: List[Any]) -> Dict[str, Any]:
+    sheet_names = set()
+    total_rows = 0
+    for d in docs:
+        meta = (d.metadata or {}) if hasattr(d, "metadata") else {}
+        sheet = meta.get("sheet_name")
+        if sheet:
+            sheet_names.add(str(sheet))
+        row_end = meta.get("row_end")
+        try:
+            if row_end is not None:
+                total_rows = max(total_rows, int(row_end))
+        except Exception:
+            continue
+    return {
+        "xlsx_sheets_count": len(sheet_names),
+        "xlsx_rows_estimate": total_rows,
+    }
+
+
+async def _finalize_ingestion(
+    *,
+    db: Any,
+    file_id: UUID,
+    progress: Dict[str, Any],
+    embedding_mode: str,
+    embedding_model: str,
+    error_message: Optional[str],
+) -> str:
+    expected = int(progress.get("total_chunks_expected", 0) or 0)
+    processed = int(progress.get("chunks_processed", 0) or 0)
+    failed = int(progress.get("chunks_failed", 0) or 0)
+    indexed = int(progress.get("chunks_indexed", 0) or 0)
+
+    if expected > 0 and processed < expected:
+        remainder = expected - processed
+        failed += remainder
+        processed = expected
+        progress["chunks_failed"] = failed
+        progress["chunks_processed"] = processed
+        logger.warning(
+            "Finalize fixed incomplete counters: file_id=%s expected=%d processed_before=%d added_failed=%d",
+            file_id,
+            expected,
+            processed - remainder,
+            remainder,
+        )
+
+    bad_ratio = _safe_ratio(failed, expected)
+    threshold = float(settings.INGESTION_BAD_CHUNK_RATIO_THRESHOLD)
+
+    if indexed <= 0:
+        final_status = "failed"
+    elif failed <= 0:
+        final_status = "completed"
+    elif bad_ratio > threshold:
+        final_status = "failed"
+    else:
+        final_status = "partial_success"
+
+    progress["status"] = final_status
+    progress["bad_ratio"] = bad_ratio
+    progress["finished_at"] = _utc_now_iso()
+    progress["stage"] = "finalized"
+
+    metadata_patch: Dict[str, Any] = {"ingestion_progress": progress}
+    if error_message:
+        metadata_patch["error"] = error_message
+
+    await crud_file.update_processing_status(
+        db,
+        file_id=file_id,
+        status=final_status,
+        chunks_count=indexed,
+        embedding_model=f"{embedding_mode}:{embedding_model}",
+        metadata_patch=metadata_patch,
+    )
+
+    inc_counter("ingestion_chunks_total", value=expected)
+    inc_counter("ingestion_chunks_ok", value=indexed)
+    inc_counter("ingestion_chunks_bad", value=failed)
+    inc_counter("ingestion_upserts_ok", value=indexed)
+    inc_counter("ingestion_upserts_fail", value=failed)
+    inc_counter("ingestion_finalize_total", status=final_status)
+    logger.info(
+        "Ingestion finalized: file_id=%s status=%s expected=%d processed=%d indexed=%d failed=%d bad_ratio=%.4f threshold=%.4f",
+        file_id,
+        final_status,
+        expected,
+        processed,
+        indexed,
+        failed,
+        bad_ratio,
+        threshold,
+    )
+    return final_status
 
 
 def _looks_like_chat_model(model_name: str) -> bool:
@@ -136,8 +244,8 @@ async def _file_processing_worker() -> None:
         try:
             loop = asyncio.get_running_loop()
             started = loop.time()
-            ok = await _process_file(file_id, file_path, embedding_mode, embedding_model)
-            if (not ok) and attempt < MAX_BACKGROUND_RETRIES:
+            ok, retryable = await _process_file(file_id, file_path, embedding_mode, embedding_model)
+            if (not ok) and retryable and attempt < MAX_BACKGROUND_RETRIES:
                 delay = RETRY_DELAY_SECONDS * (attempt + 1)
                 inc_counter("file_processing_retry_total", mode=embedding_mode)
                 logger.warning(
@@ -200,14 +308,34 @@ async def _process_file(
     file_path: Path,
     embedding_mode: str,
     embedding_model: str,
-) -> bool:
+) -> Tuple[bool, bool]:
+    file_ctx_token = file_id_ctx.set(str(file_id))
+    started_ms = asyncio.get_running_loop().time()
+    progress: Dict[str, Any] = {
+        "status": "processing",
+        "stage": "queued",
+        "total_chunks_expected": 0,
+        "chunks_processed": 0,
+        "chunks_failed": 0,
+        "chunks_indexed": 0,
+        "started_at": _utc_now_iso(),
+        "finished_at": None,
+        "bad_ratio": 0.0,
+    }
+    error_message: Optional[str] = None
+
     async with AsyncSessionLocal() as db:
         try:
             logger.info(
                 "Starting file processing: file_id=%s mode=%s embedding_model=%s path=%s",
                 file_id, embedding_mode, embedding_model, file_path
             )
-            await crud_file.update_processing_status(db, file_id=file_id, status="processing")
+            await crud_file.update_processing_status(
+                db,
+                file_id=file_id,
+                status="processing",
+                metadata_patch={"ingestion_progress": progress, "error": None},
+            )
 
             # conversation_id is used by retrieval filters
             q = select(ConversationFile.conversation_id).where(ConversationFile.file_id == file_id)
@@ -216,20 +344,40 @@ async def _process_file(
             conversation_id = str(conv_ids[0]) if conv_ids else None
 
             # load documents
+            stage_t0 = asyncio.get_running_loop().time()
+            progress["stage"] = "extract"
             docs = await document_loader.load_file(str(file_path))
             if not docs:
                 raise ValueError("No documents loaded from file")
 
             total_chars = sum(len(d.page_content or "") for d in docs)
-            logger.info("Loaded documents=%d total_chars=%d", len(docs), total_chars)
+            xlsx_stats = _extract_xlsx_stats(docs) if file_path.suffix.lower() in (".xlsx", ".xls") else {}
+            logger.info(
+                "Loaded documents=%d extracted_text_chars=%d file_id=%s %s",
+                len(docs),
+                total_chars,
+                file_id,
+                " ".join([f"{k}={v}" for k, v in xlsx_stats.items()]) if xlsx_stats else "",
+            )
+            observe_ms("ingestion_stage_ms", (asyncio.get_running_loop().time() - stage_t0) * 1000.0, stage="extract")
             if total_chars < 50:
                 raise ValueError("Extracted text is empty/too small (possible scanned PDF).")
 
             # split
+            stage_t0 = asyncio.get_running_loop().time()
+            progress["stage"] = "chunk"
             chunks = text_splitter.split_documents(docs)
             if not chunks:
                 raise ValueError("No chunks created from documents")
-            logger.info("Created chunks=%d chunk_size=%d overlap=%d", len(chunks), settings.CHUNK_SIZE, settings.CHUNK_OVERLAP)
+            progress["total_chunks_expected"] = len(chunks)
+            logger.info(
+                "Created chunks_expected=%d chunk_size=%d overlap=%d file_id=%s",
+                len(chunks),
+                settings.CHUNK_SIZE,
+                settings.CHUNK_OVERLAP,
+                file_id,
+            )
+            observe_ms("ingestion_stage_ms", (asyncio.get_running_loop().time() - stage_t0) * 1000.0, stage="chunk")
 
             file_record = await crud_file.get(db, id=file_id)
             if not file_record:
@@ -247,9 +395,11 @@ async def _process_file(
                 logger.warning("Vector pre-clean failed (continue)", exc_info=True)
 
             items: List[Tuple[str, Dict[str, Any], str]] = []
+            empty_chunks = 0
             for idx, cd in enumerate(chunks):
                 text = (cd.page_content or "").strip()
                 if not text:
+                    empty_chunks += 1
                     continue
                 meta: Dict[str, Any] = {
                     "file_id": str(file_id),
@@ -271,22 +421,27 @@ async def _process_file(
             if not items:
                 raise ValueError("All chunks are empty after split (nothing to embed).")
 
+            progress["chunks_failed"] = int(progress["chunks_failed"]) + empty_chunks
+            progress["chunks_processed"] = int(progress["chunks_processed"]) + empty_chunks
             stored = 0
-            failed = 0
             batches = _batch(items, EMBED_BATCH_SIZE)
             logger.info("Embedding batches=%d batch_size=%d", len(batches), EMBED_BATCH_SIZE)
 
+            stage_t0 = asyncio.get_running_loop().time()
+            progress["stage"] = "embed_upsert"
             for i, batch in enumerate(batches, start=1):
                 texts = [t for (t, _, _) in batch]
                 try:
                     vectors = await emb.embedd_documents_async(texts)
                 except Exception:
-                    failed += len(batch)
+                    progress["chunks_failed"] = int(progress["chunks_failed"]) + len(batch)
+                    progress["chunks_processed"] = int(progress["chunks_processed"]) + len(batch)
                     logger.warning("Embedding batch %d/%d failed (skip batch)", i, len(batches), exc_info=True)
                     continue
 
                 if not vectors or len(vectors) != len(batch):
-                    failed += len(batch)
+                    progress["chunks_failed"] = int(progress["chunks_failed"]) + len(batch)
+                    progress["chunks_processed"] = int(progress["chunks_processed"]) + len(batch)
                     logger.warning("Embedding batch %d/%d invalid vectors size", i, len(batches))
                     continue
 
@@ -300,31 +455,56 @@ async def _process_file(
                         )
                         if ok:
                             stored += 1
+                            progress["chunks_indexed"] = int(progress["chunks_indexed"]) + 1
+                            progress["chunks_processed"] = int(progress["chunks_processed"]) + 1
                         else:
-                            failed += 1
+                            progress["chunks_failed"] = int(progress["chunks_failed"]) + 1
+                            progress["chunks_processed"] = int(progress["chunks_processed"]) + 1
                             logger.warning("Vector upsert returned False doc_id=%s", doc_id)
                     except Exception:
-                        failed += 1
+                        progress["chunks_failed"] = int(progress["chunks_failed"]) + 1
+                        progress["chunks_processed"] = int(progress["chunks_processed"]) + 1
                         logger.warning("Vector upsert failed doc_id=%s", doc_id, exc_info=True)
 
-            if stored == 0:
-                raise ValueError(f"No chunks were stored to vector DB. failed_embeddings={failed} total_items={len(items)}")
-
-            await crud_file.update_processing_status(
-                db,
-                file_id=file_id,
-                status="completed",
-                chunks_count=stored,
-                embedding_model=f"{embedding_mode}:{embedding_model}",
-            )
-
+            observe_ms("ingestion_stage_ms", (asyncio.get_running_loop().time() - stage_t0) * 1000.0, stage="embed_upsert")
             logger.info(
-                "File processed successfully: file_id=%s stored_chunks=%d failed_embeddings=%d deleted_old=%d conversation_id=%s embedding_model=%s",
-                file_id, stored, failed, deleted, conversation_id, embedding_model
+                "File processing done before finalize: file_id=%s chunks_expected=%d chunks_processed=%d chunks_indexed=%d chunks_failed=%d empty_chunks=%d deleted_old=%d conversation_id=%s embedding_model=%s",
+                file_id,
+                progress["total_chunks_expected"],
+                progress["chunks_processed"],
+                progress["chunks_indexed"],
+                progress["chunks_failed"],
+                empty_chunks,
+                deleted,
+                conversation_id,
+                embedding_model,
             )
-            return True
 
         except Exception as e:
-            logger.error("File processing failed: file_id=%s err=%s: %s", file_id, type(e).__name__, str(e), exc_info=True)
-            await crud_file.update_processing_status(db, file_id=file_id, status="failed")
-            return False
+            error_message = f"{type(e).__name__}: {e}"
+            progress["stage"] = "failed"
+            logger.error("File processing failed: file_id=%s err=%s", file_id, error_message, exc_info=True)
+        finally:
+            try:
+                observe_ms(
+                    "ingestion_total_ms",
+                    (asyncio.get_running_loop().time() - started_ms) * 1000.0,
+                    file_type=file_path.suffix.lower().lstrip(".") or "unknown",
+                )
+                final_status = await _finalize_ingestion(
+                    db=db,
+                    file_id=file_id,
+                    progress=progress,
+                    embedding_mode=embedding_mode,
+                    embedding_model=embedding_model,
+                    error_message=error_message,
+                )
+                retryable = bool(
+                    final_status == "failed"
+                    and int(progress.get("total_chunks_expected", 0) or 0) == 0
+                    and int(progress.get("chunks_processed", 0) or 0) == 0
+                    and bool(error_message)
+                )
+                return (final_status in ("completed", "partial_success"), retryable)
+            finally:
+                file_id_ctx.reset(file_ctx_token)

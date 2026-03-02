@@ -671,8 +671,12 @@ class RAGRetriever:
         context_block = "\n\n---\n\n".join(parts)
         if context_block:
             return (
-                "You are an assistant. Answer using only the provided file context when relevant.\n"
-                "If required details are missing in context, explicitly say what is missing.\n\n"
+                "You are an assistant. Build a detailed answer from the provided file context.\n"
+                "Return three sections in this exact order:\n"
+                "1) Ответ\n"
+                "2) Ограничения/нехватка данных\n"
+                "3) Источники (кратко)\n"
+                "If details are missing in context, explicitly list what is missing.\n\n"
                 f"Question:\n{query}\n\n"
                 f"Context:\n{context_block}\n\n"
                 "Answer:"

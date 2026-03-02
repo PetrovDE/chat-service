@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     app_secret_key: str = Field(default="")
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8080, ge=1, le=65535)
-    supported_filetypes: str = Field(default="pdf,docx,txt,md")
+    supported_filetypes: str = Field(default="pdf,docx,txt,md,csv,json,xlsx,xls")
 
     # Corporate API
     CORPORATE_API_URL: str = Field(default="")
@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     EMBEDDINGS_BASEURL: AnyUrl = Field(default="http://localhost:11434")
     CHUNK_SIZE: int = Field(default=2000, ge=100)
     CHUNK_OVERLAP: int = Field(default=400, ge=0)
+    INGESTION_BAD_CHUNK_RATIO_THRESHOLD: float = Field(default=0.35, ge=0.0, le=1.0)
+    ENABLE_POST_ANSWER_SUMMARIZE: bool = Field(default=False)
     ENABLE_CACHE: bool = Field(default=True)
     MAX_FILESIZE_MB: int = Field(default=50, ge=1)
 
@@ -91,13 +93,13 @@ class Settings(BaseSettings):
     def _normalize_supported_filetypes(cls, value: str) -> str:
         raw = str(value or "").strip()
         if not raw:
-            return "pdf,docx,txt,md"
+            return "pdf,docx,txt,md,csv,json,xlsx,xls"
         parts = []
         for item in raw.split(","):
             ext = item.strip().lower().lstrip(".")
             if ext:
                 parts.append(ext)
-        return ",".join(parts) if parts else "pdf,docx,txt,md"
+        return ",".join(parts) if parts else "pdf,docx,txt,md,csv,json,xlsx,xls"
 
     @property
     def allowed_origins_list(self) -> list[str]:

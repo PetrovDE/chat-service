@@ -14,6 +14,8 @@ class ChatMessage(BaseModel):
     prompt_max_chars: Optional[int] = Field(None, ge=1000, le=200000)
     file_ids: Optional[List[str]] = None
     rag_mode: Optional[str] = Field(None, pattern=r"^(auto|hybrid|full_file)$")
+    summarize: bool = False
+    rag_debug: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -23,6 +25,10 @@ class ChatResponse(BaseModel):
     model_used: str
     tokens_used: Optional[int] = None
     generation_time: Optional[float] = None
+    summary: Optional[str] = None
+    caveats: Optional[List[str]] = None
+    sources: Optional[List[str]] = None
+    rag_debug: Optional[dict] = None
 
 
 class StreamChunk(BaseModel):

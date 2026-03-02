@@ -156,6 +156,9 @@ export class FilesSidebarManager {
         if (status === 'failed') {
             return '<span class="file-item-status failed">Failed</span>';
         }
+        if (status === 'partial_success') {
+            return '<span class="file-item-status processing">Partial</span>';
+        }
         return '<span class="file-item-status pending">Pending</span>';
     }
 

@@ -41,8 +41,15 @@ class FileInfo(BaseModel):
 class FileProcessingStatus(BaseModel):
     """Schema for file processing status"""
     file_id: uuid.UUID
-    status: str  # pending, processing, completed, failed
+    status: str  # pending, processing, completed, partial_success, failed
     chunks_count: int
+    total_chunks_expected: int = 0
+    chunks_processed: int = 0
+    chunks_failed: int = 0
+    chunks_indexed: int = 0
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    stage: Optional[str] = None
     error_message: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

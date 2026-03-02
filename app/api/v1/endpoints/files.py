@@ -131,6 +131,12 @@ def _to_file_info(file_obj: FileModel, conversation_ids: List[UUID]) -> FileInfo
     )
 
 
+def _extract_ingestion_progress(file_obj: FileModel) -> dict:
+    meta = file_obj.custom_metadata if isinstance(file_obj.custom_metadata, dict) else {}
+    progress = meta.get("ingestion_progress") if isinstance(meta.get("ingestion_progress"), dict) else {}
+    return progress
+
+
 @router.post("/upload", response_model=FileUploadResponse)
 async def upload_file(
     file: UploadFile = FastAPIFile(...),
@@ -148,6 +154,11 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="Filename is empty")
 
     if not settings.is_file_supported(file.filename):
+        logger.warning(
+            "Upload rejected (unsupported file type): filename=%s supported=%s",
+            file.filename,
+            settings.supported_filetypes,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File type not supported. Supported: {settings.supported_filetypes}",
@@ -331,6 +342,7 @@ async def get_file_status(
         raise HTTPException(status_code=404, detail="File not found")
 
     err = None
+    progress = _extract_ingestion_progress(file_obj)
     try:
         if isinstance(file_obj.custom_metadata, dict):
             err = file_obj.custom_metadata.get("error")
@@ -341,6 +353,13 @@ async def get_file_status(
         file_id=file_obj.id,
         status=file_obj.is_processed,
         chunks_count=file_obj.chunks_count,
+        total_chunks_expected=int(progress.get("total_chunks_expected", 0) or 0),
+        chunks_processed=int(progress.get("chunks_processed", 0) or 0),
+        chunks_failed=int(progress.get("chunks_failed", 0) or 0),
+        chunks_indexed=int(progress.get("chunks_indexed", 0) or 0),
+        started_at=progress.get("started_at"),
+        finished_at=progress.get("finished_at"),
+        stage=progress.get("stage"),
         error_message=err,
     )
 

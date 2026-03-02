@@ -39,6 +39,7 @@ class FileManager {
         try {
             await this.uploadAndProcess(file);
         } catch (error) {
+            this.clearPendingAttachment();
             this.showError(error.message || 'File upload failed');
         } finally {
             event.target.value = '';
@@ -100,21 +101,26 @@ class FileManager {
             const token = localStorage.getItem('auth_token');
             const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
-            const response = await fetch(`/api/v1/files/${fileId}`, { headers });
+            const response = await fetch(`/api/v1/files/status/${fileId}`, { headers });
             if (!response.ok) {
                 throw new Error(`Failed to check file status (${response.status})`);
             }
 
             const fileInfo = await response.json();
-            const status = fileInfo.is_processed;
-            this.renderPendingAttachment(fileName, fileSize, status);
+            const status = fileInfo.status;
+            const expected = Number(fileInfo.total_chunks_expected || 0);
+            const processed = Number(fileInfo.chunks_processed || 0);
+            const failed = Number(fileInfo.chunks_failed || 0);
+            const indexed = Number(fileInfo.chunks_indexed || 0);
+            const progressText = expected > 0 ? `${processed}/${expected} (ok=${indexed}, bad=${failed})` : status;
+            this.renderPendingAttachment(fileName, fileSize, progressText);
 
             if (status === 'completed') {
                 this.attachedFiles.push({
                     id: fileId,
                     name: fileName,
                     size: fileSize,
-                    type: fileInfo.file_type || '',
+                    type: '',
                 });
                 this.renderAttachedFiles();
                 if (window.app?.uiController) {
@@ -123,8 +129,25 @@ class FileManager {
                 return;
             }
 
+            if (status === 'partial_success') {
+                this.attachedFiles.push({
+                    id: fileId,
+                    name: fileName,
+                    size: fileSize,
+                    type: '',
+                });
+                this.renderAttachedFiles();
+                if (window.app?.uiController) {
+                    window.app.uiController.showToast(
+                        `File "${fileName}" indexed partially (${indexed}/${expected || indexed}, bad=${failed})`,
+                        'warning',
+                    );
+                }
+                return;
+            }
+
             if (status === 'failed') {
-                throw new Error('File processing failed');
+                throw new Error(fileInfo.error_message || 'File processing failed');
             }
 
             await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -149,6 +172,10 @@ class FileManager {
                 <div class="spinner small"></div>
             </div>
         `;
+    }
+
+    clearPendingAttachment() {
+        this.renderAttachedFiles();
     }
 
     renderAttachedFiles() {

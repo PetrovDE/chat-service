@@ -105,6 +105,26 @@ Base prefix: `/api/v1`
 - Models: `GET /models/list?mode=local|ollama|aihub|openai|corporate`, `GET /models/status`
 - Stats: `GET /stats/user`, `GET /stats/system`, `GET /stats/observability` (admin)
 
+### File Processing Status Contract
+- Terminal statuses: `completed`, `partial_success`, `failed`.
+- `GET /api/v1/files/status/{file_id}` now returns progress counters:
+  - `total_chunks_expected`
+  - `chunks_processed`
+  - `chunks_failed`
+  - `chunks_indexed`
+  - `started_at`, `finished_at`, `stage`
+- Counter invariants at finalize:
+  - `chunks_processed == chunks_indexed + chunks_failed`
+  - `total_chunks_expected == chunks_processed` (after finalize reconciliation)
+
+### Chat Response Contract
+- `POST /api/v1/chat` returns primary detailed `response` directly.
+- Optional summarization is disabled by default and can be requested with payload flag `summarize=true` (returned as separate `summary` field when enabled).
+- Response includes contextual transparency fields:
+  - `caveats` (context limitations / missing data)
+  - `sources` (short source list)
+  - `rag_debug` (only when `rag_debug=true`)
+
 Public root endpoints:
 - `GET /health`
 - `GET /metrics` (Prometheus text format)

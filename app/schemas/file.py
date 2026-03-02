@@ -53,3 +53,12 @@ class FileProcessingStatus(BaseModel):
     error_message: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class FileReprocessResponse(BaseModel):
+    status: str
+    file_id: uuid.UUID
+
+
+class FileDeleteResponse(BaseModel):
+    status: str

@@ -47,6 +47,44 @@ def test_finalize_ingestion_partial_success_counters(monkeypatch):
     assert patch["chunks_processed"] == patch["chunks_indexed"] + patch["chunks_failed"]
 
 
+def test_finalize_ingestion_normalizes_processed_gt_expected(monkeypatch):
+    captured = {}
+
+    async def fake_update_processing_status(db, **kwargs):  # noqa: ARG001
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(file_service.crud_file, "update_processing_status", fake_update_processing_status)
+
+    progress = {
+        "status": "processing",
+        "stage": "embed_upsert",
+        "total_chunks_expected": 2,
+        "chunks_processed": 3,
+        "chunks_failed": 1,
+        "chunks_indexed": 2,
+        "started_at": "2026-01-01T00:00:00+00:00",
+        "finished_at": None,
+    }
+
+    status = asyncio.run(
+        file_service._finalize_ingestion(
+            db=object(),
+            file_id=uuid.uuid4(),
+            progress=progress,
+            embedding_mode="local",
+            embedding_model="nomic-embed-text",
+            error_message=None,
+        )
+    )
+
+    assert status == "partial_success"
+    patch = captured["metadata_patch"]["ingestion_progress"]
+    assert patch["total_chunks_expected"] == 3
+    assert patch["chunks_processed"] == 3
+    assert patch["chunks_indexed"] + patch["chunks_failed"] == patch["chunks_processed"]
+
+
 def test_process_file_always_finalizes_on_exception(monkeypatch):
     finalized = {"called": False}
 

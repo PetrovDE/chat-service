@@ -1,158 +1,99 @@
 # llama-service
 
-FastAPI backend for chat with multi-provider LLM, RAG, JWT auth, and SSE streaming.
+Сервис для диалогов с LLM (SSE/обычный ответ), RAG по загруженным файлам и управлением чатами/файлами через API и встроенный web-frontend.
 
-## Features
-- Async API under `/api/v1/*` plus static frontend serving.
-- Multi-provider chat: `ollama`/`local`, `openai`, `aihub` (`corporate` alias supported).
-- RAG over uploaded files (ChromaDB) with mixed-embedding retrieval.
-- Chat orchestration moved to service layer: `app/services/chat_orchestrator.py`.
-- File ingestion worker with queue, retries, graceful shutdown, and stats.
-- Unified error handling and request observability middleware.
-- In-memory metrics snapshot and Prometheus-compatible metrics export.
+## Что делает сервис
+- Принимает сообщения в чат (`/api/v1/chat`, `/api/v1/chat/stream`).
+- Поддерживает провайдеры моделей: `ollama/local`, `aihub` (`corporate` alias), `openai`.
+- Загружает файлы, асинхронно индексирует их в ChromaDB и использует в RAG (`/api/v1/files/*`).
+- Хранит пользователей, чаты, сообщения и файлы в PostgreSQL.
+- Отдаёт встроенный frontend из `frontend/` (SPA монтируется на `/`).
 
-## Architecture
-
-```mermaid
-flowchart LR
-    A[Client / Frontend] --> B[FastAPI app.main]
-    B --> C[API Routers /api/v1]
-    C --> D[Dependencies JWT/Auth/DB]
-    C --> E[CRUD]
-    C --> F[Chat Orchestrator]
-    F --> G[LLM Manager]
-    F --> H[RAG Retriever]
-    H --> I[Embeddings + Vector Store]
-    E --> J[(PostgreSQL)]
-    I --> K[(ChromaDB)]
-```
-
-## Key Modules
-- `app/main.py`: bootstrap, CORS, middleware, `/health`, `/metrics`, static mount.
-- `app/api/v1/endpoints/chat.py`: thin HTTP layer for chat APIs.
-- `app/services/chat_orchestrator.py`: chat flow orchestration (conversation, RAG, generation, persistence).
-- `app/api/v1/endpoints/stats.py`: user/system/admin stats and observability snapshot.
-- `app/observability/metrics.py`: in-memory counters/timers + Prometheus text renderer.
-- `app/services/file.py`: async file processing worker, queue, retries, worker stats.
-- `app/services/llm/*`: provider abstraction and retries.
-- `app/rag/*`: retrieval, vector store, chunking, indexing.
-
-## Repository Structure
-```text
-.
-|-- app/
-|   |-- api/
-|   |-- core/
-|   |-- crud/
-|   |-- db/
-|   |-- observability/
-|   |-- rag/
-|   |-- schemas/
-|   `-- services/
-|-- alembic/
-|-- config/
-|-- frontend/
-|-- scripts/
-|-- tests/
-|-- docker-compose.db.yml
-`-- requirements.txt
-```
-
-## Quick Start (Local)
-
-### Prerequisites
-- Python 3.10+
-- PostgreSQL 14+
-- Optional: Ollama for local model mode
-
-### Install
+## Быстрый старт
+### 1) Backend
+1. Установить зависимости:
 ```bash
 pip install -r requirements.txt
 ```
-
-### Configure `.env`
-Minimal required:
+2. Поднять PostgreSQL (локально через compose):
+```bash
+docker compose -f docker-compose.db.yml up -d
+```
+3. Заполнить `.env` минимумом:
 ```env
-DATABASE_URL=postgresql+asyncpg://user:password@localhost/llama_chat_db
-ALEMBIC_DATABASE_URL=postgresql://user:password@localhost/llama_chat_db
+DATABASE_URL=postgresql+asyncpg://llama_chat_user:1306@localhost:5432/llama_chat_db
+ALEMBIC_DATABASE_URL=postgresql://llama_chat_user:1306@localhost:5432/llama_chat_db
 JWT_SECRET_KEY=change-me
 ```
-
-### Init DB
+4. Применить миграции:
 ```bash
 alembic upgrade head
+```
+5. (Опционально) создать администратора:
+```bash
 python scripts/create_admin.py
 ```
-
-### Run API
+По умолчанию создаётся `admin / admin123456`.
+6. Запустить API:
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Open:
-- Swagger: `http://localhost:8000/docs`
+### 2) Frontend
+Frontend отдельной сборки не требует.
+- Открыть: `http://localhost:8000/`
+- API/Swagger: `http://localhost:8000/docs`
 - Health: `http://localhost:8000/health`
 - Prometheus metrics: `http://localhost:8000/metrics`
 
-## API Overview
-
-Base prefix: `/api/v1`
-
-- Auth: `POST /auth/register`, `POST /auth/login`, `GET /auth/me`
-- Chat: `POST /chat`, `POST /chat/stream`
-- Conversations: `GET /conversations`, `PATCH /conversations/{id}`, `DELETE /conversations/{id}`
-- Files: `POST /files/upload`, `GET /files`, `GET /files/status/{file_id}`, `DELETE /files/{file_id}`
-- Models: `GET /models/list?mode=local|ollama|aihub|openai|corporate`, `GET /models/status`
-- Stats: `GET /stats/user`, `GET /stats/system`, `GET /stats/observability` (admin)
-
-### File Processing Status Contract
-- Terminal statuses: `completed`, `partial_success`, `failed`.
-- `GET /api/v1/files/status/{file_id}` now returns progress counters:
-  - `total_chunks_expected`
-  - `chunks_processed`
-  - `chunks_failed`
-  - `chunks_indexed`
-  - `started_at`, `finished_at`, `stage`
-- Counter invariants at finalize:
-  - `chunks_processed == chunks_indexed + chunks_failed`
-  - `total_chunks_expected == chunks_processed` (after finalize reconciliation)
-
-### Chat Response Contract
-- `POST /api/v1/chat` returns primary detailed `response` directly.
-- Optional summarization is disabled by default and can be requested with payload flag `summarize=true` (returned as separate `summary` field when enabled).
-- Response includes contextual transparency fields:
-  - `caveats` (context limitations / missing data)
-  - `sources` (short source list)
-  - `rag_debug` (only when `rag_debug=true`)
-
-Public root endpoints:
-- `GET /health`
-- `GET /metrics` (Prometheus text format)
-
-## Metrics and Observability
-- Middleware records:
-  - `http_requests_total` counter (labels: method, path, status)
-  - `http_request_duration_ms` timer aggregates
-- Admin snapshot endpoint:
-  - `GET /api/v1/stats/observability` returns in-memory metrics + file worker stats.
-- Prometheus scrape endpoint:
-  - `GET /metrics` returns text format `version=0.0.4`.
-
-## Development
-
-Run tests:
-```bash
-pytest -q
+## Краткая схема компонентов
+```text
+Browser SPA (frontend/index.html + static/js)
+    -> FastAPI (app/main.py, /api/v1/*)
+        -> Chat orchestration (app/services/chat_orchestrator.py)
+            -> LLM providers (app/services/llm/providers/*)
+            -> RAG retriever (app/rag/retriever.py)
+                -> ChromaDB (.chromadb)
+        -> File ingestion worker (app/services/file.py, in-process queue)
+            -> loaders/splitters/embeddings
+            -> ChromaDB upsert
+        -> CRUD/SQLAlchemy (app/crud/*, app/db/*)
+            -> PostgreSQL
 ```
 
-Run smoke tests only:
-```bash
-pytest tests/smoke -q
-```
+## Документация (`docs/*`)
+1. [`docs/00_project_map.md`](docs/00_project_map.md)
+2. [`docs/01_service_spec.md`](docs/01_service_spec.md)
+3. [`docs/02_api_contracts.md`](docs/02_api_contracts.md)
+4. [`docs/03_backend_architecture.md`](docs/03_backend_architecture.md)
+5. [`docs/04_frontend_architecture.md`](docs/04_frontend_architecture.md)
+6. [`docs/05_observability.md`](docs/05_observability.md)
+7. [`docs/06_testing_and_dod.md`](docs/06_testing_and_dod.md)
+8. [`docs/examples/chat.request.json`](docs/examples/chat.request.json)
+9. [`docs/examples/chat.response.json`](docs/examples/chat.response.json)
+10. [`docs/examples/delete.error.404.json`](docs/examples/delete.error.404.json)
+11. [`docs/examples/delete.response.json`](docs/examples/delete.response.json)
+12. [`docs/examples/retrieve_debug.request.json`](docs/examples/retrieve_debug.request.json)
+13. [`docs/examples/retrieve_debug.response.json`](docs/examples/retrieve_debug.response.json)
+14. [`docs/examples/status.response.partial_success.json`](docs/examples/status.response.partial_success.json)
+15. [`docs/examples/status.response.processing.json`](docs/examples/status.response.processing.json)
+16. [`docs/examples/upload.request.json`](docs/examples/upload.request.json)
+17. [`docs/examples/upload.response.json`](docs/examples/upload.response.json)
+18. [`docs/ux/chat_states.md`](docs/ux/chat_states.md)
+19. [`docs/ux/file_ingestion_progress.md`](docs/ux/file_ingestion_progress.md)
 
-## Troubleshooting
-- `422 validation_error`: request body does not match schema.
-- `401 Not authenticated`: missing/invalid Bearer token.
-- Empty model list in `/api/v1/models/list`: check provider URL/credentials.
-- File processing `failed`: inspect logs and worker stats in `/api/v1/stats/observability`.
-- Slow responses: verify provider availability and model readiness.
+## Troubleshooting (топ-5)
+1. `401/403` на защищённых endpoint'ах (`/api/v1/files/*`, `/api/v1/conversations/*`, `/api/v1/stats/*`).
+Где смотреть: DevTools Network (заголовок `Authorization`), backend-логи с `rid/uid` (stdout, формат из `app/core/logging.py`).
+
+2. Файл завис в `processing` или ушёл в `failed`.
+Где смотреть: `GET /api/v1/files/status/{file_id}` (stage/counters/error), `GET /api/v1/stats/observability` (admin), backend-логи `app/services/file.py`.
+
+3. Пустой/слабый RAG-ответ.
+Где смотреть: отправить chat с `rag_debug=true` (или `?debug=true`), проверить `rag_debug.top_chunks`, `filters/where`, `retrieval_mode`; сравнить с `docs/examples/retrieve_debug.*.json`.
+
+4. Не поднимается приложение из-за настроек.
+Где смотреть: значения в `.env` (`DATABASE_URL`, `ALEMBIC_DATABASE_URL`, `JWT_SECRET_KEY`), ошибки старта в логах uvicorn/FastAPI, проверка БД через `docker compose -f docker-compose.db.yml ps`.
+
+5. Модели недоступны/медленные ответы.
+Где смотреть: `GET /api/v1/models/status`, `GET /api/v1/models/list?mode=...`, логи провайдера в backend (`app/services/llm/providers/*`), общие метрики задержек в `/metrics`.

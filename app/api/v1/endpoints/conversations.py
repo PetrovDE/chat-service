@@ -6,7 +6,12 @@ from uuid import UUID
 
 from app.db.session import get_db
 from app.db.models import User
-from app.schemas import ConversationResponse, ConversationUpdate
+from app.schemas import (
+    ConversationDeleteResponse,
+    ConversationMessageItem,
+    ConversationResponse,
+    ConversationUpdate,
+)
 from app.api.dependencies import get_current_user
 from app.crud import crud_conversation, crud_message
 
@@ -46,7 +51,7 @@ async def get_conversations(
         )
 
 
-@router.get("/{conversation_id}/messages")
+@router.get("/{conversation_id}/messages", response_model=List[ConversationMessageItem])
 async def get_conversation_messages(
         conversation_id: UUID,
         db: AsyncSession = Depends(get_db),
@@ -102,7 +107,7 @@ async def update_conversation(
     return updated_conversation
 
 
-@router.delete("/{conversation_id}")
+@router.delete("/{conversation_id}", response_model=ConversationDeleteResponse)
 async def delete_conversation(
         conversation_id: UUID,
         db: AsyncSession = Depends(get_db),

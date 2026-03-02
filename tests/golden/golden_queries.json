@@ -1,0 +1,33 @@
+[
+  {
+    "id": "rag_fact_lookup_revenue",
+    "query": "Какая выручка за Q4 и как изменилась год к году?",
+    "rag_mode": "hybrid",
+    "expected_signals": {
+      "rag_used": true,
+      "response_not_empty": true,
+      "has_limitations_section": true,
+      "has_sources_section": true,
+      "min_sources": 1,
+      "debug": {
+        "required_fields": ["filters", "top_chunks", "retrieval_hits"],
+        "top_chunks_min": 1
+      }
+    }
+  },
+  {
+    "id": "rag_full_file_summary",
+    "query": "Сделай сводку по всему файлу и перечисли ключевые риски.",
+    "rag_mode": "full_file",
+    "expected_signals": {
+      "rag_used": true,
+      "response_not_empty": true,
+      "has_limitations_section": true,
+      "has_sources_section": true,
+      "debug": {
+        "required_fields": ["retrieval_mode", "top_chunks"],
+        "retrieval_mode": "full_file"
+      }
+    }
+  }
+]

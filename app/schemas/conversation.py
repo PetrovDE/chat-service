@@ -28,6 +28,13 @@ class MessageResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ConversationMessageItem(BaseModel):
+    id: uuid.UUID
+    role: str
+    content: str
+    timestamp: Optional[datetime] = None
+
+
 class ConversationResponse(BaseModel):
     id: uuid.UUID
     user_id: Optional[uuid.UUID]
@@ -47,3 +54,8 @@ class ConversationList(BaseModel):
     total: int
     page: int
     per_page: int
+
+
+class ConversationDeleteResponse(BaseModel):
+    status: str
+    conversation_id: uuid.UUID

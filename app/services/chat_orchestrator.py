@@ -135,17 +135,57 @@ def _build_top_chunks_debug(context_documents: List[Dict[str, Any]], max_items: 
     rows: List[Dict[str, Any]] = []
     for d in context_documents[:max_items]:
         meta = d.get("metadata") or {}
+        file_id = str(meta.get("file_id") or "")
+        chunk_index = meta.get("chunk_index")
+        doc_id = str(meta.get("doc_id") or "").strip()
+        if not doc_id and file_id and chunk_index is not None:
+            doc_id = f"{file_id}_{chunk_index}"
         rows.append(
             {
                 "score": float(d.get("similarity_score", meta.get("similarity_score", 0.0)) or 0.0),
-                "file_id": str(meta.get("file_id") or ""),
+                "file_id": file_id,
+                "doc_id": doc_id or None,
+                "chunk_id": doc_id or None,
                 "filename": str(meta.get("filename") or meta.get("source") or "unknown"),
                 "sheet_name": meta.get("sheet_name"),
-                "chunk_index": meta.get("chunk_index"),
+                "chunk_index": chunk_index,
                 "preview": (d.get("content") or "")[:220],
             }
         )
     return rows
+
+
+def _estimate_text_tokens(text: str) -> int:
+    # Fast, provider-agnostic approximation for observability/debug.
+    if not text:
+        return 0
+    return max(1, int(len(text) / 4))
+
+
+def _build_standard_rag_debug_payload(
+    *,
+    rag_debug: Optional[Dict[str, Any]],
+    context_docs: List[Dict[str, Any]],
+    rag_sources: List[str],
+    llm_tokens_used: Optional[int],
+    max_items: int = 8,
+) -> Dict[str, Any]:
+    payload = dict(rag_debug or {})
+    top_chunks = _build_top_chunks_debug(context_docs, max_items=max_items)
+    avg_score = (
+        sum(float(item.get("score", 0.0) or 0.0) for item in top_chunks) / len(top_chunks)
+        if top_chunks
+        else 0.0
+    )
+    context_tokens = sum(_estimate_text_tokens((d.get("content") or "")) for d in context_docs)
+    payload["filters"] = payload.get("filters") or payload.get("where")
+    payload["top_chunks"] = top_chunks
+    payload["sources"] = rag_sources
+    payload["retrieval_hits"] = int(payload.get("returned_count", len(context_docs)) or 0)
+    payload["avg_score"] = float(avg_score)
+    payload["context_tokens"] = int(context_tokens)
+    payload["llm_tokens_used"] = llm_tokens_used
+    return payload
 
 
 def _build_rag_caveats(
@@ -676,11 +716,13 @@ class ChatOrchestrator:
                     "rag_debug": rag_debug,
                 }
                 if chat_data.rag_debug:
-                    start_payload["rag_debug"] = {
-                        **(rag_debug or {}),
-                        "top_chunks": _build_top_chunks_debug(context_docs, max_items=8),
-                        "sources": rag_sources,
-                    }
+                    start_payload["rag_debug"] = _build_standard_rag_debug_payload(
+                        rag_debug=rag_debug,
+                        context_docs=context_docs,
+                        rag_sources=rag_sources,
+                        llm_tokens_used=None,
+                        max_items=8,
+                    )
                 try:
                     start_payload_json = json.dumps(start_payload)
                 except ValueError:
@@ -836,10 +878,13 @@ class ChatOrchestrator:
             caveats=rag_caveats,
             sources=rag_sources,
             rag_debug=(
-                {
-                    **(rag_debug or {}),
-                    "top_chunks": _build_top_chunks_debug(context_docs, max_items=8),
-                }
+                _build_standard_rag_debug_payload(
+                    rag_debug=rag_debug,
+                    context_docs=context_docs,
+                    rag_sources=rag_sources,
+                    llm_tokens_used=result.get("tokens_used"),
+                    max_items=8,
+                )
                 if chat_data.rag_debug
                 else None
             ),

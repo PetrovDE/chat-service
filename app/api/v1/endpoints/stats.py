@@ -1,5 +1,5 @@
 # app/api/v1/endpoints/stats.py
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from datetime import datetime, timedelta
@@ -9,12 +9,13 @@ from app.db.session import get_db
 from app.db.models import User, Conversation, Message, File
 from app.api.dependencies import get_current_user
 from app.observability.metrics import snapshot_metrics
+from app.schemas import ObservabilityStatsResponse, SystemStatsResponse, UserStatsResponse
 from app.services.file import get_file_processing_worker_stats
 
 router = APIRouter()
 
 
-@router.get("/user", response_model=Dict[str, Any])
+@router.get("/user", response_model=UserStatsResponse)
 async def get_user_stats(
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user)
@@ -63,14 +64,14 @@ async def get_user_stats(
     }
 
 
-@router.get("/system")
+@router.get("/system", response_model=SystemStatsResponse)
 async def get_system_stats(
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
     """Get system statistics (admin only)"""
     if not current_user.is_admin:
-        return {"error": "Admin access required"}
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
     # Total users
     users_result = await db.execute(select(func.count(User.id)))
@@ -100,13 +101,13 @@ async def get_system_stats(
     }
 
 
-@router.get("/observability")
+@router.get("/observability", response_model=ObservabilityStatsResponse)
 async def get_observability_stats(
         current_user: User = Depends(get_current_user)
 ):
     """Get in-memory observability metrics (admin only)."""
     if not current_user.is_admin:
-        return {"error": "Admin access required"}
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
     return {
         "metrics": snapshot_metrics(),

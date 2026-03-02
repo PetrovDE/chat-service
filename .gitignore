@@ -57,3 +57,5 @@ docker-compose.db.yml
 /chroma_db/
 /.chromadb/
 .editorconfig
+/docs/
+/.cursor/

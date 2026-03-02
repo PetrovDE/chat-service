@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import timedelta
 
 from app.db.session import get_db
-from app.schemas import UserCreate, UserResponse, UserLogin, Token, PasswordChange
+from app.schemas import UserCreate, UserResponse, UserLogin, Token, PasswordChange, PasswordChangeResponse
 from app.api.dependencies import get_current_user
 from app.core import security
 from app.crud import crud_user
@@ -66,7 +66,7 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 
-@router.post("/change-password")
+@router.post("/change-password", response_model=PasswordChangeResponse)
 async def change_password(
         password_data: PasswordChange,
         db: AsyncSession = Depends(get_db),

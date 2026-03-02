@@ -91,6 +91,16 @@ async def _finalize_ingestion(
     failed = int(progress.get("chunks_failed", 0) or 0)
     indexed = int(progress.get("chunks_indexed", 0) or 0)
 
+    if processed > expected:
+        logger.warning(
+            "Finalize normalized exceeded counters: file_id=%s expected_before=%d processed=%d",
+            file_id,
+            expected,
+            processed,
+        )
+        expected = processed
+        progress["total_chunks_expected"] = expected
+
     if expected > 0 and processed < expected:
         remainder = expected - processed
         failed += remainder

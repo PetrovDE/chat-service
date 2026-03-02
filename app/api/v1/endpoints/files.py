@@ -24,7 +24,7 @@ from app.db.models import User
 from app.db.models.conversation_file import ConversationFile
 from app.db.models.file import File as FileModel
 from app.db.session import get_db
-from app.schemas.file import FileInfo, FileProcessingStatus, FileUploadResponse
+from app.schemas.file import FileDeleteResponse, FileInfo, FileProcessingStatus, FileReprocessResponse, FileUploadResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -257,7 +257,7 @@ async def upload_file(
     )
 
 
-@router.post("/process/{file_id}")
+@router.post("/process/{file_id}", response_model=FileReprocessResponse)
 async def reprocess_file(
     file_id: UUID,
     embedding_mode: str = Form("local"),
@@ -364,7 +364,7 @@ async def get_file_status(
     )
 
 
-@router.delete("/{file_id}")
+@router.delete("/{file_id}", response_model=FileDeleteResponse)
 async def delete_file(
     file_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -377,6 +377,15 @@ async def delete_file(
     await crud_file.remove_file_from_all_conversations(db, file_id=file_id)
 
     try:
+        # Best-effort index cleanup: remove all chunks for this file across vector collections.
+        try:
+            from app.rag.vector_store import VectorStoreManager
+
+            deleted_vectors = VectorStoreManager().delete_by_metadata({"file_id": str(file_id)})
+            logger.info("Vector index cleanup: file_id=%s deleted_vectors=%d", file_id, deleted_vectors)
+        except Exception:
+            logger.warning("Vector index cleanup failed for file_id=%s", file_id, exc_info=True)
+
         path = Path(file_obj.path)
         await crud_file.remove(db, id=file_id)
         try:

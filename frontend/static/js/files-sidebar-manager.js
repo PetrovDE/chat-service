@@ -38,8 +38,16 @@ export class FilesSidebarManager {
     async loadFiles(silent = false) {
         try {
             if (!silent) this.showLoading();
-            const response = await this.apiService.getProcessedFiles(this.currentConversationId);
-            this.files = Array.isArray(response) ? response : [];
+            const response = await this.apiService.getFiles();
+            const allFiles = Array.isArray(response) ? response : [];
+            if (this.currentConversationId) {
+                this.files = allFiles.filter((file) =>
+                    Array.isArray(file.conversation_ids) &&
+                    file.conversation_ids.map(String).includes(String(this.currentConversationId))
+                );
+            } else {
+                this.files = allFiles;
+            }
             this.render();
         } catch (error) {
             if (!silent) this.showError(error.message || 'Failed to load files');

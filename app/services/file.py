@@ -366,7 +366,12 @@ async def _process_file(
             # split
             stage_t0 = asyncio.get_running_loop().time()
             progress["stage"] = "chunk"
-            chunks = text_splitter.split_documents(docs)
+            file_ext = file_path.suffix.lower()
+            if file_ext in (".xlsx", ".xls", ".csv"):
+                # Spreadsheet/CSV docs are already block-structured by loader.
+                chunks = docs
+            else:
+                chunks = text_splitter.split_documents(docs)
             if not chunks:
                 raise ValueError("No chunks created from documents")
             progress["total_chunks_expected"] = len(chunks)

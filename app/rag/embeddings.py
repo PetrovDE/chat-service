@@ -3,6 +3,7 @@ Embeddings Manager
 Менеджер для генерации эмбеддингов через различные провайдеры
 """
 import logging
+import asyncio
 from typing import List, Optional
 
 from app.core.config import settings
@@ -135,30 +136,39 @@ class EmbeddingsManager:
 
         all_embeddings = []
 
-        for idx, text in enumerate(texts):
-            try:
+        concurrency = settings.AIHUB_EMBEDDING_CONCURRENCY if self.mode == "aihub" else settings.EMBEDDING_CONCURRENCY
+        semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+        results: List[Optional[List[float]]] = [None] * len(texts)
+
+        async def _embed_one(idx: int, text: str) -> None:
+            async with semaphore:
                 embedding = await llm_manager.generate_embedding(
                     text=text,
                     model_source=self.mode,
                     model_name=embedding_model
                 )
 
-                if not embedding or len(embedding) == 0:
-                    logger.error(f"❌ Empty embedding returned for text {idx+1}")
-                    raise RuntimeError(f"Empty embedding returned for text {idx+1}")
+            if not embedding or len(embedding) == 0:
+                raise RuntimeError(f"Empty embedding returned for text {idx+1}")
 
-                actual_dim = len(embedding)
-                if expected_dim and actual_dim != expected_dim:
-                    logger.warning(
-                        f"⚠️ Unexpected embedding dimension: expected {expected_dim}, "
-                        f"got {actual_dim} for text {idx+1}"
-                    )
+            actual_dim = len(embedding)
+            if expected_dim and actual_dim != expected_dim:
+                logger.warning(
+                    f"⚠️ Unexpected embedding dimension: expected {expected_dim}, "
+                    f"got {actual_dim} for text {idx+1}"
+                )
+            results[idx] = embedding
 
-                all_embeddings.append(embedding)
+        try:
+            await asyncio.gather(*[_embed_one(i, t) for i, t in enumerate(texts)])
+        except Exception as e:
+            logger.error(f"❌ Failed to generate embeddings batch: {e}")
+            raise RuntimeError(f"Embedding generation failed: {e}")
 
-            except Exception as e:
-                logger.error(f"❌ Failed to generate embedding for text {idx+1}: {e}")
-                raise RuntimeError(f"Embedding generation failed for text {idx+1}: {e}")
+        for emb in results:
+            if emb is None:
+                raise RuntimeError("Embedding generation failed: missing result entry")
+            all_embeddings.append(emb)
 
         logger.info(
             f"✅ Generated {len(all_embeddings)} embeddings successfully "

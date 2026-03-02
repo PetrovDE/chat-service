@@ -124,6 +124,10 @@ class ApiService {
         return this.get(`/files/processed${params}`);
     }
 
+    async getFiles() {
+        return this.get('/files/');
+    }
+
     async deleteFile(fileId) {
         return this.delete(`/files/${fileId}`);
     }

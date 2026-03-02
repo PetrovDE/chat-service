@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     EMBEDDINGS_BASEURL: AnyUrl = Field(default="http://localhost:11434")
     CHUNK_SIZE: int = Field(default=2000, ge=100)
     CHUNK_OVERLAP: int = Field(default=400, ge=0)
+    EMBEDDING_CONCURRENCY: int = Field(default=6, ge=1, le=32)
+    AIHUB_EMBEDDING_CONCURRENCY: int = Field(default=3, ge=1, le=16)
     INGESTION_BAD_CHUNK_RATIO_THRESHOLD: float = Field(default=0.35, ge=0.0, le=1.0)
     ENABLE_POST_ANSWER_SUMMARIZE: bool = Field(default=False)
     ENABLE_CACHE: bool = Field(default=True)

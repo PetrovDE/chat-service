@@ -155,7 +155,7 @@ class LLMManager:
             elif source in ("ollama", "local"):
                 model_name = settings.OLLAMA_EMBED_MODEL or settings.EMBEDDINGS_MODEL
 
-        logger.info("Generating embedding: source=%s, model=%s", source, model_name)
+        logger.debug("Generating embedding: source=%s, model=%s", source, model_name)
 
         return await provider.generate_embedding(text=text, model=model_name)
 

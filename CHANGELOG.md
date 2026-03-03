@@ -21,6 +21,19 @@
 - Added response language policy: answer language follows user query language (RU->RU, EN->EN) with post-generation language rewrite fallback.
 - Added coverage-based full-file source aggregation (`sheet + merged row ranges`) to avoid references to only the last chunk.
 - Stabilized Excel/CSV ingestion for embeddings: reduced row-block size to compact chunks (up to 20 rows) to prevent provider `400` on oversized inputs.
+- Added dynamic retrieval budget policy for `auto/hybrid`:
+  - short query -> ~20% from known document chunks,
+  - fact query -> ~10%,
+  - broad/analysis query -> ~30%.
+- Added low-coverage one-step escalation with debug trace (`rag_debug.retrieval_policy.escalation`):
+  - increase `top_k` or
+  - switch to `full_file` for small documents.
+
+### Backend Refactor (2026-03-03)
+- Decomposed `app/services/chat_orchestrator.py` into dedicated modules under `app/services/chat/*`.
+- Kept API/SSE contracts unchanged while moving language policy, RAG prompt builder, full-file map/reduce, debug/source formatting and post-processing logic out of the facade.
+- Migrated integration tests to direct imports from `app/services/chat/*` modules and removed legacy private-alias coupling in `chat_orchestrator`.
+- Chat orchestration now uses shared private pipeline steps for generation/post-processing to reduce duplication between stream and non-stream flows.
 
 ## [1.0.0] - 2025-10-16
 

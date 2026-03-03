@@ -81,6 +81,7 @@ Browser SPA (frontend/index.html + static/js)
 17. [`docs/examples/upload.response.json`](docs/examples/upload.response.json)
 18. [`docs/ux/chat_states.md`](docs/ux/chat_states.md)
 19. [`docs/ux/file_ingestion_progress.md`](docs/ux/file_ingestion_progress.md)
+20. [`docs/09_dynamic_rag_budget_plan.md`](docs/09_dynamic_rag_budget_plan.md)
 
 ## Актуальные UI-изменения (frontend)
 - В sidebar чатов удаление вынесено в отдельную кнопку-корзину справа от каждого чата.
@@ -104,3 +105,19 @@ Browser SPA (frontend/index.html + static/js)
 
 5. Модели недоступны/медленные ответы.
 Где смотреть: `GET /api/v1/models/status`, `GET /api/v1/models/list?mode=...`, логи провайдера в backend (`app/services/llm/providers/*`), общие метрики задержек в `/metrics`.
+
+## Chat Service Internals (2026-03-03)
+
+`app/services/chat_orchestrator.py` is now a thin facade.
+Most chat internals are split into `app/services/chat/*` modules:
+- `language.py`
+- `context.py`
+- `embedding_config.py`
+- `sources_debug.py`
+- `full_file_analysis.py`
+- `postprocess.py`
+- `rag_prompt_builder.py`
+- `retrieval_policy.py` (dynamic retrieval budget and low-coverage escalation)
+- Stream and non-stream chat flows now share internal generation/post-processing steps in `ChatOrchestrator`.
+
+This keeps HTTP/SSE behavior stable while reducing file size and improving testability.

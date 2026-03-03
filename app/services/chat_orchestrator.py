@@ -1,1071 +1,120 @@
 ﻿from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import re
 import uuid
 from datetime import datetime
-from copy import deepcopy
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.crud import crud_conversation, crud_file, crud_message
+from app.crud import crud_conversation, crud_message
 from app.db.models import User
-from app.rag.retriever import rag_retriever
 from app.schemas import ChatMessage, ChatResponse
+from app.services.chat.context import (
+    build_conversation_history as _build_conversation_history,
+    build_rag_conversation_memory as _build_rag_conversation_memory,
+)
+from app.services.chat.language import (
+    detect_preferred_response_language as _detect_preferred_response_language,
+)
+from app.services.chat.postprocess import (
+    append_caveats_and_sources as _append_caveats_and_sources,
+    enforce_answer_language as _enforce_answer_language,
+    run_answer_critic as _run_answer_critic,
+)
+from app.services.chat.rag_prompt_builder import build_rag_prompt
+from app.services.chat.sources_debug import (
+    build_standard_rag_debug_payload as _build_standard_rag_debug_payload,
+)
 from app.services.llm.manager import llm_manager
 
 logger = logging.getLogger(__name__)
-CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
-LATIN_RE = re.compile(r"[A-Za-z]")
-
-
-def _build_conversation_history(messages):
-    return [{"role": msg.role, "content": msg.content} for msg in messages[:-1]]
-
-
-def _detect_preferred_response_language(query: str) -> str:
-    text = query or ""
-    cyr = len(CYRILLIC_RE.findall(text))
-    lat = len(LATIN_RE.findall(text))
-    if cyr >= 2 and cyr >= lat:
-        return "ru"
-    if lat >= 2 and lat > cyr:
-        return "en"
-    return "ru"
-
-
-def _build_language_policy_instruction(preferred_lang: str) -> str:
-    if preferred_lang == "ru":
-        return (
-            "Language policy:\n"
-            "- The user question is in Russian.\n"
-            "- Respond strictly in Russian.\n"
-            "- Keep factual content unchanged.\n"
-        )
-    return (
-        "Language policy:\n"
-        "- The user question is in English.\n"
-        "- Respond strictly in English.\n"
-        "- Keep factual content unchanged.\n"
-    )
-
-
-def _apply_language_policy_to_prompt(*, prompt: str, preferred_lang: str) -> str:
-    instruction = _build_language_policy_instruction(preferred_lang)
-    return f"{instruction}\n{prompt}".strip()
-
-
-def _answer_matches_expected_language(answer: str, preferred_lang: str) -> bool:
-    text = answer or ""
-    cyr = len(CYRILLIC_RE.findall(text))
-    lat = len(LATIN_RE.findall(text))
-    total = cyr + lat
-    if total < 20:
-        return True
-    if preferred_lang == "ru":
-        return cyr >= lat
-    return lat >= cyr
-
-
-async def _enforce_answer_language(
-    *,
-    answer: str,
-    preferred_lang: str,
-    model_source: Optional[str],
-    model_name: Optional[str],
-    prompt_max_chars: Optional[int],
-) -> Tuple[str, Dict[str, Any]]:
-    if not answer.strip():
-        return answer, {"enabled": True, "applied": False, "reason": "empty_answer"}
-    if _answer_matches_expected_language(answer, preferred_lang):
-        return answer, {"enabled": True, "applied": False, "reason": "already_expected_language"}
-
-    target = "Russian" if preferred_lang == "ru" else "English"
-    rewrite_prompt = (
-        f"Rewrite the answer strictly in {target}.\n"
-        "Do not change facts, numbers, entities, caveats or structure.\n"
-        "Preserve markdown lists and section headings semantics.\n"
-        "Return only rewritten answer text.\n\n"
-        f"Answer:\n{answer}\n\n"
-        "Rewritten answer:"
-    )
-    try:
-        rewritten = await llm_manager.generate_response(
-            prompt=rewrite_prompt,
-            model_source=model_source,
-            model_name=model_name,
-            temperature=0.0,
-            max_tokens=2200,
-            conversation_history=None,
-            prompt_max_chars=prompt_max_chars,
-        )
-    except Exception:
-        logger.warning("Answer language rewrite failed", exc_info=True)
-        return answer, {"enabled": True, "applied": False, "reason": "rewrite_call_failed"}
-
-    new_text = (rewritten.get("response") or "").strip()
-    if not new_text:
-        return answer, {"enabled": True, "applied": False, "reason": "empty_rewrite"}
-
-    applied = _answer_matches_expected_language(new_text, preferred_lang)
-    return (
-        new_text if applied else answer,
-        {
-            "enabled": True,
-            "applied": bool(applied),
-            "reason": "rewritten" if applied else "rewrite_still_wrong_language",
-        },
-    )
-
-
-def _normalize_source(source: Optional[str]) -> str:
-    src = (source or "").strip().lower()
-    if src == "corporate":
-        return "aihub"
-    if src in ("aihub", "openai", "ollama", "local"):
-        return src
-    return "local"
-
-
-def _parse_file_embedding_meta(raw_value: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    raw = (raw_value or "").strip()
-    if not raw:
-        return None, None
-
-    if ":" in raw:
-        mode_raw, model_raw = raw.split(":", 1)
-        mode = _normalize_source(mode_raw)
-        model = model_raw.strip() or None
-        if mode in ("local", "ollama", "aihub"):
-            return ("local" if mode == "ollama" else mode), model
-
-    return None, raw
-
-
-def _resolve_rag_embedding_config(files, requested_model_source: Optional[str]) -> Tuple[str, Optional[str]]:
-    fallback_mode = "aihub" if _normalize_source(requested_model_source) == "aihub" else "local"
-
-    first_model_only: Optional[str] = None
-    for f in files:
-        mode, model = _parse_file_embedding_meta(getattr(f, "embedding_model", None))
-        if model and not first_model_only:
-            first_model_only = model
-        if mode:
-            return mode, model
-
-    return fallback_mode, first_model_only
-
-
-def _group_files_by_embedding_config(
-    files,
-    requested_model_source: Optional[str],
-) -> Dict[Tuple[str, Optional[str]], List[str]]:
-    fallback_mode = "aihub" if _normalize_source(requested_model_source) == "aihub" else "local"
-    groups: Dict[Tuple[str, Optional[str]], List[str]] = {}
-
-    for f in files:
-        mode, model = _parse_file_embedding_meta(getattr(f, "embedding_model", None))
-        resolved_mode = mode or fallback_mode
-        key = (resolved_mode, model)
-        groups.setdefault(key, []).append(str(f.id))
-
-    return groups
-
-
-def _merge_context_docs(
-    docs: List[Dict[str, Any]],
-    max_docs: int = 64,
-    *,
-    sort_by_score: bool = True,
-) -> List[Dict[str, Any]]:
-    if not docs:
-        return []
-
-    merged: List[Dict[str, Any]] = []
-    seen = set()
-
-    for d in docs:
-        meta = d.get("metadata") or {}
-        key = (
-            str(meta.get("file_id") or ""),
-            str(meta.get("chunk_index") or ""),
-            (d.get("content") or "")[:120],
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(d)
-
-    if sort_by_score:
-        merged.sort(key=lambda x: float(x.get("similarity_score", 0.0)), reverse=True)
-    return merged[:max_docs] if max_docs and max_docs > 0 else merged
-
-
-def _build_rag_conversation_memory(history: List[Dict[str, str]], max_messages: int = 6) -> List[Dict[str, str]]:
-    if not history:
-        return []
-    tail = history[-max_messages:]
-    return [{"role": m.get("role", "user"), "content": (m.get("content") or "")[:1500]} for m in tail]
-
-
-def _build_sources_list(context_documents: List[Dict[str, Any]], max_items: int = 8) -> List[str]:
-    return _build_sources_list_with_mode(
-        context_documents=context_documents,
-        max_items=max_items,
-        aggregate_ranges=False,
-    )
-
-
-def _to_int(value: Any) -> Optional[int]:
-    try:
-        return int(value)
-    except Exception:
-        return None
-
-
-def _merge_ranges(ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-    if not ranges:
-        return []
-    sorted_ranges = sorted(ranges, key=lambda x: (x[0], x[1]))
-    merged: List[Tuple[int, int]] = [sorted_ranges[0]]
-    for start, end in sorted_ranges[1:]:
-        cur_start, cur_end = merged[-1]
-        if start <= cur_end + 1:
-            merged[-1] = (cur_start, max(cur_end, end))
-        else:
-            merged.append((start, end))
-    return merged
-
-
-def _build_coverage_sources(context_documents: List[Dict[str, Any]], max_items: int = 8) -> List[str]:
-    groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    for d in context_documents:
-        meta = d.get("metadata") or {}
-        filename = str(meta.get("filename") or meta.get("source") or "unknown")
-        sheet = str(meta.get("sheet_name") or "")
-        key = (filename, sheet)
-        item = groups.setdefault(key, {"ranges": [], "chunk_indices": set()})
-
-        row_start = _to_int(meta.get("row_start"))
-        row_end = _to_int(meta.get("row_end"))
-        if row_start is not None and row_end is not None:
-            item["ranges"].append((min(row_start, row_end), max(row_start, row_end)))
-
-        chunk_idx = _to_int(meta.get("chunk_index"))
-        if chunk_idx is not None:
-            item["chunk_indices"].add(chunk_idx)
-
-    if not groups:
-        return []
-
-    out: List[str] = []
-    for (filename, sheet), item in sorted(groups.items(), key=lambda x: (x[0][0], x[0][1])):
-        ranges = _merge_ranges(item["ranges"])
-        if ranges:
-            ranges_text = ", ".join([f"{s}-{e}" for s, e in ranges[:4]])
-            if len(ranges) > 4:
-                ranges_text += ", ..."
-            if sheet:
-                line = f"{filename} | sheet={sheet} | rows={ranges_text}"
-            else:
-                line = f"{filename} | rows={ranges_text}"
-        else:
-            chunk_indices = sorted(item["chunk_indices"])
-            if chunk_indices:
-                chunk_range = f"{chunk_indices[0]}-{chunk_indices[-1]}"
-                if sheet:
-                    line = f"{filename} | sheet={sheet} | chunk_range={chunk_range}"
-                else:
-                    line = f"{filename} | chunk_range={chunk_range}"
-            else:
-                line = f"{filename} | coverage=unknown"
-
-        out.append(line)
-        if len(out) >= max_items:
-            break
-
-    return out
-
-
-def _build_sources_list_with_mode(
-    *,
-    context_documents: List[Dict[str, Any]],
-    max_items: int = 8,
-    aggregate_ranges: bool = False,
-) -> List[str]:
-    if aggregate_ranges:
-        aggregated = _build_coverage_sources(context_documents=context_documents, max_items=max_items)
-        if aggregated:
-            return aggregated
-
-    out: List[str] = []
-    seen = set()
-    for d in context_documents:
-        meta = d.get("metadata") or {}
-        filename = str(meta.get("filename") or meta.get("source") or "unknown")
-        sheet = meta.get("sheet_name")
-        chunk_index = meta.get("chunk_index", "?")
-        row_start = meta.get("row_start")
-        row_end = meta.get("row_end")
-        row_part = ""
-        if row_start is not None and row_end is not None:
-            row_part = f" | rows={row_start}-{row_end}"
-        if sheet:
-            src = f"{filename} | sheet={sheet} | chunk={chunk_index}{row_part}"
-        else:
-            src = f"{filename} | chunk={chunk_index}{row_part}"
-        if src in seen:
-            continue
-        seen.add(src)
-        out.append(src)
-        if len(out) >= max_items:
-            break
-    return out
-
-
-def _build_top_chunks_debug(context_documents: List[Dict[str, Any]], max_items: int = 8) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    docs = context_documents if (max_items is None or max_items <= 0) else context_documents[:max_items]
-    for d in docs:
-        meta = d.get("metadata") or {}
-        file_id = str(meta.get("file_id") or "")
-        chunk_index = meta.get("chunk_index")
-        doc_id = str(meta.get("doc_id") or "").strip()
-        if not doc_id and file_id and chunk_index is not None:
-            doc_id = f"{file_id}_{chunk_index}"
-        rows.append(
-            {
-                "score": float(d.get("similarity_score", meta.get("similarity_score", 0.0)) or 0.0),
-                "file_id": file_id,
-                "doc_id": doc_id or None,
-                "chunk_id": doc_id or None,
-                "filename": str(meta.get("filename") or meta.get("source") or "unknown"),
-                "sheet_name": meta.get("sheet_name"),
-                "chunk_index": chunk_index,
-                "row_start": meta.get("row_start"),
-                "row_end": meta.get("row_end"),
-                "total_rows": meta.get("total_rows"),
-                "preview": (d.get("content") or "")[:220],
-            }
-        )
-    return rows
-
-
-def _estimate_text_tokens(text: str) -> int:
-    # Fast, provider-agnostic approximation for observability/debug.
-    if not text:
-        return 0
-    return max(1, int(len(text) / 4))
-
-
-def _build_standard_rag_debug_payload(
-    *,
-    rag_debug: Optional[Dict[str, Any]],
-    context_docs: List[Dict[str, Any]],
-    rag_sources: List[str],
-    llm_tokens_used: Optional[int],
-    max_items: int = 8,
-) -> Dict[str, Any]:
-    payload = dict(rag_debug or {})
-    top_chunks = _build_top_chunks_debug(context_docs, max_items=max_items)
-    avg_score = (
-        sum(float(item.get("score", 0.0) or 0.0) for item in top_chunks) / len(top_chunks)
-        if top_chunks
-        else 0.0
-    )
-    context_tokens = sum(_estimate_text_tokens((d.get("content") or "")) for d in context_docs)
-    payload["filters"] = payload.get("filters") or payload.get("where")
-    payload["top_chunks"] = top_chunks
-    payload["top_chunks_limit"] = max_items
-    payload["top_chunks_total"] = len(context_docs)
-    payload["sources"] = rag_sources
-    payload["retrieval_hits"] = int(payload.get("returned_count", len(context_docs)) or 0)
-    payload["retrieved_chunks_total"] = len(context_docs)
-    payload["avg_score"] = float(avg_score)
-    payload["context_tokens"] = int(context_tokens)
-    payload["llm_tokens_used"] = llm_tokens_used
-    return payload
-
-
-def _build_rag_caveats(
-    *,
-    files: List[Any],
-    context_documents: List[Dict[str, Any]],
-    rag_debug: Optional[Dict[str, Any]],
-) -> List[str]:
-    caveats: List[str] = []
-    partial_files = []
-    for f in files:
-        status = str(getattr(f, "is_processed", "") or "")
-        if status == "partial_success":
-            progress = {}
-            custom_meta = getattr(f, "custom_metadata", None)
-            if isinstance(custom_meta, dict):
-                progress = custom_meta.get("ingestion_progress") if isinstance(custom_meta.get("ingestion_progress"), dict) else {}
-            expected = int(progress.get("total_chunks_expected", 0) or 0)
-            failed = int(progress.get("chunks_failed", 0) or 0)
-            partial_files.append(f"{getattr(f, 'original_filename', 'unknown')} (bad={failed}, expected={expected})")
-
-    if partial_files:
-        caveats.append("Some files were indexed partially: " + "; ".join(partial_files[:5]))
-    if not context_documents:
-        caveats.append("No relevant chunks were retrieved for this query.")
-    coverage = rag_debug.get("coverage") if isinstance(rag_debug, dict) and isinstance(rag_debug.get("coverage"), dict) else {}
-    if coverage:
-        expected = int(coverage.get("expected_chunks", 0) or 0)
-        retrieved = int(coverage.get("retrieved_chunks", 0) or 0)
-        complete = bool(coverage.get("complete", False))
-        if expected > 0 and not complete:
-            caveats.append(
-                f"Full-file coverage is incomplete: retrieved {retrieved}/{expected} chunks."
-            )
-    if isinstance(rag_debug, dict) and rag_debug.get("truncated"):
-        caveats.append("Context was truncated by retrieval limits; answer may be incomplete.")
-    return caveats
-
-
-def _append_caveats_and_sources(
-    answer: str,
-    caveats: List[str],
-    sources: List[str],
-    *,
-    preferred_lang: str = "ru",
-) -> str:
-    limitations_title = "### Ограничения/нехватка данных"
-    sources_title = "### Источники (кратко)"
-    no_limitations = "- Существенных ограничений контекста не обнаружено."
-    no_sources = "- Релевантные источники не найдены."
-    if preferred_lang == "en":
-        limitations_title = "### Limitations/Missing Data"
-        sources_title = "### Sources (short)"
-        no_limitations = "- No major context limitations were detected."
-        no_sources = "- No relevant sources were found."
-
-    lines = [answer.strip()]
-    lines.append(f"\n\n{limitations_title}")
-    if caveats:
-        for c in caveats:
-            lines.append(f"- {c}")
-    else:
-        lines.append(no_limitations)
-    lines.append(f"\n{sources_title}")
-    if sources:
-        for s in sources:
-            lines.append(f"- {s}")
-    else:
-        lines.append(no_sources)
-    return "\n".join(lines).strip()
-
-
-def _build_context_coverage_summary(context_documents: List[Dict[str, Any]], max_items: int = 12) -> str:
-    lines = _build_coverage_sources(context_documents=context_documents, max_items=max_items)
-    if not lines:
-        return "- coverage details are unavailable"
-    return "\n".join([f"- {line}" for line in lines])
-
-
-def _build_critic_context(context_documents: List[Dict[str, Any]], max_chars: int = 12000) -> str:
-    parts: List[str] = []
-    used = 0
-    for i, d in enumerate(context_documents, start=1):
-        meta = d.get("metadata") or {}
-        filename = meta.get("filename") or "unknown"
-        chunk_index = meta.get("chunk_index", "?")
-        content = (d.get("content") or "").strip()
-        if not content:
-            continue
-        block = f"[{i}] file={filename} chunk={chunk_index}\n{content}\n"
-        if used + len(block) > max_chars:
-            remain = max_chars - used
-            if remain <= 0:
-                break
-            block = block[:remain]
-        parts.append(block)
-        used += len(block)
-        if used >= max_chars:
-            break
-    return "\n---\n".join(parts)
-
-
-def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
-    raw = (text or "").strip()
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except Exception:
-        pass
-
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-
-    candidate = raw[start:end + 1]
-    try:
-        return json.loads(candidate)
-    except Exception:
-        return None
-
-
-async def _run_answer_critic(
-    *,
-    query: str,
-    answer: str,
-    context_documents: List[Dict[str, Any]],
-    model_source: Optional[str],
-    model_name: Optional[str],
-) -> Tuple[str, Dict[str, Any]]:
-    context_text = _build_critic_context(context_documents, max_chars=12000)
-    if not context_text:
-        return answer, {"enabled": True, "applied": False, "reason": "empty_context"}
-
-    critic_prompt = (
-        "You are an answer quality critic for RAG.\n"
-        "Given user question, draft answer, and evidence context, evaluate factual support.\n"
-        "Return STRICT JSON object with fields:\n"
-        "supported: boolean,\n"
-        "issues: array of short strings,\n"
-        "missing_points: array of short strings,\n"
-        "refined_answer: string,\n"
-        "confidence: number (0..1).\n"
-        "Do not return markdown.\n\n"
-        f"Question:\n{query}\n\n"
-        f"Draft answer:\n{answer}\n\n"
-        f"Evidence context:\n{context_text}\n\n"
-        "JSON:"
-    )
-
-    try:
-        critic = await llm_manager.generate_response(
-            prompt=critic_prompt,
-            model_source=model_source,
-            model_name=model_name,
-            temperature=0.0,
-            max_tokens=1200,
-            conversation_history=None,
-        )
-    except Exception as e:
-        logger.warning("Critic step failed: %s", e)
-        return answer, {"enabled": True, "applied": False, "reason": "critic_call_failed"}
-
-    parsed = _extract_json_object(critic.get("response", ""))
-    if not parsed:
-        return answer, {"enabled": True, "applied": False, "reason": "critic_parse_failed"}
-
-    supported = bool(parsed.get("supported", True))
-    refined = (parsed.get("refined_answer") or "").strip()
-    confidence = parsed.get("confidence")
-    issues = parsed.get("issues") if isinstance(parsed.get("issues"), list) else []
-    missing = parsed.get("missing_points") if isinstance(parsed.get("missing_points"), list) else []
-
-    apply_refine = (not supported and bool(refined)) or (bool(refined) and refined != answer and len(refined) > 20)
-    final = refined if apply_refine else answer
-
-    return final, {
-        "enabled": True,
-        "applied": bool(apply_refine),
-        "supported": supported,
-        "confidence": confidence,
-        "issues_count": len(issues),
-        "missing_points_count": len(missing),
-    }
-
-
-def _batch_context_docs(
-    context_documents: List[Dict[str, Any]],
-    max_docs: int = 12,
-    max_chars: int = 7000,
-) -> List[List[Dict[str, Any]]]:
-    batches: List[List[Dict[str, Any]]] = []
-    current: List[Dict[str, Any]] = []
-    chars = 0
-
-    for d in context_documents:
-        content = (d.get("content") or "").strip()
-        if not content:
-            continue
-        add = len(content)
-
-        if current and (len(current) >= max_docs or (chars + add) > max_chars):
-            batches.append(current)
-            current = []
-            chars = 0
-
-        current.append(d)
-        chars += add
-
-    if current:
-        batches.append(current)
-
-    return batches
-
-
-def _chunk_text_blocks(blocks: List[str], max_chars: int) -> List[List[str]]:
-    groups: List[List[str]] = []
-    current: List[str] = []
-    used = 0
-    separator_size = len("\n\n=====\n\n")
-
-    for block in blocks:
-        add = len(block) + (separator_size if current else 0)
-        if current and (used + add) > max_chars:
-            groups.append(current)
-            current = []
-            used = 0
-            add = len(block)
-
-        current.append(block)
-        used += add
-
-    if current:
-        groups.append(current)
-
-    return groups
-
-
-async def _hierarchical_reduce_partials(
-    *,
-    query: str,
-    partials: List[str],
-    preferred_lang: str,
-    model_source: Optional[str],
-    model_name: Optional[str],
-    prompt_max_chars: Optional[int],
-) -> Tuple[str, Dict[str, Any]]:
-    target_chars = int(settings.FULL_FILE_REDUCE_CONTEXT_MAX_CHARS)
-    target_groups = int(settings.FULL_FILE_REDUCE_TARGET_GROUPS)
-    max_rounds = int(settings.FULL_FILE_REDUCE_MAX_ROUNDS)
-
-    working = [(p or "").strip() for p in partials if (p or "").strip()]
-    if not working:
-        return "", {"rounds": 0, "truncated": False, "input_partials": 0, "output_partials": 0}
-
-    rounds = 0
-    truncated = False
-
-    while rounds < max_rounds:
-        combined_len = len("\n\n=====\n\n".join(working))
-        if len(working) == 1 and combined_len <= target_chars:
-            break
-
-        groups_count = min(max(1, target_groups), len(working))
-        group_size = max(1, (len(working) + groups_count - 1) // groups_count)
-        next_round: List[str] = []
-
-        for start in range(0, len(working), group_size):
-            group = working[start:start + group_size]
-            reduce_prompt = (
-                "You are compressing partial summaries for full-file analysis.\n"
-                "Preserve critical numeric facts, entities, constraints and caveats.\n"
-                "Do not invent facts. Keep output dense and factual.\n\n"
-                + _build_language_policy_instruction(preferred_lang)
-                + "\n"
-                f"User question:\n{query}\n\n"
-                "Part summaries:\n"
-                + "\n\n-----\n\n".join(group)
-                + "\n\nCompressed summary:"
-            )
-            try:
-                reduced = await llm_manager.generate_response(
-                    prompt=reduce_prompt,
-                    model_source=model_source,
-                    model_name=model_name,
-                    temperature=0.0,
-                    max_tokens=1100,
-                    conversation_history=None,
-                    prompt_max_chars=prompt_max_chars,
-                )
-                text = (reduced.get("response") or "").strip()
-                if text:
-                    next_round.append(text)
-            except Exception:
-                logger.warning("Hierarchical reduce step failed (round=%d)", rounds + 1, exc_info=True)
-
-        if not next_round:
-            truncated = True
-            break
-
-        working = next_round
-        rounds += 1
-
-    if len(working) > 1:
-        final_groups = _chunk_text_blocks(working, max_chars=target_chars)
-        if len(final_groups) > 1:
-            truncated = True
-        context = "\n\n=====\n\n".join(final_groups[0])
-    else:
-        context = (working[0] if working else "")[:target_chars]
-        if working and len(working[0]) > target_chars:
-            truncated = True
-
-    return context, {
-        "rounds": rounds,
-        "truncated": truncated,
-        "input_partials": len(partials),
-        "output_partials": len(working),
-        "target_chars": target_chars,
-    }
-
-
-async def _build_full_file_map_reduce_prompt(
-    *,
-    query: str,
-    context_documents: List[Dict[str, Any]],
-    preferred_lang: str,
-    model_source: Optional[str],
-    model_name: Optional[str],
-    prompt_max_chars: Optional[int] = None,
-) -> Tuple[str, Dict[str, Any]]:
-    max_docs = int(settings.FULL_FILE_MAP_BATCH_MAX_DOCS)
-    max_chars = int(settings.FULL_FILE_MAP_BATCH_MAX_CHARS)
-    max_batches = int(settings.FULL_FILE_MAP_MAX_BATCHES)
-    batches = _batch_context_docs(context_documents, max_docs=max_docs, max_chars=max_chars)
-    logger.info("RAG full_file map-reduce: docs=%d batches=%d", len(context_documents), len(batches))
-
-    if not batches:
-        return _apply_language_policy_to_prompt(prompt=query, preferred_lang=preferred_lang), {
-            "enabled": True,
-            "total_batches": 0,
-            "processed_batches": 0,
-            "max_batches": max_batches,
-            "truncated_batches": False,
-            "partials_count": 0,
-            "fallback_to_query": True,
-        }
-
-    partials: List[str] = []
-    processed_batches = 0
-    covered_chunks = 0
-    for i, batch in enumerate(batches[:max_batches], start=1):
-        chunk_lines: List[str] = []
-        for j, d in enumerate(batch, start=1):
-            meta = d.get("metadata") or {}
-            filename = meta.get("filename") or meta.get("source") or "unknown"
-            chunk_index = meta.get("chunk_index", "?")
-            sheet_name = meta.get("sheet_name")
-            row_start = meta.get("row_start")
-            row_end = meta.get("row_end")
-            total_rows = meta.get("total_rows")
-            content = (d.get("content") or "").strip()
-            if not content:
-                continue
-            label_parts = [f"file={filename}", f"chunk={chunk_index}"]
-            if sheet_name:
-                label_parts.append(f"sheet={sheet_name}")
-            if row_start is not None and row_end is not None:
-                rows = f"{row_start}-{row_end}"
-                if total_rows is not None:
-                    rows = f"{rows}/{total_rows}"
-                label_parts.append(f"rows={rows}")
-            chunk_lines.append(f"[{j}] " + " ".join(label_parts) + f"\n{content}")
-
-        if not chunk_lines:
-            continue
-        processed_batches += 1
-        covered_chunks += len(chunk_lines)
-
-        map_prompt = (
-            "You are summarizing one batch of a large document for full-file analysis.\n"
-            "Extract key facts relevant to the user question and preserve important numeric values.\n"
-            "For tabular data, explicitly include row ranges and notable outliers/trends in this batch.\n"
-            "If the batch has no relevant facts, explicitly say so.\n"
-            "Be concise and factual.\n\n"
-            + _build_language_policy_instruction(preferred_lang)
-            + "\n"
-            f"User question:\n{query}\n\n"
-            f"Batch content ({i}/{min(len(batches), max_batches)}):\n"
-            + "\n\n---\n\n".join(chunk_lines)
-            + "\n\nBatch summary:"
-        )
-
-        try:
-            map_result = await llm_manager.generate_response(
-                prompt=map_prompt,
-                model_source=model_source,
-                model_name=model_name,
-                temperature=0.1,
-                max_tokens=900,
-                conversation_history=None,
-                prompt_max_chars=prompt_max_chars,
-            )
-            partial_text = (map_result.get("response") or "").strip()
-            if partial_text:
-                partials.append(f"[PART {i}]\n{partial_text}")
-        except Exception:
-            logger.warning("Map step failed for batch %d", i, exc_info=True)
-
-    truncated_batches = len(batches) > max_batches
-    if not partials:
-        logger.warning("RAG full_file map-reduce: no partial summaries produced")
-        return query, {
-            "enabled": True,
-            "total_batches": len(batches),
-            "processed_batches": processed_batches,
-            "max_batches": max_batches,
-            "truncated_batches": truncated_batches,
-            "partials_count": 0,
-            "fallback_to_query": True,
-        }
-
-    reduce_context, reduce_meta = await _hierarchical_reduce_partials(
-        query=query,
-        partials=partials,
-        preferred_lang=preferred_lang,
-        model_source=model_source,
-        model_name=model_name,
-        prompt_max_chars=prompt_max_chars,
-    )
-    if not reduce_context:
-        logger.warning("RAG full_file map-reduce: empty reduce context")
-        return query, {
-            "enabled": True,
-            "total_batches": len(batches),
-            "processed_batches": processed_batches,
-            "max_batches": max_batches,
-            "truncated_batches": True,
-            "partials_count": len(partials),
-            "fallback_to_query": True,
-            "hierarchical_reduce": reduce_meta,
-        }
-
-    coverage_summary = _build_context_coverage_summary(context_documents, max_items=12)
-    final_prompt = _apply_language_policy_to_prompt(
-        preferred_lang=preferred_lang,
-        prompt=(
-            "You are a document analyst. You received summaries of all document parts.\n"
-            "Produce a complete, consistent and detailed answer to the user question.\n"
-            "Rules:\n"
-            "1) Do not invent facts outside provided context.\n"
-            "2) Explicitly mention missing information when needed.\n"
-            "3) Return sections in order: Answer, Limitations/Missing data, Sources.\n"
-            "4) Use all available summaries, not a single fragment.\n"
-            "5) Keep concrete values and units from evidence.\n\n"
-            "Retrieved coverage summary:\n"
-            f"{coverage_summary}\n\n"
-            "If coverage summary spans the whole document, do not claim that only the last rows were provided.\n\n"
-            f"User question:\n{query}\n\n"
-            f"All partial summaries:\n{reduce_context}\n\n"
-            "Final answer:"
-        ),
-    )
-    return final_prompt, {
-        "enabled": True,
-        "total_batches": len(batches),
-        "processed_batches": processed_batches,
-        "max_batches": max_batches,
-        "truncated_batches": bool(truncated_batches or reduce_meta.get("truncated")),
-        "partials_count": len(partials),
-        "covered_chunks": covered_chunks,
-        "fallback_to_query": False,
-        "hierarchical_reduce": reduce_meta,
-    }
-
-async def _try_build_rag_prompt(
-    *,
-    db: AsyncSession,
-    user_id: Optional[uuid.UUID],
-    conversation_id: uuid.UUID,
-    query: str,
-    top_k: int = 3,
-    file_ids: Optional[List[str]] = None,
-    model_source: Optional[str] = None,
-    model_name: Optional[str] = None,
-    rag_mode: Optional[str] = None,
-    prompt_max_chars: Optional[int] = None,
-):
-    preferred_lang = _detect_preferred_response_language(query)
-    final_prompt = _apply_language_policy_to_prompt(prompt=query, preferred_lang=preferred_lang)
-    rag_used = False
-    rag_debug = None
-    context_docs: List[Dict[str, Any]] = []
-    rag_caveats: List[str] = []
-    rag_sources: List[str] = []
-
-    if not user_id:
-        return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
-
-    try:
-        files = await crud_file.get_conversation_files(db, conversation_id=conversation_id, user_id=user_id)
-        logger.info("Conversation files (completed): %d", len(files))
-    except Exception as e:
-        logger.warning("Could not fetch conversation files: %s", e)
-        return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
-
-    if file_ids:
-        allowed_ids = {str(x) for x in file_ids}
-        files = [f for f in files if str(f.id) in allowed_ids]
-        logger.info("Conversation files filtered by payload file_ids: %d", len(files))
-
-    if not files:
-        return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
-
-    rag_file_ids = [str(f.id) for f in files]
-    groups = _group_files_by_embedding_config(files, model_source)
-    embedding_mode, embedding_model = _resolve_rag_embedding_config(files, model_source)
-
-    try:
-        rag_results: List[Dict[str, Any]] = []
-        if len(groups) == 1:
-            rag_result = await rag_retriever.query_rag(
-                query,
-                top_k=top_k,
-                user_id=str(user_id),
-                conversation_id=str(conversation_id),
-                file_ids=rag_file_ids,
-                embedding_mode=embedding_mode,
-                embedding_model=embedding_model,
-                rag_mode=rag_mode,
-                debug_return=True,
-            )
-            if isinstance(rag_result, dict):
-                rag_results.append(rag_result)
-        else:
-            logger.info("RAG mixed embeddings: groups=%d", len(groups))
-            group_tasks = []
-            for (group_mode, group_model), group_file_ids in groups.items():
-                group_tasks.append(
-                    rag_retriever.query_rag(
-                        query,
-                        top_k=max(top_k, 4),
-                        user_id=str(user_id),
-                        conversation_id=str(conversation_id),
-                        file_ids=group_file_ids,
-                        embedding_mode=group_mode,
-                        embedding_model=group_model,
-                        rag_mode=rag_mode,
-                        debug_return=True,
-                    )
-                )
-            group_results = await asyncio.gather(*group_tasks, return_exceptions=True)
-            for gr in group_results:
-                if isinstance(gr, Exception):
-                    logger.warning("RAG group retrieval failed: %s", gr)
-                    continue
-                if isinstance(gr, dict):
-                    rag_results.append(gr)
-
-        collected_docs: List[Dict[str, Any]] = []
-        debug_groups: List[Dict[str, Any]] = []
-        for rr in rag_results:
-            docs = rr.get("docs") or []
-            dbg = rr.get("debug") if isinstance(rr.get("debug"), dict) else {}
-            collected_docs.extend(docs)
-            debug_groups.append(dbg)
-
-        is_full_file_mode = any(
-            isinstance(dbg, dict) and (
-                dbg.get("retrieval_mode") == "full_file"
-                or dbg.get("intent") == "analyze_full_file"
-            )
-            for dbg in debug_groups
-        )
-        max_docs = int(settings.RAG_FULL_FILE_MAX_CHUNKS) if is_full_file_mode else max(top_k * 4, 32)
-        context_docs = _merge_context_docs(
-            collected_docs,
-            max_docs=max_docs,
-            sort_by_score=not is_full_file_mode,
-        )
-        rag_debug = (debug_groups[0] if debug_groups else {}) if isinstance(debug_groups, list) else {}
-        if not isinstance(rag_debug, dict):
-            rag_debug = {}
-        else:
-            rag_debug = deepcopy(rag_debug)
-        rag_debug["embedding_mode"] = embedding_mode
-        rag_debug["embedding_model"] = embedding_model
-        rag_debug["file_ids"] = rag_file_ids
-        rag_debug["rag_mode"] = rag_mode or "auto"
-        rag_debug["mixed_embedding_groups"] = [
-            {"mode": mode, "model": model, "file_count": len(ids)}
-            for (mode, model), ids in groups.items()
-        ]
-        rag_debug["mixed_embeddings"] = len(groups) > 1
-        rag_debug["group_count"] = len(groups)
-        # Keep debug payload JSON-serializable and avoid self-references.
-        rag_debug["group_debug"] = [deepcopy(d) if isinstance(d, dict) else d for d in debug_groups]
-        expected_chunks_total = sum(int(getattr(f, "chunks_count", 0) or 0) for f in files)
-        retrieved_chunks_total = len(context_docs)
-        coverage_ratio = (float(retrieved_chunks_total / expected_chunks_total) if expected_chunks_total > 0 else 0.0)
-        rag_debug["retrieved_chunks_total"] = retrieved_chunks_total
-        rag_debug["coverage"] = {
-            "expected_chunks": expected_chunks_total,
-            "retrieved_chunks": retrieved_chunks_total,
-            "ratio": coverage_ratio,
-            "complete": bool(expected_chunks_total == 0 or retrieved_chunks_total >= expected_chunks_total),
-        }
-
-        if context_docs:
-            retrieval_mode = (rag_debug or {}).get("retrieval_mode") if isinstance(rag_debug, dict) else None
-            intent = (rag_debug or {}).get("intent") if isinstance(rag_debug, dict) else None
-
-            if retrieval_mode == "full_file" or intent == "analyze_full_file":
-                final_prompt, map_reduce_meta = await _build_full_file_map_reduce_prompt(
-                    query=query,
-                    context_documents=context_docs,
-                    preferred_lang=preferred_lang,
-                    model_source=model_source,
-                    model_name=model_name,
-                    prompt_max_chars=prompt_max_chars,
-                )
-                rag_debug["full_file_map_reduce"] = map_reduce_meta
-                rag_debug["truncated"] = bool(
-                    map_reduce_meta.get("truncated_batches")
-                    or rag_debug.get("full_file_limit_hit")
-                )
-                if not rag_debug.get("coverage", {}).get("complete", True):
-                    rag_debug["truncated"] = True
-            else:
-                final_prompt = rag_retriever.build_context_prompt(query=query, context_documents=context_docs)
-                final_prompt = _apply_language_policy_to_prompt(prompt=final_prompt, preferred_lang=preferred_lang)
-
-            rag_used = True
-            rag_sources = _build_sources_list_with_mode(
-                context_documents=context_docs,
-                max_items=12,
-                aggregate_ranges=bool(retrieval_mode == "full_file" or intent == "analyze_full_file"),
-            )
-            rag_caveats = _build_rag_caveats(files=files, context_documents=context_docs, rag_debug=rag_debug)
-            logger.info(
-                "RAG enabled: docs=%d mode=%s model=%s retrieval_mode=%s",
-                len(context_docs),
-                embedding_mode,
-                embedding_model,
-                retrieval_mode,
-            )
-        else:
-            logger.info("RAG: no relevant chunks")
-
-    except TypeError:
-        context_docs = await rag_retriever.query_rag(
-            query,
-            top_k=top_k,
-            user_id=str(user_id),
-            conversation_id=str(conversation_id),
-            debug_return=True,
-        )
-        if isinstance(context_docs, dict) and "docs" in context_docs:
-            context_docs_list = context_docs.get("docs") or []
-            rag_debug = context_docs.get("debug")
-            if context_docs_list:
-                final_prompt = rag_retriever.build_context_prompt(query=query, context_documents=context_docs_list)
-                final_prompt = _apply_language_policy_to_prompt(prompt=final_prompt, preferred_lang=preferred_lang)
-                rag_used = True
-                rag_sources = _build_sources_list(context_docs_list, max_items=12)
-                rag_caveats = _build_rag_caveats(files=files, context_documents=context_docs_list, rag_debug=rag_debug)
-
-    except Exception as e:
-        logger.warning("RAG retrieval failed: %s", e)
-
-    return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
 
 
 class ChatOrchestrator:
+    @staticmethod
+    def _build_generation_kwargs(*, chat_data: ChatMessage, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "prompt": ctx["final_prompt"],
+            "model_source": chat_data.model_source,
+            "model_name": chat_data.model_name,
+            "temperature": chat_data.temperature or 0.7,
+            "max_tokens": chat_data.max_tokens or 2000,
+            "conversation_history": ctx["history_for_generation"],
+            "prompt_max_chars": chat_data.prompt_max_chars,
+        }
+
+    @staticmethod
+    def _should_run_critic(*, chat_data: ChatMessage, ctx: Dict[str, Any]) -> bool:
+        return bool(
+            chat_data.summarize
+            and ctx["rag_used"]
+            and ctx["context_docs"]
+            and settings.ENABLE_POST_ANSWER_SUMMARIZE
+        )
+
+    async def _postprocess_generated_answer(
+        self,
+        *,
+        chat_data: ChatMessage,
+        ctx: Dict[str, Any],
+        raw_answer: str,
+        include_stream_events: bool = False,
+    ) -> Dict[str, Any]:
+        answer_text, lang_meta = await _enforce_answer_language(
+            answer=raw_answer,
+            preferred_lang=ctx["preferred_lang"],
+            model_source=chat_data.model_source,
+            model_name=chat_data.model_name,
+            prompt_max_chars=chat_data.prompt_max_chars,
+        )
+        refined_answer = answer_text
+
+        if ctx["rag_used"]:
+            answer_text = _append_caveats_and_sources(
+                answer_text,
+                ctx["rag_caveats"],
+                ctx["rag_sources"],
+                preferred_lang=ctx["preferred_lang"],
+            )
+
+        stream_events: List[Dict[str, Any]] = []
+        if include_stream_events and lang_meta.get("applied"):
+            stream_events.append(
+                {"type": "final_refinement", "content": refined_answer, "language_enforced": True}
+            )
+
+        summary_text: Optional[str] = None
+        critic_meta: Optional[Dict[str, Any]] = None
+        if self._should_run_critic(chat_data=chat_data, ctx=ctx):
+            summarized_answer, critic_meta = await _run_answer_critic(
+                query=chat_data.message,
+                answer=answer_text,
+                context_documents=ctx["context_docs"],
+                model_source=chat_data.model_source,
+                model_name=chat_data.model_name,
+            )
+            if summarized_answer and summarized_answer != answer_text:
+                summary_text = summarized_answer
+                if include_stream_events:
+                    stream_events.append(
+                        {"type": "summary", "content": summary_text, "critic": critic_meta}
+                    )
+            elif include_stream_events:
+                stream_events.append({"type": "critic", "critic": critic_meta})
+
+        return {
+            "answer_text": answer_text,
+            "summary_text": summary_text,
+            "lang_meta": lang_meta,
+            "critic_meta": critic_meta,
+            "stream_events": stream_events,
+        }
+
     async def _get_or_create_conversation(
         self,
         *,
@@ -1090,17 +139,30 @@ class ChatOrchestrator:
         )
         return await crud_conversation.create_for_user(db=db, obj_in=conv_data, user_id=user_id)
 
-    async def chat_stream(
+    @staticmethod
+    def _build_rag_debug_payload(
+        *,
+        rag_debug: Optional[Dict[str, Any]],
+        context_docs,
+        rag_sources,
+        llm_tokens_used: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        debug_max_items = 64 if isinstance(rag_debug, dict) and rag_debug.get("retrieval_mode") == "full_file" else 8
+        return _build_standard_rag_debug_payload(
+            rag_debug=rag_debug,
+            context_docs=context_docs,
+            rag_sources=rag_sources,
+            llm_tokens_used=llm_tokens_used,
+            max_items=debug_max_items,
+        )
+
+    async def _prepare_request_context(
         self,
         *,
         chat_data: ChatMessage,
         db: AsyncSession,
-        current_user: Optional[User],
-    ) -> StreamingResponse:
-        user_id = current_user.id if current_user else None
-        username = current_user.username if current_user else "anonymous"
-        logger.info("Chat(stream) from %s", username)
-
+        user_id: Optional[uuid.UUID],
+    ) -> Dict[str, Any]:
         conversation = await self._get_or_create_conversation(db=db, chat_data=chat_data, user_id=user_id)
         conversation_id = conversation.id
 
@@ -1112,7 +174,7 @@ class ChatOrchestrator:
         )
         conversation_history = _build_conversation_history(messages)
 
-        final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = await _try_build_rag_prompt(
+        final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = await build_rag_prompt(
             db=db,
             user_id=user_id,
             conversation_id=conversation_id,
@@ -1125,30 +187,56 @@ class ChatOrchestrator:
             prompt_max_chars=chat_data.prompt_max_chars,
         )
 
+        history_for_generation = conversation_history
+        if rag_used:
+            history_for_generation = _build_rag_conversation_memory(conversation_history, max_messages=6)
+
+        return {
+            "conversation_id": conversation_id,
+            "final_prompt": final_prompt,
+            "rag_used": rag_used,
+            "rag_debug": rag_debug,
+            "context_docs": context_docs,
+            "rag_caveats": rag_caveats,
+            "rag_sources": rag_sources,
+            "history_for_generation": history_for_generation,
+            "preferred_lang": _detect_preferred_response_language(chat_data.message),
+        }
+
+    async def chat_stream(
+        self,
+        *,
+        chat_data: ChatMessage,
+        db: AsyncSession,
+        current_user: Optional[User],
+    ) -> StreamingResponse:
+        user_id = current_user.id if current_user else None
+        username = current_user.username if current_user else "anonymous"
+        logger.info("Chat(stream) from %s", username)
+
+        ctx = await self._prepare_request_context(chat_data=chat_data, db=db, user_id=user_id)
+        conversation_id = ctx["conversation_id"]
         assistant_message_id = uuid.uuid4()
 
         async def event_stream():
             full_response = ""
             start_time = datetime.utcnow()
             summary_text: Optional[str] = None
-            preferred_lang = _detect_preferred_response_language(chat_data.message)
 
             try:
                 start_payload = {
                     "type": "start",
                     "conversation_id": str(conversation_id),
                     "message_id": str(assistant_message_id),
-                    "rag_enabled": rag_used,
-                    "rag_debug": rag_debug,
+                    "rag_enabled": ctx["rag_used"],
+                    "rag_debug": ctx["rag_debug"],
                 }
                 if chat_data.rag_debug:
-                    debug_max_items = 64 if isinstance(rag_debug, dict) and rag_debug.get("retrieval_mode") == "full_file" else 8
-                    start_payload["rag_debug"] = _build_standard_rag_debug_payload(
-                        rag_debug=rag_debug,
-                        context_docs=context_docs,
-                        rag_sources=rag_sources,
+                    start_payload["rag_debug"] = self._build_rag_debug_payload(
+                        rag_debug=ctx["rag_debug"],
+                        context_docs=ctx["context_docs"],
+                        rag_sources=ctx["rag_sources"],
                         llm_tokens_used=None,
-                        max_items=debug_max_items,
                     )
                 try:
                     start_payload_json = json.dumps(start_payload)
@@ -1158,54 +246,22 @@ class ChatOrchestrator:
                     start_payload_json = json.dumps(start_payload)
                 yield f"data: {start_payload_json}\n\n"
 
-                history_for_generation = conversation_history
-                if rag_used:
-                    history_for_generation = _build_rag_conversation_memory(conversation_history, max_messages=6)
-
-                async for chunk in llm_manager.generate_response_stream(
-                    prompt=final_prompt,
-                    model_source=chat_data.model_source,
-                    model_name=chat_data.model_name,
-                    temperature=chat_data.temperature or 0.7,
-                    max_tokens=chat_data.max_tokens or 2000,
-                    conversation_history=history_for_generation,
-                    prompt_max_chars=chat_data.prompt_max_chars,
-                ):
+                generation_kwargs = self._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
+                async for chunk in llm_manager.generate_response_stream(**generation_kwargs):
                     full_response += chunk
                     yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
 
                 generation_time = (datetime.utcnow() - start_time).total_seconds()
-                full_response, lang_meta = await _enforce_answer_language(
-                    answer=full_response,
-                    preferred_lang=preferred_lang,
-                    model_source=chat_data.model_source,
-                    model_name=chat_data.model_name,
-                    prompt_max_chars=chat_data.prompt_max_chars,
+                postprocess = await self._postprocess_generated_answer(
+                    chat_data=chat_data,
+                    ctx=ctx,
+                    raw_answer=full_response,
+                    include_stream_events=True,
                 )
-                if lang_meta.get("applied"):
-                    yield f"data: {json.dumps({'type': 'final_refinement', 'content': full_response, 'language_enforced': True})}\n\n"
-
-                if rag_used:
-                    full_response = _append_caveats_and_sources(
-                        full_response,
-                        rag_caveats,
-                        rag_sources,
-                        preferred_lang=preferred_lang,
-                    )
-
-                if chat_data.summarize and rag_used and context_docs and settings.ENABLE_POST_ANSWER_SUMMARIZE:
-                    summarized_response, critic_meta = await _run_answer_critic(
-                        query=chat_data.message,
-                        answer=full_response,
-                        context_documents=context_docs,
-                        model_source=chat_data.model_source,
-                        model_name=chat_data.model_name,
-                    )
-                    if summarized_response and summarized_response != full_response:
-                        summary_text = summarized_response
-                        yield f"data: {json.dumps({'type': 'summary', 'content': summary_text, 'critic': critic_meta})}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'type': 'critic', 'critic': critic_meta})}\n\n"
+                full_response = postprocess["answer_text"]
+                summary_text = postprocess["summary_text"]
+                for event in postprocess["stream_events"]:
+                    yield f"data: {json.dumps(event)}\n\n"
 
                 await crud_message.create_message(
                     db=db,
@@ -1218,11 +274,24 @@ class ChatOrchestrator:
                     generation_time=generation_time,
                 )
 
-                yield f"data: {json.dumps({'type': 'done', 'generation_time': generation_time, 'rag_used': rag_used, 'summary_available': bool(summary_text), 'caveats': rag_caveats, 'sources': rag_sources})}\n\n"
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type": "done",
+                            "generation_time": generation_time,
+                            "rag_used": ctx["rag_used"],
+                            "summary_available": bool(summary_text),
+                            "caveats": ctx["rag_caveats"],
+                            "sources": ctx["rag_sources"],
+                        }
+                    )
+                    + "\n\n"
+                )
 
-            except Exception as e:
-                logger.error("Streaming error: %s", e, exc_info=True)
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'error_type': type(e).__name__})}\n\n"
+            except Exception as exc:
+                logger.error("Streaming error: %s", exc, exc_info=True)
+                yield f"data: {json.dumps({'type': 'error', 'message': str(exc), 'error_type': type(exc).__name__})}\n\n"
 
         return StreamingResponse(
             event_stream(),
@@ -1241,75 +310,23 @@ class ChatOrchestrator:
         username = current_user.username if current_user else "anonymous"
         logger.info("Chat(non-stream) from %s", username)
 
-        conversation = await self._get_or_create_conversation(db=db, chat_data=chat_data, user_id=user_id)
-        conversation_id = conversation.id
-
-        await crud_message.create_message(db=db, conversation_id=conversation_id, role="user", content=chat_data.message)
-        messages = await crud_message.get_last_messages(
-            db,
-            conversation_id=conversation_id,
-            count=settings.CHAT_HISTORY_MAX_MESSAGES,
-        )
-        conversation_history = _build_conversation_history(messages)
-
-        final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = await _try_build_rag_prompt(
-            db=db,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            query=chat_data.message,
-            top_k=8,
-            file_ids=chat_data.file_ids,
-            model_source=chat_data.model_source,
-            model_name=chat_data.model_name,
-            rag_mode=chat_data.rag_mode,
-            prompt_max_chars=chat_data.prompt_max_chars,
-        )
-
-        history_for_generation = conversation_history
-        if rag_used:
-            history_for_generation = _build_rag_conversation_memory(conversation_history, max_messages=6)
+        ctx = await self._prepare_request_context(chat_data=chat_data, db=db, user_id=user_id)
+        conversation_id = ctx["conversation_id"]
 
         start_time = datetime.utcnow()
-        preferred_lang = _detect_preferred_response_language(chat_data.message)
-        result = await llm_manager.generate_response(
-            prompt=final_prompt,
-            model_source=chat_data.model_source,
-            model_name=chat_data.model_name,
-            temperature=chat_data.temperature or 0.7,
-            max_tokens=chat_data.max_tokens or 2000,
-            conversation_history=history_for_generation,
-            prompt_max_chars=chat_data.prompt_max_chars,
-        )
+        generation_kwargs = self._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
+        result = await llm_manager.generate_response(**generation_kwargs)
 
-        answer_text = result.get("response", "")
-        answer_text, _lang_meta = await _enforce_answer_language(
-            answer=answer_text,
-            preferred_lang=preferred_lang,
-            model_source=chat_data.model_source,
-            model_name=chat_data.model_name,
-            prompt_max_chars=chat_data.prompt_max_chars,
+        postprocess = await self._postprocess_generated_answer(
+            chat_data=chat_data,
+            ctx=ctx,
+            raw_answer=result.get("response", ""),
+            include_stream_events=False,
         )
-        if rag_used:
-            answer_text = _append_caveats_and_sources(
-                answer_text,
-                rag_caveats,
-                rag_sources,
-                preferred_lang=preferred_lang,
-            )
-            result["response"] = answer_text
-
-        summary_text: Optional[str] = None
-        if chat_data.summarize and rag_used and context_docs and settings.ENABLE_POST_ANSWER_SUMMARIZE:
-            summarized_answer, critic_meta = await _run_answer_critic(
-                query=chat_data.message,
-                answer=answer_text,
-                context_documents=context_docs,
-                model_source=chat_data.model_source,
-                model_name=chat_data.model_name,
-            )
-            if summarized_answer and summarized_answer != answer_text:
-                summary_text = summarized_answer
-            logger.info("RAG critic(non-stream, summarize=%s): %s", chat_data.summarize, critic_meta)
+        result["response"] = postprocess["answer_text"]
+        summary_text = postprocess["summary_text"]
+        if postprocess["critic_meta"] is not None:
+            logger.info("RAG critic(non-stream, summarize=%s): %s", chat_data.summarize, postprocess["critic_meta"])
 
         generation_time = (datetime.utcnow() - start_time).total_seconds()
 
@@ -1324,15 +341,14 @@ class ChatOrchestrator:
             tokens_used=result.get("tokens_used"),
             generation_time=generation_time,
         )
+
         rag_debug_payload = None
         if chat_data.rag_debug:
-            debug_max_items = 64 if isinstance(rag_debug, dict) and rag_debug.get("retrieval_mode") == "full_file" else 8
-            rag_debug_payload = _build_standard_rag_debug_payload(
-                rag_debug=rag_debug,
-                context_docs=context_docs,
-                rag_sources=rag_sources,
+            rag_debug_payload = self._build_rag_debug_payload(
+                rag_debug=ctx["rag_debug"],
+                context_docs=ctx["context_docs"],
+                rag_sources=ctx["rag_sources"],
                 llm_tokens_used=result.get("tokens_used"),
-                max_items=debug_max_items,
             )
 
         return ChatResponse(
@@ -1343,12 +359,10 @@ class ChatOrchestrator:
             tokens_used=result.get("tokens_used"),
             generation_time=generation_time,
             summary=summary_text,
-            caveats=rag_caveats,
-            sources=rag_sources,
+            caveats=ctx["rag_caveats"],
+            sources=ctx["rag_sources"],
             rag_debug=rag_debug_payload,
         )
 
 
 chat_orchestrator = ChatOrchestrator()
-
-

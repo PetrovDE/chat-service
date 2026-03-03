@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.services import file as file_service
-from app.services import chat_orchestrator as chat_service
+from app.services.chat.postprocess import append_caveats_and_sources
 
 
 def test_finalize_ingestion_partial_success_counters(monkeypatch):
@@ -137,7 +137,7 @@ def test_answer_keeps_detail_and_adds_limitations_section():
     caveats = ["Some chunks failed for sheet Q4."]
     sources = ["finance.xlsx | sheet=Summary | chunk=12"]
 
-    merged = chat_service._append_caveats_and_sources(original, caveats, sources)
+    merged = append_caveats_and_sources(original, caveats, sources)
 
     assert original in merged
     assert "Ограничения/нехватка данных" in merged

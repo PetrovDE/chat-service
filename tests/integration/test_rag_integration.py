@@ -1,9 +1,9 @@
-import asyncio
+﻿import asyncio
 import json
 import uuid
 from types import SimpleNamespace
 
-from app.services import chat_orchestrator as chat_service
+from app.services.chat import rag_prompt_builder as rag_builder
 from app.rag.retriever import rag_retriever
 
 
@@ -44,11 +44,11 @@ def test_mixed_embedding_groups_merge(monkeypatch):
             "debug": {"intent": "fact_lookup", "retrieval_mode": "hybrid", "embedding_model": embedding_model},
         }
 
-    monkeypatch.setattr(chat_service.crud_file, "get_conversation_files", fake_get_files)
-    monkeypatch.setattr(chat_service.rag_retriever, "query_rag", fake_query_rag)
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
 
     final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
-        chat_service._try_build_rag_prompt(
+        rag_builder.build_rag_prompt(
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
@@ -134,11 +134,11 @@ def test_mixed_group_partial_failure_fallback(monkeypatch):
             "debug": {"intent": "fact_lookup", "retrieval_mode": "hybrid"},
         }
 
-    monkeypatch.setattr(chat_service.crud_file, "get_conversation_files", fake_get_files)
-    monkeypatch.setattr(chat_service.rag_retriever, "query_rag", fake_query_rag)
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
 
     final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
-        chat_service._try_build_rag_prompt(
+        rag_builder.build_rag_prompt(
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
@@ -215,12 +215,12 @@ def test_full_file_prompt_preserves_all_retrieved_chunks(monkeypatch):
         docs = kwargs.get("context_documents") or []
         return "full-file prompt", {"enabled": True, "truncated_batches": False, "covered_chunks": len(docs)}
 
-    monkeypatch.setattr(chat_service.crud_file, "get_conversation_files", fake_get_files)
-    monkeypatch.setattr(chat_service.rag_retriever, "query_rag", fake_query_rag)
-    monkeypatch.setattr(chat_service, "_build_full_file_map_reduce_prompt", fake_map_reduce)
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
+    monkeypatch.setattr(rag_builder, "build_full_file_map_reduce_prompt", fake_map_reduce)
 
     final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
-        chat_service._try_build_rag_prompt(
+        rag_builder.build_rag_prompt(
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
@@ -244,11 +244,11 @@ def test_full_file_prompt_preserves_all_retrieved_chunks(monkeypatch):
 
 def test_query_language_policy_applied_without_user():
     final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
-        chat_service._try_build_rag_prompt(
+        rag_builder.build_rag_prompt(
             db=None,
             user_id=None,
             conversation_id=uuid.uuid4(),
-            query="Сделай краткий отчет",
+            query="Ð¡Ð´ÐµÐ»Ð°Ð¹ ÐºÑ€Ð°Ñ‚ÐºÐ¸Ð¹ Ð¾Ñ‚Ñ‡ÐµÑ‚",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -261,3 +261,4 @@ def test_query_language_policy_applied_without_user():
     assert context_docs == []
     assert rag_caveats == []
     assert rag_sources == []
+

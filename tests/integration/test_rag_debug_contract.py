@@ -1,4 +1,9 @@
-from app.services import chat_orchestrator as chat_service
+from app.services.chat.postprocess import append_caveats_and_sources
+from app.services.chat.sources_debug import (
+    build_coverage_sources,
+    build_sources_list,
+    build_standard_rag_debug_payload,
+)
 
 
 def test_standard_rag_debug_payload_contains_filters_and_top_chunks():
@@ -19,7 +24,7 @@ def test_standard_rag_debug_payload_contains_filters_and_top_chunks():
         }
     ]
 
-    payload = chat_service._build_standard_rag_debug_payload(
+    payload = build_standard_rag_debug_payload(
         rag_debug=rag_debug,
         context_docs=context_docs,
         rag_sources=["report.xlsx | chunk=3"],
@@ -57,8 +62,8 @@ def test_sources_and_top_chunks_include_row_ranges():
         }
     ]
 
-    sources = chat_service._build_sources_list(docs, max_items=8)
-    payload = chat_service._build_standard_rag_debug_payload(
+    sources = build_sources_list(docs, max_items=8)
+    payload = build_standard_rag_debug_payload(
         rag_debug={"retrieval_mode": "full_file", "returned_count": 1},
         context_docs=docs,
         rag_sources=sources,
@@ -88,14 +93,14 @@ def test_coverage_sources_merge_row_ranges():
         },
     ]
 
-    lines = chat_service._build_coverage_sources(docs, max_items=8)
+    lines = build_coverage_sources(docs, max_items=8)
     assert lines
     assert lines[0] == "sales.xlsx | sheet=Data | rows=1-80, 120-140"
 
 
 def test_append_caveats_and_sources_localizes_english_titles():
     answer = "Revenue increased."
-    merged = chat_service._append_caveats_and_sources(
+    merged = append_caveats_and_sources(
         answer,
         caveats=[],
         sources=["sales.xlsx | rows=1-100"],

@@ -82,6 +82,13 @@ Browser SPA (frontend/index.html + static/js)
 18. [`docs/ux/chat_states.md`](docs/ux/chat_states.md)
 19. [`docs/ux/file_ingestion_progress.md`](docs/ux/file_ingestion_progress.md)
 
+## Актуальные UI-изменения (frontend)
+- В sidebar чатов удаление вынесено в отдельную кнопку-корзину справа от каждого чата.
+- В `Settings` кнопка `Logout` расположена в футере рядом с `Save` и оформлена как danger-кнопка.
+- В composer поле ввода оставлено сверху, а ниже расположен единый ряд контролов: `File + provider + model + RAG mode + Send`.
+- Под селектами `provider/model/rag mode` показываются inline-подсказки.
+- `RAG debug` показывается под assistant-сообщением только когда пользователь включил этот флаг в `Settings`.
+
 ## Troubleshooting (топ-5)
 1. `401/403` на защищённых endpoint'ах (`/api/v1/files/*`, `/api/v1/conversations/*`, `/api/v1/stats/*`).
 Где смотреть: DevTools Network (заголовок `Authorization`), backend-логи с `rid/uid` (stdout, формат из `app/core/logging.py`).

@@ -239,3 +239,25 @@ def test_full_file_prompt_preserves_all_retrieved_chunks(monkeypatch):
     assert rag_debug["truncated"] is False
     assert not rag_caveats
     assert rag_sources
+    assert rag_sources[0] == "table.xlsx | sheet=Sheet1 | rows=1-300"
+
+
+def test_query_language_policy_applied_without_user():
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        chat_service._try_build_rag_prompt(
+            db=None,
+            user_id=None,
+            conversation_id=uuid.uuid4(),
+            query="Сделай краткий отчет",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert "Respond strictly in Russian" in final_prompt
+    assert rag_debug is None
+    assert context_docs == []
+    assert rag_caveats == []
+    assert rag_sources == []

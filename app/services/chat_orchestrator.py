@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import uuid
 from datetime import datetime
 from copy import deepcopy
@@ -20,10 +21,107 @@ from app.schemas import ChatMessage, ChatResponse
 from app.services.llm.manager import llm_manager
 
 logger = logging.getLogger(__name__)
+CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
+LATIN_RE = re.compile(r"[A-Za-z]")
 
 
 def _build_conversation_history(messages):
     return [{"role": msg.role, "content": msg.content} for msg in messages[:-1]]
+
+
+def _detect_preferred_response_language(query: str) -> str:
+    text = query or ""
+    cyr = len(CYRILLIC_RE.findall(text))
+    lat = len(LATIN_RE.findall(text))
+    if cyr >= 2 and cyr >= lat:
+        return "ru"
+    if lat >= 2 and lat > cyr:
+        return "en"
+    return "ru"
+
+
+def _build_language_policy_instruction(preferred_lang: str) -> str:
+    if preferred_lang == "ru":
+        return (
+            "Language policy:\n"
+            "- The user question is in Russian.\n"
+            "- Respond strictly in Russian.\n"
+            "- Keep factual content unchanged.\n"
+        )
+    return (
+        "Language policy:\n"
+        "- The user question is in English.\n"
+        "- Respond strictly in English.\n"
+        "- Keep factual content unchanged.\n"
+    )
+
+
+def _apply_language_policy_to_prompt(*, prompt: str, preferred_lang: str) -> str:
+    instruction = _build_language_policy_instruction(preferred_lang)
+    return f"{instruction}\n{prompt}".strip()
+
+
+def _answer_matches_expected_language(answer: str, preferred_lang: str) -> bool:
+    text = answer or ""
+    cyr = len(CYRILLIC_RE.findall(text))
+    lat = len(LATIN_RE.findall(text))
+    total = cyr + lat
+    if total < 20:
+        return True
+    if preferred_lang == "ru":
+        return cyr >= lat
+    return lat >= cyr
+
+
+async def _enforce_answer_language(
+    *,
+    answer: str,
+    preferred_lang: str,
+    model_source: Optional[str],
+    model_name: Optional[str],
+    prompt_max_chars: Optional[int],
+) -> Tuple[str, Dict[str, Any]]:
+    if not answer.strip():
+        return answer, {"enabled": True, "applied": False, "reason": "empty_answer"}
+    if _answer_matches_expected_language(answer, preferred_lang):
+        return answer, {"enabled": True, "applied": False, "reason": "already_expected_language"}
+
+    target = "Russian" if preferred_lang == "ru" else "English"
+    rewrite_prompt = (
+        f"Rewrite the answer strictly in {target}.\n"
+        "Do not change facts, numbers, entities, caveats or structure.\n"
+        "Preserve markdown lists and section headings semantics.\n"
+        "Return only rewritten answer text.\n\n"
+        f"Answer:\n{answer}\n\n"
+        "Rewritten answer:"
+    )
+    try:
+        rewritten = await llm_manager.generate_response(
+            prompt=rewrite_prompt,
+            model_source=model_source,
+            model_name=model_name,
+            temperature=0.0,
+            max_tokens=2200,
+            conversation_history=None,
+            prompt_max_chars=prompt_max_chars,
+        )
+    except Exception:
+        logger.warning("Answer language rewrite failed", exc_info=True)
+        return answer, {"enabled": True, "applied": False, "reason": "rewrite_call_failed"}
+
+    new_text = (rewritten.get("response") or "").strip()
+    if not new_text:
+        return answer, {"enabled": True, "applied": False, "reason": "empty_rewrite"}
+
+    applied = _answer_matches_expected_language(new_text, preferred_lang)
+    return (
+        new_text if applied else answer,
+        {
+            "enabled": True,
+            "applied": bool(applied),
+            "reason": "rewritten" if applied else "rewrite_still_wrong_language",
+        },
+    )
 
 
 def _normalize_source(source: Optional[str]) -> str:
@@ -117,6 +215,95 @@ def _build_rag_conversation_memory(history: List[Dict[str, str]], max_messages: 
 
 
 def _build_sources_list(context_documents: List[Dict[str, Any]], max_items: int = 8) -> List[str]:
+    return _build_sources_list_with_mode(
+        context_documents=context_documents,
+        max_items=max_items,
+        aggregate_ranges=False,
+    )
+
+
+def _to_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _merge_ranges(ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    if not ranges:
+        return []
+    sorted_ranges = sorted(ranges, key=lambda x: (x[0], x[1]))
+    merged: List[Tuple[int, int]] = [sorted_ranges[0]]
+    for start, end in sorted_ranges[1:]:
+        cur_start, cur_end = merged[-1]
+        if start <= cur_end + 1:
+            merged[-1] = (cur_start, max(cur_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _build_coverage_sources(context_documents: List[Dict[str, Any]], max_items: int = 8) -> List[str]:
+    groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for d in context_documents:
+        meta = d.get("metadata") or {}
+        filename = str(meta.get("filename") or meta.get("source") or "unknown")
+        sheet = str(meta.get("sheet_name") or "")
+        key = (filename, sheet)
+        item = groups.setdefault(key, {"ranges": [], "chunk_indices": set()})
+
+        row_start = _to_int(meta.get("row_start"))
+        row_end = _to_int(meta.get("row_end"))
+        if row_start is not None and row_end is not None:
+            item["ranges"].append((min(row_start, row_end), max(row_start, row_end)))
+
+        chunk_idx = _to_int(meta.get("chunk_index"))
+        if chunk_idx is not None:
+            item["chunk_indices"].add(chunk_idx)
+
+    if not groups:
+        return []
+
+    out: List[str] = []
+    for (filename, sheet), item in sorted(groups.items(), key=lambda x: (x[0][0], x[0][1])):
+        ranges = _merge_ranges(item["ranges"])
+        if ranges:
+            ranges_text = ", ".join([f"{s}-{e}" for s, e in ranges[:4]])
+            if len(ranges) > 4:
+                ranges_text += ", ..."
+            if sheet:
+                line = f"{filename} | sheet={sheet} | rows={ranges_text}"
+            else:
+                line = f"{filename} | rows={ranges_text}"
+        else:
+            chunk_indices = sorted(item["chunk_indices"])
+            if chunk_indices:
+                chunk_range = f"{chunk_indices[0]}-{chunk_indices[-1]}"
+                if sheet:
+                    line = f"{filename} | sheet={sheet} | chunk_range={chunk_range}"
+                else:
+                    line = f"{filename} | chunk_range={chunk_range}"
+            else:
+                line = f"{filename} | coverage=unknown"
+
+        out.append(line)
+        if len(out) >= max_items:
+            break
+
+    return out
+
+
+def _build_sources_list_with_mode(
+    *,
+    context_documents: List[Dict[str, Any]],
+    max_items: int = 8,
+    aggregate_ranges: bool = False,
+) -> List[str]:
+    if aggregate_ranges:
+        aggregated = _build_coverage_sources(context_documents=context_documents, max_items=max_items)
+        if aggregated:
+            return aggregated
+
     out: List[str] = []
     seen = set()
     for d in context_documents:
@@ -243,21 +430,44 @@ def _build_rag_caveats(
     return caveats
 
 
-def _append_caveats_and_sources(answer: str, caveats: List[str], sources: List[str]) -> str:
+def _append_caveats_and_sources(
+    answer: str,
+    caveats: List[str],
+    sources: List[str],
+    *,
+    preferred_lang: str = "ru",
+) -> str:
+    limitations_title = "### Ограничения/нехватка данных"
+    sources_title = "### Источники (кратко)"
+    no_limitations = "- Существенных ограничений контекста не обнаружено."
+    no_sources = "- Релевантные источники не найдены."
+    if preferred_lang == "en":
+        limitations_title = "### Limitations/Missing Data"
+        sources_title = "### Sources (short)"
+        no_limitations = "- No major context limitations were detected."
+        no_sources = "- No relevant sources were found."
+
     lines = [answer.strip()]
-    lines.append("\n\n### Ограничения/нехватка данных")
+    lines.append(f"\n\n{limitations_title}")
     if caveats:
         for c in caveats:
             lines.append(f"- {c}")
     else:
-        lines.append("- Существенных ограничений контекста не обнаружено.")
-    lines.append("\n### Источники (кратко)")
+        lines.append(no_limitations)
+    lines.append(f"\n{sources_title}")
     if sources:
         for s in sources:
             lines.append(f"- {s}")
     else:
-        lines.append("- Релевантные источники не найдены.")
+        lines.append(no_sources)
     return "\n".join(lines).strip()
+
+
+def _build_context_coverage_summary(context_documents: List[Dict[str, Any]], max_items: int = 12) -> str:
+    lines = _build_coverage_sources(context_documents=context_documents, max_items=max_items)
+    if not lines:
+        return "- coverage details are unavailable"
+    return "\n".join([f"- {line}" for line in lines])
 
 
 def _build_critic_context(context_documents: List[Dict[str, Any]], max_chars: int = 12000) -> str:
@@ -424,6 +634,7 @@ async def _hierarchical_reduce_partials(
     *,
     query: str,
     partials: List[str],
+    preferred_lang: str,
     model_source: Optional[str],
     model_name: Optional[str],
     prompt_max_chars: Optional[int],
@@ -454,6 +665,8 @@ async def _hierarchical_reduce_partials(
                 "You are compressing partial summaries for full-file analysis.\n"
                 "Preserve critical numeric facts, entities, constraints and caveats.\n"
                 "Do not invent facts. Keep output dense and factual.\n\n"
+                + _build_language_policy_instruction(preferred_lang)
+                + "\n"
                 f"User question:\n{query}\n\n"
                 "Part summaries:\n"
                 + "\n\n-----\n\n".join(group)
@@ -505,6 +718,7 @@ async def _build_full_file_map_reduce_prompt(
     *,
     query: str,
     context_documents: List[Dict[str, Any]],
+    preferred_lang: str,
     model_source: Optional[str],
     model_name: Optional[str],
     prompt_max_chars: Optional[int] = None,
@@ -516,7 +730,7 @@ async def _build_full_file_map_reduce_prompt(
     logger.info("RAG full_file map-reduce: docs=%d batches=%d", len(context_documents), len(batches))
 
     if not batches:
-        return query, {
+        return _apply_language_policy_to_prompt(prompt=query, preferred_lang=preferred_lang), {
             "enabled": True,
             "total_batches": 0,
             "processed_batches": 0,
@@ -563,6 +777,8 @@ async def _build_full_file_map_reduce_prompt(
             "For tabular data, explicitly include row ranges and notable outliers/trends in this batch.\n"
             "If the batch has no relevant facts, explicitly say so.\n"
             "Be concise and factual.\n\n"
+            + _build_language_policy_instruction(preferred_lang)
+            + "\n"
             f"User question:\n{query}\n\n"
             f"Batch content ({i}/{min(len(batches), max_batches)}):\n"
             + "\n\n---\n\n".join(chunk_lines)
@@ -601,6 +817,7 @@ async def _build_full_file_map_reduce_prompt(
     reduce_context, reduce_meta = await _hierarchical_reduce_partials(
         query=query,
         partials=partials,
+        preferred_lang=preferred_lang,
         model_source=model_source,
         model_name=model_name,
         prompt_max_chars=prompt_max_chars,
@@ -618,18 +835,25 @@ async def _build_full_file_map_reduce_prompt(
             "hierarchical_reduce": reduce_meta,
         }
 
-    final_prompt = (
-        "You are a document analyst. You received summaries of all document parts.\n"
-        "Produce a complete, consistent and detailed answer to the user question.\n"
-        "Rules:\n"
-        "1) Do not invent facts outside provided context.\n"
-        "2) Explicitly mention missing information when needed.\n"
-        "3) Return sections in order: Answer, Limitations/Missing data, Sources.\n"
-        "4) Use all available summaries, not a single fragment.\n"
-        "5) Keep concrete values and units from evidence.\n\n"
-        f"User question:\n{query}\n\n"
-        f"All partial summaries:\n{reduce_context}\n\n"
-        "Final answer:"
+    coverage_summary = _build_context_coverage_summary(context_documents, max_items=12)
+    final_prompt = _apply_language_policy_to_prompt(
+        preferred_lang=preferred_lang,
+        prompt=(
+            "You are a document analyst. You received summaries of all document parts.\n"
+            "Produce a complete, consistent and detailed answer to the user question.\n"
+            "Rules:\n"
+            "1) Do not invent facts outside provided context.\n"
+            "2) Explicitly mention missing information when needed.\n"
+            "3) Return sections in order: Answer, Limitations/Missing data, Sources.\n"
+            "4) Use all available summaries, not a single fragment.\n"
+            "5) Keep concrete values and units from evidence.\n\n"
+            "Retrieved coverage summary:\n"
+            f"{coverage_summary}\n\n"
+            "If coverage summary spans the whole document, do not claim that only the last rows were provided.\n\n"
+            f"User question:\n{query}\n\n"
+            f"All partial summaries:\n{reduce_context}\n\n"
+            "Final answer:"
+        ),
     )
     return final_prompt, {
         "enabled": True,
@@ -656,7 +880,8 @@ async def _try_build_rag_prompt(
     rag_mode: Optional[str] = None,
     prompt_max_chars: Optional[int] = None,
 ):
-    final_prompt = query
+    preferred_lang = _detect_preferred_response_language(query)
+    final_prompt = _apply_language_policy_to_prompt(prompt=query, preferred_lang=preferred_lang)
     rag_used = False
     rag_debug = None
     context_docs: List[Dict[str, Any]] = []
@@ -783,6 +1008,7 @@ async def _try_build_rag_prompt(
                 final_prompt, map_reduce_meta = await _build_full_file_map_reduce_prompt(
                     query=query,
                     context_documents=context_docs,
+                    preferred_lang=preferred_lang,
                     model_source=model_source,
                     model_name=model_name,
                     prompt_max_chars=prompt_max_chars,
@@ -796,9 +1022,14 @@ async def _try_build_rag_prompt(
                     rag_debug["truncated"] = True
             else:
                 final_prompt = rag_retriever.build_context_prompt(query=query, context_documents=context_docs)
+                final_prompt = _apply_language_policy_to_prompt(prompt=final_prompt, preferred_lang=preferred_lang)
 
             rag_used = True
-            rag_sources = _build_sources_list(context_docs, max_items=12)
+            rag_sources = _build_sources_list_with_mode(
+                context_documents=context_docs,
+                max_items=12,
+                aggregate_ranges=bool(retrieval_mode == "full_file" or intent == "analyze_full_file"),
+            )
             rag_caveats = _build_rag_caveats(files=files, context_documents=context_docs, rag_debug=rag_debug)
             logger.info(
                 "RAG enabled: docs=%d mode=%s model=%s retrieval_mode=%s",
@@ -823,6 +1054,7 @@ async def _try_build_rag_prompt(
             rag_debug = context_docs.get("debug")
             if context_docs_list:
                 final_prompt = rag_retriever.build_context_prompt(query=query, context_documents=context_docs_list)
+                final_prompt = _apply_language_policy_to_prompt(prompt=final_prompt, preferred_lang=preferred_lang)
                 rag_used = True
                 rag_sources = _build_sources_list(context_docs_list, max_items=12)
                 rag_caveats = _build_rag_caveats(files=files, context_documents=context_docs_list, rag_debug=rag_debug)
@@ -899,6 +1131,7 @@ class ChatOrchestrator:
             full_response = ""
             start_time = datetime.utcnow()
             summary_text: Optional[str] = None
+            preferred_lang = _detect_preferred_response_language(chat_data.message)
 
             try:
                 start_payload = {
@@ -942,9 +1175,23 @@ class ChatOrchestrator:
                     yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
 
                 generation_time = (datetime.utcnow() - start_time).total_seconds()
+                full_response, lang_meta = await _enforce_answer_language(
+                    answer=full_response,
+                    preferred_lang=preferred_lang,
+                    model_source=chat_data.model_source,
+                    model_name=chat_data.model_name,
+                    prompt_max_chars=chat_data.prompt_max_chars,
+                )
+                if lang_meta.get("applied"):
+                    yield f"data: {json.dumps({'type': 'final_refinement', 'content': full_response, 'language_enforced': True})}\n\n"
 
                 if rag_used:
-                    full_response = _append_caveats_and_sources(full_response, rag_caveats, rag_sources)
+                    full_response = _append_caveats_and_sources(
+                        full_response,
+                        rag_caveats,
+                        rag_sources,
+                        preferred_lang=preferred_lang,
+                    )
 
                 if chat_data.summarize and rag_used and context_docs and settings.ENABLE_POST_ANSWER_SUMMARIZE:
                     summarized_response, critic_meta = await _run_answer_critic(
@@ -1023,6 +1270,7 @@ class ChatOrchestrator:
             history_for_generation = _build_rag_conversation_memory(conversation_history, max_messages=6)
 
         start_time = datetime.utcnow()
+        preferred_lang = _detect_preferred_response_language(chat_data.message)
         result = await llm_manager.generate_response(
             prompt=final_prompt,
             model_source=chat_data.model_source,
@@ -1034,8 +1282,20 @@ class ChatOrchestrator:
         )
 
         answer_text = result.get("response", "")
+        answer_text, _lang_meta = await _enforce_answer_language(
+            answer=answer_text,
+            preferred_lang=preferred_lang,
+            model_source=chat_data.model_source,
+            model_name=chat_data.model_name,
+            prompt_max_chars=chat_data.prompt_max_chars,
+        )
         if rag_used:
-            answer_text = _append_caveats_and_sources(answer_text, rag_caveats, rag_sources)
+            answer_text = _append_caveats_and_sources(
+                answer_text,
+                rag_caveats,
+                rag_sources,
+                preferred_lang=preferred_lang,
+            )
             result["response"] = answer_text
 
         summary_text: Optional[str] = None

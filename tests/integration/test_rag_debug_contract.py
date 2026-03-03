@@ -70,3 +70,36 @@ def test_sources_and_top_chunks_include_row_ranges():
     assert payload["top_chunks"][0]["row_start"] == 281
     assert payload["top_chunks"][0]["row_end"] == 308
     assert payload["top_chunks"][0]["total_rows"] == 308
+
+
+def test_coverage_sources_merge_row_ranges():
+    docs = [
+        {
+            "content": "part1",
+            "metadata": {"filename": "sales.xlsx", "sheet_name": "Data", "row_start": 1, "row_end": 40, "chunk_index": 0},
+        },
+        {
+            "content": "part2",
+            "metadata": {"filename": "sales.xlsx", "sheet_name": "Data", "row_start": 41, "row_end": 80, "chunk_index": 1},
+        },
+        {
+            "content": "part3",
+            "metadata": {"filename": "sales.xlsx", "sheet_name": "Data", "row_start": 120, "row_end": 140, "chunk_index": 2},
+        },
+    ]
+
+    lines = chat_service._build_coverage_sources(docs, max_items=8)
+    assert lines
+    assert lines[0] == "sales.xlsx | sheet=Data | rows=1-80, 120-140"
+
+
+def test_append_caveats_and_sources_localizes_english_titles():
+    answer = "Revenue increased."
+    merged = chat_service._append_caveats_and_sources(
+        answer,
+        caveats=[],
+        sources=["sales.xlsx | rows=1-100"],
+        preferred_lang="en",
+    )
+    assert "### Limitations/Missing Data" in merged
+    assert "### Sources (short)" in merged

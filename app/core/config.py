@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     RAG_LEXICAL_POOL_MAX: int = Field(default=1200, ge=50, le=10000)
     RAG_FULL_FILE_MAX_CHUNKS: int = Field(default=800, ge=100, le=20000)
     FULL_FILE_MAP_BATCH_MAX_DOCS: int = Field(default=12, ge=2, le=100)
-    FULL_FILE_MAP_BATCH_MAX_CHARS: int = Field(default=7000, ge=1000, le=50000)
+    FULL_FILE_MAP_BATCH_MAX_CHARS: int = Field(default=25000, ge=1000, le=50000)
     FULL_FILE_MAP_MAX_BATCHES: int = Field(default=300, ge=10, le=5000)
     FULL_FILE_REDUCE_CONTEXT_MAX_CHARS: int = Field(default=22000, ge=4000, le=120000)
     FULL_FILE_REDUCE_TARGET_GROUPS: int = Field(default=8, ge=2, le=30)

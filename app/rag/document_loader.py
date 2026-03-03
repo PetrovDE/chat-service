@@ -123,7 +123,8 @@ class DocumentLoader:
         if df.empty:
             raise ValueError(f"No readable data found in CSV file: {filepath}")
 
-        max_rows_per_doc = 50  # can be moved to settings
+        # Keep spreadsheet chunks compact enough for embedding providers.
+        max_rows_per_doc = 20  # can be moved to settings
         docs: List[Document] = []
 
         cols = [str(c) for c in df.columns.tolist()]
@@ -190,7 +191,8 @@ class DocumentLoader:
         sheet_names = excel_file.sheet_names
         logger.info("Processing Excel: sheets=%d", len(sheet_names))
 
-        max_rows_per_doc = 40  # can be moved to settings
+        # Keep spreadsheet chunks compact enough for embedding providers.
+        max_rows_per_doc = 20  # can be moved to settings
         docs: List[Document] = []
 
         for sheet_name in sheet_names:

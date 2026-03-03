@@ -654,6 +654,7 @@ class RAGRetriever:
                 "where": dbg.where,
                 "top_k": dbg.top_k,
                 "fetch_k": dbg.fetch_k,
+                "fetch_k_applicable": bool(intent != "analyze_full_file"),
                 "raw_count": dbg.raw_count,
                 "returned_count": dbg.returned_count,
                 "score_threshold": score_threshold,

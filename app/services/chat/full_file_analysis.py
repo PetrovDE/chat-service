@@ -63,6 +63,53 @@ def chunk_text_blocks(blocks: List[str], max_chars: int) -> List[List[str]]:
     return groups
 
 
+def _build_direct_full_file_prompt(
+    *,
+    query: str,
+    context_documents: List[Dict[str, Any]],
+    preferred_lang: str,
+) -> str:
+    lines: List[str] = []
+    for i, doc in enumerate(context_documents, start=1):
+        meta = doc.get("metadata") or {}
+        filename = meta.get("filename") or meta.get("source") or "unknown"
+        chunk_index = meta.get("chunk_index", "?")
+        sheet_name = meta.get("sheet_name")
+        row_start = meta.get("row_start")
+        row_end = meta.get("row_end")
+        total_rows = meta.get("total_rows")
+        content = (doc.get("content") or "").strip()
+        if not content:
+            continue
+        label_parts = [f"file={filename}", f"chunk={chunk_index}"]
+        if sheet_name:
+            label_parts.append(f"sheet={sheet_name}")
+        if row_start is not None and row_end is not None:
+            rows = f"{row_start}-{row_end}"
+            if total_rows is not None:
+                rows = f"{rows}/{total_rows}"
+            label_parts.append(f"rows={rows}")
+        lines.append(f"[{i}] {' '.join(label_parts)}\n{content}")
+
+    coverage_summary = build_context_coverage_summary(context_documents, max_items=12)
+    return apply_language_policy_to_prompt(
+        preferred_lang=preferred_lang,
+        prompt=(
+            "You are a document analyst.\n"
+            "Use ALL provided chunks as the source of truth and do not ignore any chunk.\n"
+            "For spreadsheet data, preserve numeric values and refer to row ranges.\n"
+            "Do not invent facts outside context.\n"
+            "Return sections in order: Answer, Limitations/Missing data, Sources.\n\n"
+            "Retrieved coverage summary:\n"
+            f"{coverage_summary}\n\n"
+            f"User question:\n{query}\n\n"
+            "Full retrieved context:\n"
+            + "\n\n---\n\n".join(lines)
+            + "\n\nFinal answer:"
+        ),
+    )
+
+
 async def hierarchical_reduce_partials(
     *,
     query: str,
@@ -156,6 +203,36 @@ async def build_full_file_map_reduce_prompt(
     model_name: Optional[str],
     prompt_max_chars: Optional[int] = None,
 ) -> Tuple[str, Dict[str, Any]]:
+    direct_max_chunks = int(settings.FULL_FILE_DIRECT_CONTEXT_MAX_CHUNKS)
+    direct_max_chars = int(settings.FULL_FILE_DIRECT_CONTEXT_MAX_CHARS)
+    docs_chars = sum(len((doc.get("content") or "").strip()) for doc in context_documents)
+    if context_documents and len(context_documents) <= direct_max_chunks and docs_chars <= direct_max_chars:
+        logger.info(
+            "RAG full_file direct-context: docs=%d chars=%d limits=(chunks=%d chars=%d)",
+            len(context_documents),
+            docs_chars,
+            direct_max_chunks,
+            direct_max_chars,
+        )
+        return _build_direct_full_file_prompt(
+            query=query,
+            context_documents=context_documents,
+            preferred_lang=preferred_lang,
+        ), {
+            "enabled": True,
+            "strategy": "direct_context",
+            "total_batches": 1,
+            "processed_batches": 1,
+            "max_batches": 1,
+            "truncated_batches": False,
+            "partials_count": 0,
+            "covered_chunks": len(context_documents),
+            "fallback_to_query": False,
+            "direct_context_total_chars": docs_chars,
+            "direct_context_max_chars": direct_max_chars,
+            "direct_context_max_chunks": direct_max_chunks,
+        }
+
     max_docs = int(settings.FULL_FILE_MAP_BATCH_MAX_DOCS)
     max_chars = int(settings.FULL_FILE_MAP_BATCH_MAX_CHARS)
     max_batches = int(settings.FULL_FILE_MAP_MAX_BATCHES)

@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, List
 
 
@@ -21,10 +22,22 @@ def merge_context_docs(
 
     for doc in docs:
         meta = doc.get("metadata") or {}
+        content = (doc.get("content") or "")
+        content_hash = hashlib.sha1(content.encode("utf-8", errors="ignore")).hexdigest()[:16] if content else ""
+        file_id = str(meta.get("file_id") or "")
+        chunk_index = meta.get("chunk_index")
+        doc_id = str(meta.get("doc_id") or meta.get("chunk_id") or "").strip()
+        sheet_name = str(meta.get("sheet_name") or "")
+        row_start = meta.get("row_start")
+        row_end = meta.get("row_end")
         key = (
-            str(meta.get("file_id") or ""),
-            str(meta.get("chunk_index") or ""),
-            (doc.get("content") or "")[:120],
+            doc_id,
+            file_id,
+            "" if chunk_index is None else str(chunk_index),
+            sheet_name,
+            "" if row_start is None else str(row_start),
+            "" if row_end is None else str(row_end),
+            content_hash,
         )
         if key in seen:
             continue

@@ -154,9 +154,16 @@ class AIHubProvider(BaseLLMProvider):
         prompt_max_chars: Optional[int] = None,
     ) -> Dict[str, Any]:
         messages = self._prepare_messages(conversation_history, prompt, prompt_max_chars=prompt_max_chars)
+        max_tokens_int = max(1, int(max_tokens or 1))
         payload = {
             "messages": messages,
-            "parameters": {"stream": False, "temperature": temperature, "maxTokens": str(max_tokens), "reasoningOptions": {"mode": "DISABLED"}},
+            "parameters": {
+                "stream": False,
+                "temperature": temperature,
+                "maxTokens": max_tokens_int,
+                "max_tokens": max_tokens_int,
+                "reasoningOptions": {"mode": "DISABLED"},
+            },
         }
         started = time.perf_counter()
         try:
@@ -194,13 +201,26 @@ class AIHubProvider(BaseLLMProvider):
         prompt_max_chars: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         messages = self._prepare_messages(conversation_history, prompt, prompt_max_chars=prompt_max_chars)
+        max_tokens_int = max(1, int(max_tokens or 1))
         payload_stream = {
             "messages": messages,
-            "parameters": {"stream": True, "temperature": temperature, "maxTokens": str(max_tokens), "reasoningOptions": {"mode": "DISABLED"}},
+            "parameters": {
+                "stream": True,
+                "temperature": temperature,
+                "maxTokens": max_tokens_int,
+                "max_tokens": max_tokens_int,
+                "reasoningOptions": {"mode": "DISABLED"},
+            },
         }
         payload_non_stream = {
             "messages": messages,
-            "parameters": {"stream": False, "temperature": temperature, "maxTokens": str(max_tokens), "reasoningOptions": {"mode": "DISABLED"}},
+            "parameters": {
+                "stream": False,
+                "temperature": temperature,
+                "maxTokens": max_tokens_int,
+                "max_tokens": max_tokens_int,
+                "reasoningOptions": {"mode": "DISABLED"},
+            },
         }
         started = time.perf_counter()
         try:
@@ -307,4 +327,3 @@ class AIHubProvider(BaseLLMProvider):
 
 
 aihub_provider = AIHubProvider()
-

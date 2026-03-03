@@ -28,6 +28,9 @@
 - Added low-coverage one-step escalation with debug trace (`rag_debug.retrieval_policy.escalation`):
   - increase `top_k` or
   - switch to `full_file` for small documents.
+- Fixed context merge dedup stability for tabular chunks:
+  - dedup key now uses stable chunk identity (`doc_id/chunk_id`, `file_id/chunk_index`, `sheet_name`, `row_start/row_end`) with full-content hash fallback,
+  - prevents false collapse of Excel chunks when metadata is partial and chunk text prefixes are identical.
 
 ### Backend Refactor (2026-03-03)
 - Decomposed `app/services/chat_orchestrator.py` into dedicated modules under `app/services/chat/*`.

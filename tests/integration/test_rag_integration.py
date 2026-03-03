@@ -4,6 +4,8 @@ import uuid
 from types import SimpleNamespace
 
 from app.services.chat import rag_prompt_builder as rag_builder
+from app.services.chat import full_file_analysis
+from app.services.chat.full_file_analysis import build_full_file_map_reduce_prompt
 from app.rag.retriever import rag_retriever
 
 
@@ -261,4 +263,43 @@ def test_query_language_policy_applied_without_user():
     assert context_docs == []
     assert rag_caveats == []
     assert rag_sources == []
+
+
+def test_full_file_small_context_uses_direct_strategy(monkeypatch):
+    docs = []
+    for idx in range(16):
+        docs.append(
+            {
+                "content": f"Row {idx + 1}: val={idx}",
+                "metadata": {
+                    "file_id": "f1",
+                    "chunk_index": idx,
+                    "filename": "sheet.xlsx",
+                    "sheet_name": "Sheet1",
+                    "row_start": idx * 20 + 1,
+                    "row_end": (idx + 1) * 20,
+                    "total_rows": 320,
+                },
+            }
+        )
+
+    monkeypatch.setattr(full_file_analysis.settings, "FULL_FILE_DIRECT_CONTEXT_MAX_CHUNKS", 24)
+    monkeypatch.setattr(full_file_analysis.settings, "FULL_FILE_DIRECT_CONTEXT_MAX_CHARS", 50000)
+
+    prompt, meta = asyncio.run(
+        build_full_file_map_reduce_prompt(
+            query="Сделай полный анализ по всем строкам",
+            context_documents=docs,
+            preferred_lang="ru",
+            model_source="local",
+            model_name="llama",
+            prompt_max_chars=None,
+        )
+    )
+
+    assert meta["enabled"] is True
+    assert meta["strategy"] == "direct_context"
+    assert meta["covered_chunks"] == 16
+    assert "Full retrieved context" in prompt
+    assert "chunk=15" in prompt
 

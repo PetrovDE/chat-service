@@ -87,6 +87,8 @@ class Settings(BaseSettings):
     FULL_FILE_MAP_BATCH_MAX_DOCS: int = Field(default=12, ge=2, le=100)
     FULL_FILE_MAP_BATCH_MAX_CHARS: int = Field(default=25000, ge=1000, le=50000)
     FULL_FILE_MAP_MAX_BATCHES: int = Field(default=300, ge=10, le=5000)
+    FULL_FILE_DIRECT_CONTEXT_MAX_CHUNKS: int = Field(default=24, ge=4, le=500)
+    FULL_FILE_DIRECT_CONTEXT_MAX_CHARS: int = Field(default=42000, ge=4000, le=180000)
     FULL_FILE_REDUCE_CONTEXT_MAX_CHARS: int = Field(default=22000, ge=4000, le=120000)
     FULL_FILE_REDUCE_TARGET_GROUPS: int = Field(default=8, ge=2, le=30)
     FULL_FILE_REDUCE_MAX_ROUNDS: int = Field(default=4, ge=1, le=12)

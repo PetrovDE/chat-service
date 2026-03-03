@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
@@ -370,6 +370,110 @@ def _batch_context_docs(
     return batches
 
 
+def _chunk_text_blocks(blocks: List[str], max_chars: int) -> List[List[str]]:
+    groups: List[List[str]] = []
+    current: List[str] = []
+    used = 0
+    separator_size = len("\n\n=====\n\n")
+
+    for block in blocks:
+        add = len(block) + (separator_size if current else 0)
+        if current and (used + add) > max_chars:
+            groups.append(current)
+            current = []
+            used = 0
+            add = len(block)
+
+        current.append(block)
+        used += add
+
+    if current:
+        groups.append(current)
+
+    return groups
+
+
+async def _hierarchical_reduce_partials(
+    *,
+    query: str,
+    partials: List[str],
+    model_source: Optional[str],
+    model_name: Optional[str],
+    prompt_max_chars: Optional[int],
+) -> Tuple[str, Dict[str, Any]]:
+    target_chars = int(settings.FULL_FILE_REDUCE_CONTEXT_MAX_CHARS)
+    target_groups = int(settings.FULL_FILE_REDUCE_TARGET_GROUPS)
+    max_rounds = int(settings.FULL_FILE_REDUCE_MAX_ROUNDS)
+
+    working = [(p or "").strip() for p in partials if (p or "").strip()]
+    if not working:
+        return "", {"rounds": 0, "truncated": False, "input_partials": 0, "output_partials": 0}
+
+    rounds = 0
+    truncated = False
+
+    while rounds < max_rounds:
+        combined_len = len("\n\n=====\n\n".join(working))
+        if len(working) == 1 and combined_len <= target_chars:
+            break
+
+        groups_count = min(max(1, target_groups), len(working))
+        group_size = max(1, (len(working) + groups_count - 1) // groups_count)
+        next_round: List[str] = []
+
+        for start in range(0, len(working), group_size):
+            group = working[start:start + group_size]
+            reduce_prompt = (
+                "You are compressing partial summaries for full-file analysis.\n"
+                "Preserve critical numeric facts, entities, constraints and caveats.\n"
+                "Do not invent facts. Keep output dense and factual.\n\n"
+                f"User question:\n{query}\n\n"
+                "Part summaries:\n"
+                + "\n\n-----\n\n".join(group)
+                + "\n\nCompressed summary:"
+            )
+            try:
+                reduced = await llm_manager.generate_response(
+                    prompt=reduce_prompt,
+                    model_source=model_source,
+                    model_name=model_name,
+                    temperature=0.0,
+                    max_tokens=1100,
+                    conversation_history=None,
+                    prompt_max_chars=prompt_max_chars,
+                )
+                text = (reduced.get("response") or "").strip()
+                if text:
+                    next_round.append(text)
+            except Exception:
+                logger.warning("Hierarchical reduce step failed (round=%d)", rounds + 1, exc_info=True)
+
+        if not next_round:
+            truncated = True
+            break
+
+        working = next_round
+        rounds += 1
+
+    if len(working) > 1:
+        final_groups = _chunk_text_blocks(working, max_chars=target_chars)
+        if len(final_groups) > 1:
+            truncated = True
+        context = "\n\n=====\n\n".join(final_groups[0])
+    else:
+        context = (working[0] if working else "")[:target_chars]
+        if working and len(working[0]) > target_chars:
+            truncated = True
+
+    return context, {
+        "rounds": rounds,
+        "truncated": truncated,
+        "input_partials": len(partials),
+        "output_partials": len(working),
+        "target_chars": target_chars,
+    }
+
+
 async def _build_full_file_map_reduce_prompt(
     *,
     query: str,
@@ -378,26 +482,24 @@ async def _build_full_file_map_reduce_prompt(
     model_name: Optional[str],
     prompt_max_chars: Optional[int] = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    batches = _batch_context_docs(context_documents, max_docs=12, max_chars=7000)
-    logger.info(
-        "RAG full_file map-reduce: docs=%d batches=%d",
-        len(context_documents),
-        len(batches),
-    )
+    max_docs = int(settings.FULL_FILE_MAP_BATCH_MAX_DOCS)
+    max_chars = int(settings.FULL_FILE_MAP_BATCH_MAX_CHARS)
+    max_batches = int(settings.FULL_FILE_MAP_MAX_BATCHES)
+    batches = _batch_context_docs(context_documents, max_docs=max_docs, max_chars=max_chars)
+    logger.info("RAG full_file map-reduce: docs=%d batches=%d", len(context_documents), len(batches))
+
     if not batches:
         return query, {
             "enabled": True,
             "total_batches": 0,
             "processed_batches": 0,
-            "max_batches": 20,
+            "max_batches": max_batches,
             "truncated_batches": False,
             "partials_count": 0,
             "fallback_to_query": True,
         }
 
     partials: List[str] = []
-    max_batches = 20
-
     processed_batches = 0
     for i, batch in enumerate(batches[:max_batches], start=1):
         chunk_lines: List[str] = []
@@ -454,15 +556,35 @@ async def _build_full_file_map_reduce_prompt(
             "fallback_to_query": True,
         }
 
-    reduce_context = "\n\n=====\n\n".join(partials)
+    reduce_context, reduce_meta = await _hierarchical_reduce_partials(
+        query=query,
+        partials=partials,
+        model_source=model_source,
+        model_name=model_name,
+        prompt_max_chars=prompt_max_chars,
+    )
+    if not reduce_context:
+        logger.warning("RAG full_file map-reduce: empty reduce context")
+        return query, {
+            "enabled": True,
+            "total_batches": len(batches),
+            "processed_batches": processed_batches,
+            "max_batches": max_batches,
+            "truncated_batches": True,
+            "partials_count": len(partials),
+            "fallback_to_query": True,
+            "hierarchical_reduce": reduce_meta,
+        }
+
     final_prompt = (
         "You are a document analyst. You received summaries of all document parts.\n"
         "Produce a complete, consistent and detailed answer to the user question.\n"
         "Rules:\n"
         "1) Do not invent facts outside provided context.\n"
         "2) Explicitly mention missing information when needed.\n"
-        "3) Return sections in order: Ответ, Ограничения/нехватка данных, Источники (кратко).\n"
-        "4) Use all available summaries, not a single fragment.\n\n"
+        "3) Return sections in order: Answer, Limitations/Missing data, Sources.\n"
+        "4) Use all available summaries, not a single fragment.\n"
+        "5) Keep concrete values and units from evidence.\n\n"
         f"User question:\n{query}\n\n"
         f"All partial summaries:\n{reduce_context}\n\n"
         "Final answer:"
@@ -472,11 +594,11 @@ async def _build_full_file_map_reduce_prompt(
         "total_batches": len(batches),
         "processed_batches": processed_batches,
         "max_batches": max_batches,
-        "truncated_batches": truncated_batches,
+        "truncated_batches": bool(truncated_batches or reduce_meta.get("truncated")),
         "partials_count": len(partials),
         "fallback_to_query": False,
+        "hierarchical_reduce": reduce_meta,
     }
-
 
 async def _try_build_rag_prompt(
     *,
@@ -684,7 +806,11 @@ class ChatOrchestrator:
         conversation_id = conversation.id
 
         await crud_message.create_message(db=db, conversation_id=conversation_id, role="user", content=chat_data.message)
-        messages = await crud_message.get_conversation_messages(db, conversation_id=conversation_id)
+        messages = await crud_message.get_last_messages(
+            db,
+            conversation_id=conversation_id,
+            count=settings.CHAT_HISTORY_MAX_MESSAGES,
+        )
         conversation_history = _build_conversation_history(messages)
 
         final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = await _try_build_rag_prompt(
@@ -804,7 +930,11 @@ class ChatOrchestrator:
         conversation_id = conversation.id
 
         await crud_message.create_message(db=db, conversation_id=conversation_id, role="user", content=chat_data.message)
-        messages = await crud_message.get_conversation_messages(db, conversation_id=conversation_id)
+        messages = await crud_message.get_last_messages(
+            db,
+            conversation_id=conversation_id,
+            count=settings.CHAT_HISTORY_MAX_MESSAGES,
+        )
         conversation_history = _build_conversation_history(messages)
 
         final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = await _try_build_rag_prompt(
@@ -892,3 +1022,5 @@ class ChatOrchestrator:
 
 
 chat_orchestrator = ChatOrchestrator()
+
+

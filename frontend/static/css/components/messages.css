@@ -54,6 +54,35 @@
     padding: 0 var(--spacing-sm);
 }
 
+.message-meta {
+    margin-top: var(--spacing-xs);
+}
+
+.assistant-meta-block {
+    background: var(--color-gray-100);
+    border: 1px solid var(--color-gray-300);
+    border-radius: var(--radius-md);
+    margin-top: var(--spacing-xs);
+    padding: 0.35rem 0.5rem;
+    font-size: 0.78rem;
+}
+
+.assistant-meta-block summary {
+    cursor: pointer;
+    font-weight: var(--font-weight-medium);
+    color: var(--color-gray-800);
+}
+
+.assistant-meta-block ul {
+    margin: 0.45rem 0 0 1.05rem;
+    padding: 0;
+}
+
+.assistant-meta-block pre {
+    margin-top: 0.45rem;
+    font-size: 0.72rem;
+}
+
 /* Markdown in Messages */
 .message-bubble h1,
 .message-bubble h2,

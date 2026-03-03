@@ -164,7 +164,8 @@ body {
 .settings-input,
 .message-input,
 #mode-selector,
-#model-selector {
+#model-selector,
+#ragModeSelector {
     width: 100%;
     background: var(--bg-elevated);
     color: var(--text);
@@ -178,6 +179,13 @@ body {
     padding: var(--space-2);
     display: grid;
     gap: var(--space-2);
+}
+
+.conversation-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: var(--space-2);
+    align-items: center;
 }
 
 .conversation-item {
@@ -200,6 +208,26 @@ body {
 .conversation-item.active {
     background: var(--bg-elevated);
     border-color: var(--border);
+}
+
+.conversation-delete-btn {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-md);
+    border: 1px solid #f2b7b7;
+    background: #fff1f1;
+    color: var(--danger);
+    cursor: pointer;
+}
+
+.conversation-delete-btn:hover,
+.conversation-delete-btn:focus-visible {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
 }
 
 .conversation-title {
@@ -333,10 +361,28 @@ body {
 .composer-controls {
     grid-area: controls;
     display: grid;
-    grid-template-columns: minmax(180px, 240px) minmax(180px, 240px);
+    grid-template-columns: minmax(150px, 220px) minmax(170px, 260px) minmax(150px, 220px);
     gap: var(--space-2);
     align-items: center;
     justify-self: center;
+}
+
+.control-with-hint {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.control-with-hint select {
+    width: 100%;
+}
+
+.control-hint {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    line-height: 1.2;
+    text-align: left;
+    padding-left: 12px;
 }
 
 .message-input {
@@ -362,6 +408,15 @@ body {
 .auth-submit-btn:hover,
 .settings-btn.primary:hover {
     background: var(--primary-hover);
+}
+
+.settings-btn.danger {
+    background: var(--danger);
+    color: #fff;
+}
+
+.settings-btn.danger:hover {
+    background: #b91c1c;
 }
 
 .stop-button {
@@ -407,11 +462,7 @@ body {
 }
 
 #modelCapsHint {
-    grid-column: 1 / -1;
-    text-align: center;
-    margin: 0;
-    font-size: var(--text-xs);
-    color: var(--text-muted);
+    display: none;
 }
 
 .send-button:disabled {
@@ -685,6 +736,11 @@ body {
     overflow: auto;
 }
 
+.settings-footer {
+    justify-content: flex-end;
+    gap: var(--space-2);
+}
+
 .auth-error {
     display: none;
     border: 1px solid var(--danger);
@@ -732,12 +788,13 @@ body.sidebar-collapsed .sidebar-restore-btn {
         grid-template-columns: 1fr auto;
         grid-template-areas:
             "input input"
-            "controls controls"
-            "attach actions";
+            "attach actions"
+            "controls controls";
     }
 
     .composer-controls {
         grid-template-columns: 1fr;
+        justify-self: stretch;
     }
 
     .header-right .health-status,

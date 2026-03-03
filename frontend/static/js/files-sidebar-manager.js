@@ -23,15 +23,25 @@ export class FilesSidebarManager {
 
         container.addEventListener('click', async (event) => {
             const deleteBtn = event.target.closest('[data-action="delete"]');
-            if (!deleteBtn) return;
+            if (deleteBtn) {
+                event.preventDefault();
+                event.stopPropagation();
 
-            event.preventDefault();
-            event.stopPropagation();
+                const fileId = deleteBtn.dataset.fileId;
+                if (!fileId) return;
+                await this.handleDeleteFile(fileId);
+                return;
+            }
 
-            const fileId = deleteBtn.dataset.fileId;
-            if (!fileId) return;
+            const retryBtn = event.target.closest('[data-action="retry"]');
+            if (retryBtn) {
+                event.preventDefault();
+                event.stopPropagation();
 
-            await this.handleDeleteFile(fileId);
+                const fileId = retryBtn.dataset.fileId;
+                if (!fileId) return;
+                await this.handleRetryFile(fileId);
+            }
         });
     }
 
@@ -118,10 +128,19 @@ export class FilesSidebarManager {
                     </div>
                 </div>
                 <div class="file-item-actions">
+                    ${this.renderRetryAction(file)}
                     <button class="file-item-btn delete" data-action="delete" data-file-id="${file.id}" type="button">Delete</button>
                 </div>
             </div>
         `;
+    }
+
+    renderRetryAction(file) {
+        const status = String(file?.is_processed || '');
+        if (status !== 'failed' && status !== 'partial_success') {
+            return '';
+        }
+        return `<button class="file-item-btn" data-action="retry" data-file-id="${file.id}" type="button">Retry</button>`;
     }
 
     renderConversationInfo(conversationIds) {
@@ -165,7 +184,7 @@ export class FilesSidebarManager {
             return '<span class="file-item-status failed">Failed</span>';
         }
         if (status === 'partial_success') {
-            return '<span class="file-item-status processing">Partial</span>';
+            return '<span class="file-item-status partial">Partial</span>';
         }
         return '<span class="file-item-status pending">Pending</span>';
     }
@@ -214,6 +233,28 @@ export class FilesSidebarManager {
         } catch (error) {
             this.uiController.hideLoading();
             this.uiController.showToast(`Delete failed: ${error.message}`, 'error');
+        }
+    }
+
+    async handleRetryFile(fileId) {
+        const file = this.files.find((item) => String(item.id) === String(fileId));
+        if (!file) {
+            this.uiController.showToast('File not found', 'error');
+            return;
+        }
+
+        const mode = document.getElementById('mode-selector')?.value || 'local';
+        const model = document.getElementById('model-selector')?.value || null;
+
+        try {
+            this.uiController.showLoading('Scheduling reprocessing...');
+            await this.apiService.reprocessFile(fileId, mode, model);
+            this.uiController.hideLoading();
+            this.uiController.showToast('Reprocessing scheduled', 'success');
+            await this.loadFiles();
+        } catch (error) {
+            this.uiController.hideLoading();
+            this.uiController.showToast(`Retry failed: ${error.message}`, 'error');
         }
     }
 

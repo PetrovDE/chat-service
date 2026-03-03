@@ -84,14 +84,30 @@
 
         <div class="input-container">
             <div class="composer-controls">
-                <label class="visually-hidden" for="mode-selector">Mode</label>
-                <select id="mode-selector" aria-label="Model source">
-                    <option value="local">Local models (Ollama)</option>
-                    <option value="aihub">Corporate AI HUB</option>
-                </select>
+                <div class="control-with-hint">
+                    <label class="visually-hidden" for="mode-selector">Mode</label>
+                    <select id="mode-selector" aria-label="Model source">
+                        <option value="local">Local models (Ollama)</option>
+                        <option value="aihub">Corporate AI HUB</option>
+                    </select>
+                    <small class="control-hint">Провайдер AI</small>
+                </div>
 
-                <label class="visually-hidden" for="model-selector">Model</label>
-                <select id="model-selector" aria-label="Model"></select>
+                <div class="control-with-hint">
+                    <label class="visually-hidden" for="model-selector">Model</label>
+                    <select id="model-selector" aria-label="Model"></select>
+                    <small class="control-hint">Выбор модели</small>
+                </div>
+
+                <div class="control-with-hint">
+                    <label class="visually-hidden" for="ragModeSelector">RAG mode</label>
+                    <select id="ragModeSelector" aria-label="RAG mode">
+                        <option value="auto">RAG: Auto</option>
+                        <option value="hybrid">RAG: Hybrid</option>
+                        <option value="full_file">RAG: Full file</option>
+                    </select>
+                    <small class="control-hint">Режим работы с документами</small>
+                </div>
 
                 <small id="modelCapsHint">Model limits: loading...</small>
             </div>
@@ -208,17 +224,24 @@
                     <input type="number" id="promptMaxCharsInput" class="settings-input" value="50000" min="2000" max="200000" step="1000">
                     <small id="settingsModelCapsHint">Model limits: loading...</small>
                 </div>
+                <div class="form-group">
+                    <label for="ragDebugToggle">
+                        <input type="checkbox" id="ragDebugToggle">
+                        RAG debug
+                    </label>
+                    <small>Show retrieved chunks, filters and retrieval diagnostics in assistant messages.</small>
+                </div>
             </div>
 
             <div class="settings-section">
                 <h3>Profile</h3>
                 <p><strong>User:</strong> <span id="profileUsername">Guest</span></p>
-                <button id="logoutBtn" class="settings-btn secondary" onclick="handleLogout()" type="button" style="display: none;">Logout</button>
             </div>
         </div>
 
         <div class="settings-footer">
             <button class="settings-btn secondary" onclick="closeSettings()" type="button">Cancel</button>
+            <button id="logoutBtn" class="settings-btn danger" onclick="handleLogout()" type="button" style="display: none;">Logout</button>
             <button class="settings-btn primary" onclick="saveSettings()" type="button">Save</button>
         </div>
     </div>

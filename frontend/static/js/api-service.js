@@ -115,8 +115,13 @@ class ApiService {
         return this.get('/conversations/');
     }
 
-    async getConversationMessages(conversationId) {
-        return this.get(`/conversations/${conversationId}/messages`);
+    async getConversationMessages(conversationId, { skip = 0, limit = 200 } = {}) {
+        const params = `?skip=${encodeURIComponent(skip)}&limit=${encodeURIComponent(limit)}`;
+        return this.get(`/conversations/${conversationId}/messages${params}`);
+    }
+
+    async deleteConversation(conversationId) {
+        return this.delete(`/conversations/${conversationId}`);
     }
 
     async getProcessedFiles(conversationId = null) {
@@ -130,6 +135,32 @@ class ApiService {
 
     async deleteFile(fileId) {
         return this.delete(`/files/${fileId}`);
+    }
+
+    async reprocessFile(fileId, embeddingMode = 'local', embeddingModel = null) {
+        const formData = new FormData();
+        formData.append('embedding_mode', embeddingMode || 'local');
+        if (embeddingModel) {
+            formData.append('embedding_model', embeddingModel);
+        }
+
+        const response = await fetch(`${this.baseURL}/files/process/${fileId}`, {
+            method: 'POST',
+            headers: this.getAuthHeaders(false),
+            body: formData,
+        });
+
+        const contentType = response.headers.get('content-type') || '';
+        const payload = contentType.includes('application/json')
+            ? await response.json()
+            : await response.text();
+
+        if (!response.ok) {
+            const detail = payload?.detail || response.statusText || `HTTP ${response.status}`;
+            throw new HttpError(detail, response.status, payload);
+        }
+
+        return payload;
     }
 }
 

@@ -1,11 +1,15 @@
 # app/api/v1/endpoints/conversations.py
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 from uuid import UUID
 
 from app.db.session import get_db
 from app.db.models import User
+from app.db.models.conversation_file import ConversationFile
 from app.schemas import (
     ConversationDeleteResponse,
     ConversationMessageItem,
@@ -13,7 +17,8 @@ from app.schemas import (
     ConversationUpdate,
 )
 from app.api.dependencies import get_current_user
-from app.crud import crud_conversation, crud_message
+from app.crud import crud_conversation, crud_file, crud_message
+from app.rag.vector_store import VectorStoreManager
 
 import logging
 
@@ -54,6 +59,8 @@ async def get_conversations(
 @router.get("/{conversation_id}/messages", response_model=List[ConversationMessageItem])
 async def get_conversation_messages(
         conversation_id: UUID,
+        skip: int = Query(0, ge=0),
+        limit: int = Query(200, ge=1, le=1000),
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
@@ -68,7 +75,9 @@ async def get_conversation_messages(
 
     messages = await crud_message.get_conversation_messages(
         db,
-        conversation_id=conversation_id
+        conversation_id=conversation_id,
+        skip=skip,
+        limit=limit,
     )
 
     return [
@@ -110,6 +119,7 @@ async def update_conversation(
 @router.delete("/{conversation_id}", response_model=ConversationDeleteResponse)
 async def delete_conversation(
         conversation_id: UUID,
+        delete_orphan_files: bool = Query(True, description="Also delete files left without any conversation links"),
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
@@ -122,6 +132,42 @@ async def delete_conversation(
     if conversation.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
+    linked_file_ids = await crud_file.get_conversation_file_ids(db, conversation_id=conversation_id)
     await crud_conversation.remove(db, id=conversation_id)
+
+    if delete_orphan_files and linked_file_ids:
+        try:
+            vector_store = VectorStoreManager()
+        except Exception:
+            vector_store = None
+            logger.warning("Vector store is unavailable during orphan cleanup", exc_info=True)
+
+        for file_id in linked_file_ids:
+            links_left_stmt = select(func.count(ConversationFile.id)).where(ConversationFile.file_id == file_id)
+            links_left_result = await db.execute(links_left_stmt)
+            links_left = int(links_left_result.scalar() or 0)
+            if links_left > 0:
+                continue
+
+            file_obj = await crud_file.get(db, id=file_id)
+            if not file_obj:
+                continue
+
+            try:
+                if vector_store is not None:
+                    try:
+                        vector_store.delete_by_metadata({"file_id": str(file_id)})
+                    except Exception:
+                        logger.warning("Vector cleanup failed for orphan file_id=%s", file_id, exc_info=True)
+
+                file_path = Path(file_obj.path)
+                await crud_file.remove(db, id=file_id)
+                try:
+                    if file_path.exists():
+                        file_path.unlink()
+                except Exception:
+                    logger.warning("Filesystem cleanup failed for orphan file_id=%s path=%s", file_id, file_path)
+            except Exception:
+                logger.warning("Orphan file cleanup failed for file_id=%s", file_id, exc_info=True)
 
     return {"status": "deleted", "conversation_id": str(conversation_id)}

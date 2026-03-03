@@ -115,6 +115,20 @@ async def _get_conversation_ids_for_file(db: AsyncSession, file_id: UUID) -> Lis
     return list(res.scalars().all())
 
 
+async def _get_conversation_ids_map_for_files(db: AsyncSession, file_ids: List[UUID]) -> dict[UUID, List[UUID]]:
+    if not file_ids:
+        return {}
+    stmt = (
+        select(ConversationFile.file_id, ConversationFile.conversation_id)
+        .where(ConversationFile.file_id.in_(file_ids))
+    )
+    res = await db.execute(stmt)
+    out: dict[UUID, List[UUID]] = {file_id: [] for file_id in file_ids}
+    for file_id, conversation_id in res.all():
+        out.setdefault(file_id, []).append(conversation_id)
+    return out
+
+
 def _to_file_info(file_obj: FileModel, conversation_ids: List[UUID]) -> FileInfo:
     """Маппинг модели File -> FileInfo по схеме app/schemas/file.py"""
     return FileInfo(
@@ -241,8 +255,19 @@ async def upload_file(
             embedding_mode=embedding_mode,
             embedding_model=embedding_model,
         )
-    except Exception:
+    except Exception as e:
         logger.exception("Failed to schedule file processing")
+        try:
+            path = Path(file_record.path)
+            await crud_file.remove(db, id=file_record.id)
+            if path.exists():
+                path.unlink()
+        except Exception:
+            logger.warning("Failed to rollback file record after scheduling error file_id=%s", file_record.id, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to schedule file processing: {type(e).__name__}",
+        ) from e
 
     return FileUploadResponse(
         file_id=file_record.id,
@@ -278,8 +303,12 @@ async def reprocess_file(
             embedding_mode=embedding_mode,
             embedding_model=embedding_model,
         )
-    except Exception:
+    except Exception as e:
         logger.exception("Failed to schedule file processing")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to schedule file processing: {type(e).__name__}",
+        ) from e
 
     return {"status": "ok", "file_id": str(file_id)}
 
@@ -292,9 +321,10 @@ async def list_files(
     current_user: User = Depends(get_current_user),
 ):
     files = await crud_file.get_user_files(db, user_id=current_user.id, skip=skip, limit=limit)
+    conversation_ids_map = await _get_conversation_ids_map_for_files(db, [f.id for f in files])
     result: List[FileInfo] = []
     for f in files:
-        conversation_ids = await _get_conversation_ids_for_file(db, f.id)
+        conversation_ids = conversation_ids_map.get(f.id, [])
         result.append(_to_file_info(f, conversation_ids))
     return result
 
@@ -310,9 +340,10 @@ async def get_processed_files(
     else:
         files = await crud_file.get_processed_files(db, user_id=current_user.id)
 
+    conversation_ids_map = await _get_conversation_ids_map_for_files(db, [f.id for f in files])
     result: List[FileInfo] = []
     for f in files:
-        conversation_ids = await _get_conversation_ids_for_file(db, f.id)
+        conversation_ids = conversation_ids_map.get(f.id, [])
         result.append(_to_file_info(f, conversation_ids))
     return result
 

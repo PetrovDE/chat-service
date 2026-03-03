@@ -54,6 +54,7 @@ class CRUDMessage(CRUDBase[Message, dict, dict]):
             db: AsyncSession,
             *,
             conversation_id: UUID,
+            skip: int = 0,
             limit: Optional[int] = None
     ) -> List[Message]:
         """Get all messages in a conversation"""
@@ -61,6 +62,8 @@ class CRUDMessage(CRUDBase[Message, dict, dict]):
             Message.conversation_id == conversation_id
         ).order_by(Message.timestamp)
 
+        if skip:
+            query = query.offset(skip)
         if limit:
             query = query.limit(limit)
 

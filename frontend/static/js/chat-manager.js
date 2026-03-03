@@ -77,7 +77,7 @@ class ChatManager {
 
             const attachedFiles = window.app?.fileManager?.getAttachedFiles?.() || [];
             const fileIds = attachedFiles.map((file) => file.id);
-            const ragMode = this.inferRagMode(normalizedMessage, fileIds);
+            const ragMode = this.resolveRagMode(normalizedMessage, fileIds);
 
             const payload = {
                 message: normalizedMessage,
@@ -89,6 +89,7 @@ class ChatManager {
                 prompt_max_chars: settings.prompt_max_chars || null,
                 file_ids: fileIds,
                 rag_mode: ragMode,
+                rag_debug: Boolean(settings.rag_debug),
             };
 
             await this.streamResponse(payload);
@@ -126,6 +127,9 @@ class ChatManager {
         const decoder = new TextDecoder();
         let buffer = '';
         let rawResponseText = '';
+        const showRagDebug = Boolean(payload?.rag_debug);
+        let ragDebugPayload = null;
+        let ragSources = [];
 
         while (true) {
             const { done, value } = await reader.read();
@@ -155,6 +159,10 @@ class ChatManager {
                     }
                 }
 
+                if (showRagDebug && chunk.type === 'start' && chunk.rag_debug) {
+                    ragDebugPayload = chunk.rag_debug;
+                }
+
                 if (chunk.type === 'chunk' && chunk.content) {
                     rawResponseText += chunk.content;
                     assistantBubble.textContent = rawResponseText;
@@ -171,7 +179,14 @@ class ChatManager {
                     if (chunk.content) {
                         rawResponseText = chunk.content;
                     }
+                    if (Array.isArray(chunk.sources)) {
+                        ragSources = chunk.sources;
+                    }
                     assistantBubble.innerHTML = formatMessage(rawResponseText);
+                    this.renderAssistantMeta(assistantMessageDiv, {
+                        sources: ragSources,
+                        ragDebug: showRagDebug ? ragDebugPayload : null,
+                    });
                     this.scrollToBottom();
 
                     if (wasNewConversation && newConversationId && this.conversationsManager) {
@@ -186,6 +201,10 @@ class ChatManager {
         }
 
         assistantBubble.innerHTML = formatMessage(rawResponseText);
+        this.renderAssistantMeta(assistantMessageDiv, {
+            sources: ragSources,
+            ragDebug: showRagDebug ? ragDebugPayload : null,
+        });
 
         this.scrollToBottom();
         this.abortController = null;
@@ -204,6 +223,7 @@ class ChatManager {
         messageDiv.className = 'message assistant';
         messageDiv.innerHTML = `
             <div class="message-bubble"></div>
+            <div class="message-meta"></div>
             <time class="message-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
         `;
 
@@ -229,11 +249,40 @@ class ChatManager {
 
         messageDiv.innerHTML = `
             <div class="message-bubble">${html}</div>
+            <div class="message-meta"></div>
             <time class="message-time">${timeLabel}</time>
         `;
 
         chatMessages.appendChild(messageDiv);
         this.scrollToBottom();
+    }
+
+    renderAssistantMeta(messageDiv, { sources = [], ragDebug = null } = {}) {
+        const metaContainer = messageDiv?.querySelector('.message-meta');
+        if (!metaContainer) return;
+
+        const blocks = [];
+        if (Array.isArray(sources) && sources.length > 0) {
+            const list = sources.slice(0, 12).map((src) => `<li>${this.escapeText(src)}</li>`).join('');
+            blocks.push(`
+                <details class="assistant-meta-block">
+                    <summary>Sources (${sources.length})</summary>
+                    <ul>${list}</ul>
+                </details>
+            `);
+        }
+
+        if (ragDebug && typeof ragDebug === 'object') {
+            const debugJson = this.escapeText(JSON.stringify(ragDebug, null, 2));
+            blocks.push(`
+                <details class="assistant-meta-block">
+                    <summary>RAG debug</summary>
+                    <pre><code>${debugJson}</code></pre>
+                </details>
+            `);
+        }
+
+        metaContainer.innerHTML = blocks.join('');
     }
 
     ensureDateDivider(timestamp) {
@@ -300,6 +349,14 @@ class ChatManager {
         ];
 
         return fullFileHints.some((hint) => text.includes(hint)) ? 'full_file' : 'auto';
+    }
+
+    resolveRagMode(message, fileIds) {
+        const selectorValue = document.getElementById('ragModeSelector')?.value || 'auto';
+        if (selectorValue === 'hybrid' || selectorValue === 'full_file') {
+            return selectorValue;
+        }
+        return this.inferRagMode(message, fileIds);
     }
 
     escapeText(text) {

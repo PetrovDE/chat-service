@@ -22,6 +22,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.crud import crud_file
 from app.db.models.conversation_file import ConversationFile
+from app.db.models.file import File as FileModel
 from app.db.session import AsyncSessionLocal
 from app.rag.document_loader import DocumentLoader
 from app.rag.embeddings import EmbeddingsManager
@@ -55,6 +56,22 @@ def _utc_now_iso() -> str:
 
 def _safe_ratio(numerator: int, denominator: int) -> float:
     return float(numerator / denominator) if denominator > 0 else 0.0
+
+
+def _parse_embedding_model_meta(value: Optional[str]) -> Tuple[str, Optional[str]]:
+    raw = (value or "").strip()
+    if not raw:
+        return "local", None
+    if ":" not in raw:
+        return "local", raw
+    mode_raw, model_raw = raw.split(":", 1)
+    mode = (mode_raw or "local").strip().lower()
+    if mode == "corporate":
+        mode = "aihub"
+    if mode == "ollama":
+        mode = "local"
+    model = (model_raw or "").strip() or None
+    return mode, model
 
 
 def _extract_xlsx_stats(docs: List[Any]) -> Dict[str, Any]:
@@ -311,6 +328,45 @@ async def shutdown_file_processing_worker(timeout_seconds: float = 15.0) -> None
         with suppress(asyncio.CancelledError):
             await task
     logger.info("File processing worker stopped")
+
+
+async def recover_pending_file_jobs(limit: int = 200) -> int:
+    """
+    Recover files stuck in pending/processing states after service restart.
+    Best effort: enqueue existing files back to the in-process queue.
+    """
+    recovered = 0
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(FileModel)
+            .where(FileModel.is_processed.in_(["pending", "processing"]))
+            .order_by(FileModel.uploaded_at.asc())
+            .limit(limit)
+        )
+        res = await db.execute(stmt)
+        files = res.scalars().all()
+
+    for file_obj in files:
+        file_path = Path(file_obj.path)
+        if not file_path.exists():
+            logger.warning("Skip recovery: file missing on disk file_id=%s path=%s", file_obj.id, file_path)
+            continue
+
+        mode, model = _parse_embedding_model_meta(getattr(file_obj, "embedding_model", None))
+        try:
+            await process_file_async(
+                file_id=file_obj.id,
+                file_path=file_path,
+                embedding_mode=mode,
+                embedding_model=model,
+            )
+            recovered += 1
+        except Exception:
+            logger.warning("Failed to recover pending file job file_id=%s", file_obj.id, exc_info=True)
+
+    if recovered:
+        logger.info("Recovered pending file jobs: %d", recovered)
+    return recovered
 
 
 async def _process_file(

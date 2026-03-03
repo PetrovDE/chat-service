@@ -15,7 +15,7 @@ from app.core.config import settings
 from app.core.error_handlers import register_error_handlers
 from app.core.logging import setup_logging
 from app.observability.metrics import inc_counter, observe_ms, render_prometheus_metrics
-from app.services.file import shutdown_file_processing_worker
+from app.services.file import recover_pending_file_jobs, shutdown_file_processing_worker
 
 # Optional: middleware for X-Request-Id (safe even if missing)
 try:
@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Server starting")
+    try:
+        recovered = await recover_pending_file_jobs()
+        logger.info("Recovered file jobs on startup: %d", recovered)
+    except Exception:
+        logger.warning("Failed to recover pending file jobs on startup", exc_info=True)
     yield
     await shutdown_file_processing_worker()
     logger.info("Server stopping")

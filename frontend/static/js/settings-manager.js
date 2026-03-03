@@ -8,7 +8,8 @@ class SettingsManager {
             model: 'llama3.1:8b',
             temperature: 0.7,
             max_tokens: 2048,
-            prompt_max_chars: 50000
+            prompt_max_chars: 50000,
+            rag_debug: false,
         };
         this.modelCapabilities = {};
         console.log('SettingsManager initialized');
@@ -136,6 +137,7 @@ class SettingsManager {
         const caps = this.modelCapabilities[modelName] || {};
         const maxTokensInput = document.getElementById('maxTokensInput');
         const promptMaxCharsInput = document.getElementById('promptMaxCharsInput');
+        const ragDebugToggle = document.getElementById('ragDebugToggle');
 
         if (maxTokensInput && caps.max_output_tokens) {
             const cap = Math.max(128, Number(caps.max_output_tokens));
@@ -186,6 +188,10 @@ class SettingsManager {
             this.settings.prompt_max_chars = parseInt(promptMaxCharsInput.value);
         }
 
+        if (ragDebugToggle) {
+            this.settings.rag_debug = Boolean(ragDebugToggle.checked);
+        }
+
         this.updateModelCapsHint(this.settings.model);
         console.log('Settings applied:', this.settings);
         return this.settings;
@@ -197,6 +203,7 @@ class SettingsManager {
         const tempValue = document.getElementById('temperatureValue');
         const maxTokensInput = document.getElementById('maxTokensInput');
         const promptMaxCharsInput = document.getElementById('promptMaxCharsInput');
+        const ragDebugToggle = document.getElementById('ragDebugToggle');
 
         if (modelSelector) {
             modelSelector.addEventListener('change', (e) => {
@@ -222,6 +229,13 @@ class SettingsManager {
             promptMaxCharsInput.addEventListener('change', (e) => {
                 this.setPromptMaxChars(e.target.value);
                 this.updateModelCapsHint(this.settings.model);
+            });
+        }
+
+        if (ragDebugToggle) {
+            ragDebugToggle.checked = Boolean(this.settings.rag_debug);
+            ragDebugToggle.addEventListener('change', (e) => {
+                this.settings.rag_debug = Boolean(e.target.checked);
             });
         }
 

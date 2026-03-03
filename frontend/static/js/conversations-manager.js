@@ -92,16 +92,30 @@ class ConversationsManager {
                 const isActive = String(currentConversation || '') === String(conversation.id);
                 const updatedAt = conversation.updated_at || conversation.created_at;
                 return `
-                    <button
-                        type="button"
-                        class="conversation-item ${isActive ? 'active' : ''}"
-                        data-conversation-id="${conversation.id}"
-                        aria-current="${isActive ? 'true' : 'false'}"
-                        aria-label="Open chat ${this.escapeHtml(conversation.title || 'Untitled')}"
-                    >
-                        <span class="conversation-title">${this.escapeHtml(conversation.title || 'Untitled')}</span>
-                        <span class="conversation-date">${this.formatRelativeDate(updatedAt)}</span>
-                    </button>
+                    <div class="conversation-row">
+                        <button
+                            type="button"
+                            class="conversation-item ${isActive ? 'active' : ''}"
+                            data-conversation-id="${conversation.id}"
+                            aria-current="${isActive ? 'true' : 'false'}"
+                            aria-label="Open chat ${this.escapeHtml(conversation.title || 'Untitled')}"
+                        >
+                            <span class="conversation-title">${this.escapeHtml(conversation.title || 'Untitled')}</span>
+                            <span class="conversation-date">${this.formatRelativeDate(updatedAt)}</span>
+                        </button>
+                        <button
+                            type="button"
+                            class="conversation-delete-btn"
+                            data-action="delete-conversation"
+                            data-conversation-id="${conversation.id}"
+                            aria-label="Delete chat ${this.escapeHtml(conversation.title || 'Untitled')}"
+                            title="Delete chat"
+                        >
+                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
+                                <path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 11a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 9zm4 2v8h2v-8h-2zm4 0v8h2v-8h-2z"/>
+                            </svg>
+                        </button>
+                    </div>
                 `;
             })
             .join('');
@@ -116,6 +130,14 @@ class ConversationsManager {
                     event.preventDefault();
                     await this.loadConversation(item.dataset.conversationId);
                 }
+            });
+        });
+
+        container.querySelectorAll('[data-action="delete-conversation"]').forEach((btn) => {
+            btn.addEventListener('click', async (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                await this.deleteConversation(btn.dataset.conversationId);
             });
         });
     }
@@ -164,6 +186,37 @@ class ConversationsManager {
         if (window.app?.filesSidebarManager) {
             window.app.filesSidebarManager.setCurrentConversation(null);
             window.app.filesSidebarManager.loadFiles(true);
+        }
+    }
+
+    async deleteConversation(conversationId) {
+        const target = this.conversations.find((conversation) => String(conversation.id) === String(conversationId));
+        if (!target) {
+            this.uiController.showError('Conversation not found');
+            return;
+        }
+
+        const confirmed = confirm(`Delete chat "${target.title || 'Untitled'}"? This action cannot be undone.`);
+        if (!confirmed) return;
+
+        try {
+            this.uiController.showLoading('Deleting chat...');
+            await this.apiService.deleteConversation(conversationId);
+            this.uiController.hideLoading();
+            this.uiController.showSuccess('Chat deleted');
+
+            const currentConversation = this.chatManager.getCurrentConversation();
+            if (String(currentConversation || '') === String(conversationId)) {
+                this.createNewConversation();
+            }
+
+            await this.loadConversations();
+            if (window.app?.filesSidebarManager) {
+                await window.app.filesSidebarManager.loadFiles(true);
+            }
+        } catch (error) {
+            this.uiController.hideLoading();
+            this.uiController.showError(error.message || 'Failed to delete chat');
         }
     }
 

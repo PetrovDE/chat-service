@@ -14,6 +14,7 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from pydantic import Field
 
+from app.core.config import settings
 try:
     from langchain_community.retrievers import BM25Retriever
 except Exception:  # pragma: no cover
@@ -436,7 +437,13 @@ class RAGRetriever:
         q_vec = q_vecs[0]
 
         if fetch_k is None:
-            fetch_k = max(top_k * 12, 40)
+            fetch_k = max(top_k * int(settings.RAG_FETCH_K_MULTIPLIER), int(settings.RAG_FETCH_K_MIN))
+
+        lexical_pool_limit = max(
+            int(settings.RAG_LEXICAL_POOL_MIN),
+            fetch_k * int(settings.RAG_LEXICAL_POOL_MULTIPLIER),
+        )
+        lexical_pool_limit = min(lexical_pool_limit, int(settings.RAG_LEXICAL_POOL_MAX))
 
         logger.info("RAG.retrieve(hybrid): intent=%s top_k=%d fetch_k=%d where=%s", intent, top_k, fetch_k, where)
 
@@ -450,7 +457,7 @@ class RAGRetriever:
         lexical_pool_task = asyncio.to_thread(
             self.vectorstore.get_by_filter,
             filter_dict=where,
-            limit_per_collection=max(fetch_k * 6, 300),
+            limit_per_collection=lexical_pool_limit,
         )
         dense_rows, lexical_pool = await asyncio.gather(dense_rows_task, lexical_pool_task)
         observe_ms("rag_candidates_duration_ms", (time.perf_counter() - t_denselex) * 1000.0, mode="hybrid")
@@ -521,10 +528,11 @@ class RAGRetriever:
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         file_ids: Optional[List[str]] = None,
-        max_chunks: int = 800,
+        max_chunks: Optional[int] = None,
     ) -> List[Document]:
         t0 = time.perf_counter()
         _ = query
+        max_chunks = int(max_chunks or settings.RAG_FULL_FILE_MAX_CHUNKS)
         where = self._build_where(conversation_id=conversation_id, user_id=user_id, file_ids=file_ids)
         rows = await asyncio.to_thread(
             self.vectorstore.get_by_filter,

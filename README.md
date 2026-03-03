@@ -100,7 +100,7 @@ Browser SPA (frontend/index.html + static/js)
 3. Пустой/слабый RAG-ответ.
 Где смотреть: отправить chat с `rag_debug=true` (или `?debug=true`), проверить `rag_debug.top_chunks`, `filters/where`, `retrieval_mode`; сравнить с `docs/examples/retrieve_debug.*.json`.
 Если файл табличный (`xlsx/xls/csv`) и в debug видно аномально малое `retrieved_chunks_total` при нормальном `chunks_count`, проверьте metadata chunk identity:
-`chunk_index`, `sheet_name`, `row_start`, `row_end` (без этих полей возможен ложный dedup похожих chunk-префиксов).
+`chunk_id`, `chunk_index` (dedup контекста выполняется по `chunk_id`, fallback: `file_id + chunk_index`).
 
 4. Не поднимается приложение из-за настроек.
 Где смотреть: значения в `.env` (`DATABASE_URL`, `ALEMBIC_DATABASE_URL`, `JWT_SECRET_KEY`), ошибки старта в логах uvicorn/FastAPI, проверка БД через `docker compose -f docker-compose.db.yml ps`.

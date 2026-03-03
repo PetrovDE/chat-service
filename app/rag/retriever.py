@@ -261,7 +261,13 @@ class RAGRetriever:
             content = (r.get("content") or "").strip()
             if not content:
                 continue
+            row_id = str(r.get("id") or "").strip()
             meta = dict(r.get("metadata") or {})
+            file_id = str(meta.get("file_id") or "").strip()
+            if row_id and not str(meta.get("chunk_id") or "").strip():
+                meta["chunk_id"] = row_id
+            if file_id and not str(meta.get("doc_id") or "").strip():
+                meta["doc_id"] = file_id
             meta["distance"] = float(r.get("distance", 1e9))
             meta["dense_score"] = float(r.get("dense_score", 0.0))
             meta["lexical_score"] = float(r.get("lexical_score", 0.0))
@@ -289,15 +295,18 @@ class RAGRetriever:
 
         dense_docs: List[Document] = []
         for r in dense_rows:
-            doc_id = str(r.get("id") or "")
+            row_id = str(r.get("id") or "")
             content = (r.get("content") or "").strip()
             if not content:
                 continue
             meta = dict(r.get("metadata") or {})
             dist = float(r.get("distance", 1e9))
             dense_sim = 1.0 / (1.0 + dist)
-            if doc_id:
-                meta["doc_id"] = doc_id
+            file_id = str(meta.get("file_id") or "").strip()
+            if row_id and not str(meta.get("chunk_id") or "").strip():
+                meta["chunk_id"] = row_id
+            if file_id and not str(meta.get("doc_id") or "").strip():
+                meta["doc_id"] = file_id
             meta["distance"] = dist
             meta["dense_score"] = dense_sim
             meta["similarity_score"] = dense_sim
@@ -305,13 +314,16 @@ class RAGRetriever:
 
         lexical_docs: List[Document] = []
         for r in lexical_rows:
-            doc_id = str(r.get("id") or "")
+            row_id = str(r.get("id") or "")
             content = (r.get("content") or "").strip()
             if not content:
                 continue
             meta = dict(r.get("metadata") or {})
-            if doc_id:
-                meta["doc_id"] = doc_id
+            file_id = str(meta.get("file_id") or "").strip()
+            if row_id and not str(meta.get("chunk_id") or "").strip():
+                meta["chunk_id"] = row_id
+            if file_id and not str(meta.get("doc_id") or "").strip():
+                meta["doc_id"] = file_id
             lexical_docs.append(Document(page_content=content, metadata=meta))
 
         if not dense_docs and not lexical_docs:
@@ -481,7 +493,7 @@ class RAGRetriever:
                     continue
                 ranked_rows.append(
                     {
-                        "id": d.metadata.get("doc_id") or f"tmp_{len(ranked_rows)}",
+                        "id": d.metadata.get("chunk_id") or d.metadata.get("doc_id") or f"tmp_{len(ranked_rows)}",
                         "content": d.page_content,
                         "metadata": d.metadata,
                         "distance": d.metadata.get("distance", 1e9),
@@ -561,6 +573,12 @@ class RAGRetriever:
             if not content:
                 continue
             meta = dict(r.get("metadata") or {})
+            row_id = str(r.get("id") or "").strip()
+            file_id = str(meta.get("file_id") or "").strip()
+            if row_id and not str(meta.get("chunk_id") or "").strip():
+                meta["chunk_id"] = row_id
+            if file_id and not str(meta.get("doc_id") or "").strip():
+                meta["doc_id"] = file_id
             meta["distance"] = 0.0
             meta["similarity_score"] = 1.0
             meta["retrieval_mode"] = "full_file"

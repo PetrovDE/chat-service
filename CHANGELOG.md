@@ -29,8 +29,11 @@
   - increase `top_k` or
   - switch to `full_file` for small documents.
 - Fixed context merge dedup stability for tabular chunks:
-  - dedup key now uses stable chunk identity (`doc_id/chunk_id`, `file_id/chunk_index`, `sheet_name`, `row_start/row_end`) with full-content hash fallback,
-  - prevents false collapse of Excel chunks when metadata is partial and chunk text prefixes are identical.
+  - dedup key in retrieval context now uses `chunk_id` (fallback: `file_id + chunk_index`) and no longer uses text-prefix/header similarity,
+  - prevents false collapse of Excel chunks with identical repeated headers (`=== ... EXCEL | SHEET ... ===`).
+- Split metadata semantics for IDs:
+  - `doc_id` now represents the whole document (`file_id`),
+  - `chunk_id` represents the exact chunk (`<file_id>_<chunk_index>`).
 
 ### Backend Refactor (2026-03-03)
 - Decomposed `app/services/chat_orchestrator.py` into dedicated modules under `app/services/chat/*`.

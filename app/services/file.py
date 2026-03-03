@@ -477,6 +477,8 @@ async def _process_file(
                     "user_id": str(file_record.user_id),
                     "conversation_id": conversation_id,
                     "chunk_index": idx,
+                    "doc_id": str(file_id),
+                    "chunk_id": f"{file_id}_{idx}",
                     "filename": file_record.original_filename,
                     "file_type": file_record.file_type,
                     "embedding_mode": embedding_mode,

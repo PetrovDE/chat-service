@@ -126,14 +126,17 @@ def build_top_chunks_debug(context_documents: List[Dict[str, Any]], max_items: i
         file_id = str(meta.get("file_id") or "")
         chunk_index = meta.get("chunk_index")
         doc_id = str(meta.get("doc_id") or "").strip()
-        if not doc_id and file_id and chunk_index is not None:
-            doc_id = f"{file_id}_{chunk_index}"
+        chunk_id = str(meta.get("chunk_id") or "").strip()
+        if not doc_id and file_id:
+            doc_id = file_id
+        if not chunk_id and file_id and chunk_index is not None:
+            chunk_id = f"{file_id}_{chunk_index}"
         rows.append(
             {
                 "score": float(doc.get("similarity_score", meta.get("similarity_score", 0.0)) or 0.0),
                 "file_id": file_id,
                 "doc_id": doc_id or None,
-                "chunk_id": doc_id or None,
+                "chunk_id": chunk_id or None,
                 "filename": str(meta.get("filename") or meta.get("source") or "unknown"),
                 "sheet_name": meta.get("sheet_name"),
                 "chunk_index": chunk_index,

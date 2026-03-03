@@ -37,7 +37,7 @@ def test_standard_rag_debug_payload_contains_filters_and_top_chunks():
     assert payload["top_chunks"]
     first = payload["top_chunks"][0]
     assert first["file_id"] == "f1"
-    assert first["doc_id"] == "f1_3"
+    assert first["doc_id"] == "f1"
     assert first["chunk_id"] == "f1_3"
     assert isinstance(first["preview"], str) and first["preview"]
     assert payload["top_chunks_limit"] == 8

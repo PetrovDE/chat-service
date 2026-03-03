@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
 
@@ -28,6 +28,118 @@ class DocumentLoader:
             ".md": self.load_markdown,
         }
         logger.info("DocumentLoader initialized")
+
+    @staticmethod
+    def _normalize_cell(value: Any, *, max_len: int = 200) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        return text if len(text) <= max_len else (text[:max_len] + "...")
+
+    def _pick_columns_for_chunk(self, df, columns: List[str]) -> Tuple[List[str], List[str]]:
+        max_cols = int(getattr(settings, "XLSX_MAX_COLUMNS_PER_CHUNK", 0) or 0)
+        if max_cols <= 0 or len(columns) <= max_cols:
+            return columns, []
+
+        density: List[Tuple[int, int, str]] = []
+        for idx, col in enumerate(columns):
+            try:
+                non_empty = int((df[col].astype(str).str.strip() != "").sum())
+            except Exception:
+                non_empty = 0
+            density.append((non_empty, -idx, col))
+
+        density.sort(reverse=True)
+        picked = [col for non_empty, _neg_idx, col in density if non_empty > 0][:max_cols]
+        if not picked:
+            picked = columns[:max_cols]
+
+        picked_set = set(picked)
+        selected = [col for col in columns if col in picked_set]
+        pruned = [col for col in columns if col not in picked_set]
+        return selected, pruned
+
+    def _build_tabular_docs(
+        self,
+        *,
+        df,
+        filepath: str,
+        file_type: str,
+        metadata: Optional[Dict[str, Any]],
+        sheet_name: Optional[str] = None,
+        sheet_count: int = 1,
+    ) -> List[Document]:
+        max_chars = int(getattr(settings, "XLSX_CHUNK_MAX_CHARS", 9000) or 9000)
+        max_rows = int(getattr(settings, "XLSX_CHUNK_MAX_ROWS", 40) or 40)
+        max_chars = max(1000, max_chars)
+        max_rows = max(1, max_rows)
+
+        columns_all = [str(c) for c in df.columns.tolist()]
+        selected_columns, pruned_columns = self._pick_columns_for_chunk(df, columns_all)
+        total_rows = len(df)
+        sheet_label = str(sheet_name or "CSV")
+
+        docs: List[Document] = []
+        chunk_lines: List[str] = []
+        chunk_row_start = 0
+        chunk_chars = 0
+
+        def flush_chunk(row_end_idx: int) -> None:
+            nonlocal chunk_lines, chunk_row_start, chunk_chars
+            if not chunk_lines:
+                return
+            row_start = chunk_row_start + 1
+            row_end = row_end_idx + 1
+            header = f"sheet={sheet_label} rows={row_start}-{row_end}/{total_rows}"
+            page = (header + "\n" + "\n".join(chunk_lines)).strip()
+            if not page:
+                chunk_lines = []
+                chunk_chars = 0
+                return
+
+            doc_meta: Dict[str, Any] = {
+                "source": filepath,
+                "file_type": file_type,
+                "sheet_name": sheet_label,
+                "row_start": row_start,
+                "row_end": row_end,
+                "total_rows": total_rows,
+                "columns": selected_columns,
+                "columns_all": columns_all,
+                "columns_pruned": bool(pruned_columns),
+                "pruned_columns": pruned_columns,
+                "sheet_count": sheet_count,
+            }
+            if metadata:
+                doc_meta.update(metadata)
+
+            docs.append(Document(page_content=page, metadata=doc_meta))
+            chunk_lines = []
+            chunk_chars = 0
+
+        for ridx in range(total_rows):
+            row = df.iloc[ridx]
+            values: List[str] = []
+            for col in selected_columns:
+                cell = self._normalize_cell(row.get(col))
+                if cell:
+                    values.append(f"{col}: {cell}")
+            row_line = f"Row {ridx + 1}: " + (" | ".join(values) if values else "<empty>")
+            row_line = row_line[: max_chars - 120] if len(row_line) > max_chars else row_line
+            projected_rows = len(chunk_lines) + 1
+            projected_chars = chunk_chars + len(row_line) + (1 if chunk_lines else 0)
+
+            if chunk_lines and (projected_rows > max_rows or projected_chars > max_chars):
+                flush_chunk(ridx - 1)
+                chunk_row_start = ridx
+
+            if not chunk_lines:
+                chunk_row_start = ridx
+            chunk_lines.append(row_line)
+            chunk_chars += len(row_line) + (1 if len(chunk_lines) > 1 else 0)
+
+        flush_chunk(total_rows - 1)
+        return docs
 
     async def load_file(self, filepath: str, metadata: Optional[Dict[str, Any]] = None) -> List[Document]:
         path = Path(filepath)
@@ -123,55 +235,14 @@ class DocumentLoader:
         if df.empty:
             raise ValueError(f"No readable data found in CSV file: {filepath}")
 
-        # Keep spreadsheet chunks compact enough for embedding providers.
-        max_rows_per_doc = 20  # can be moved to settings
-        docs: List[Document] = []
-
-        cols = [str(c) for c in df.columns.tolist()]
-        total_rows = len(df)
-
-        for start in range(0, total_rows, max_rows_per_doc):
-            end = min(start + max_rows_per_doc, total_rows)
-            block = df.iloc[start:end]
-
-            lines: List[str] = []
-            lines.append("=" * 60)
-            lines.append("CSV")
-            lines.append("=" * 60)
-            lines.append(f"Columns: {', '.join(cols)}")
-            lines.append(f"Rows: {start + 1}-{end} / {total_rows}")
-            lines.append("-" * 60)
-
-            for ridx in range(len(block)):
-                row = block.iloc[ridx]
-                parts = []
-                for col in cols:
-                    val = (row.get(col) or "").strip()
-                    if val:
-                        if len(val) > 200:
-                            val = val[:200] + "..."
-                        parts.append(f"{col}: {val}")
-                if parts:
-                    lines.append(f"Row {start + ridx + 1}: " + " | ".join(parts))
-
-            page = "\n".join(lines).strip()
-            if not page:
-                continue
-
-            meta = {
-                "source": filepath,
-                "file_type": "csv",
-                "row_start": start + 1,
-                "row_end": end,
-                "total_rows": total_rows,
-                "columns": cols,
-            }
-            if metadata:
-                meta.update(metadata)
-
-            docs.append(Document(page_content=page, metadata=meta))
-
-        return docs
+        return self._build_tabular_docs(
+            df=df,
+            filepath=filepath,
+            file_type="csv",
+            metadata=metadata,
+            sheet_name="CSV",
+            sheet_count=1,
+        )
 
     async def load_excel(self, filepath: str, metadata: Optional[Dict[str, Any]]) -> List[Document]:
         """
@@ -191,8 +262,6 @@ class DocumentLoader:
         sheet_names = excel_file.sheet_names
         logger.info("Processing Excel: sheets=%d", len(sheet_names))
 
-        # Keep spreadsheet chunks compact enough for embedding providers.
-        max_rows_per_doc = 20  # can be moved to settings
         docs: List[Document] = []
 
         for sheet_name in sheet_names:
@@ -205,51 +274,17 @@ class DocumentLoader:
             if df is None or df.empty:
                 continue
 
-            cols = [str(c) for c in df.columns.tolist()]
-            total_rows = len(df)
-
-            for start in range(0, total_rows, max_rows_per_doc):
-                end = min(start + max_rows_per_doc, total_rows)
-                block = df.iloc[start:end]
-
-                lines: List[str] = []
-                lines.append("=" * 70)
-                lines.append(f"EXCEL | SHEET: {sheet_name}")
-                lines.append("=" * 70)
-                lines.append(f"Columns: {', '.join(cols)}")
-                lines.append(f"Rows: {start + 1}-{end} / {total_rows}")
-                lines.append("-" * 70)
-
-                for ridx in range(len(block)):
-                    row = block.iloc[ridx]
-                    parts = []
-                    for col in cols:
-                        val = (row.get(col) or "").strip()
-                        if val:
-                            if len(val) > 200:
-                                val = val[:200] + "..."
-                            parts.append(f"{col}: {val}")
-                    if parts:
-                        lines.append(f"Row {start + ridx + 1}: " + " | ".join(parts))
-
-                page = "\n".join(lines).strip()
-                if not page:
-                    continue
-
-                doc_meta = {
-                    "source": filepath,
-                    "file_type": "xlsx",
-                    "sheet_name": str(sheet_name),
-                    "row_start": start + 1,
-                    "row_end": end,
-                    "total_rows": total_rows,
-                    "columns": cols,
-                    "sheet_count": len(sheet_names),
-                }
-                if metadata:
-                    doc_meta.update(metadata)
-
-                docs.append(Document(page_content=page, metadata=doc_meta))
+            file_type = Path(filepath).suffix.lower().lstrip(".") or "xlsx"
+            docs.extend(
+                self._build_tabular_docs(
+                    df=df,
+                    filepath=filepath,
+                    file_type=file_type,
+                    metadata=metadata,
+                    sheet_name=str(sheet_name),
+                    sheet_count=len(sheet_names),
+                )
+            )
 
         if not docs:
             raise ValueError(f"No readable data found in Excel file: {filepath}")

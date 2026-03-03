@@ -12,6 +12,24 @@
 - Блок `RAG debug` под сообщением больше не отображается при выключенном флаге: debug-мета показывается только если запрос отправлен с `rag_debug=true`.
 
 ### Backend RAG (2026-03-03)
+- Stage 0 diagnostics:
+  - added row-level debug fields: `rows_expected_total`, `rows_retrieved_total`, `rows_used_map_total`, `rows_used_reduce_total`, `row_coverage_ratio`;
+  - added full-file per-batch diagnostics: `batch_rows_start_end`, `batch_input_chars`, `batch_output_chars`;
+  - added AIHub prompt trim telemetry in debug: `prompt_chars_before`, `prompt_chars_after`, `prompt_truncated`.
+- Stage 1 ingestion:
+  - `xlsx/xls/csv` loader switched to adaptive row-dense chunking (`XLSX_CHUNK_MAX_CHARS`, `XLSX_CHUNK_MAX_ROWS`);
+  - added wide-sheet column pruning (`XLSX_MAX_COLUMNS_PER_CHUNK`) with full column set in metadata.
+- Stage 2 coverage safeguards:
+  - added full-file row-coverage repass (`RAG_FULL_FILE_MIN_ROW_COVERAGE`, `RAG_FULL_FILE_ESCALATION_MAX_CHUNKS`);
+  - added `silent_row_loss_detected` signal when chunk coverage is high but row coverage is low.
+- Stage 3 full-file answer quality:
+  - map step now returns structured JSON (`facts`, `aggregates`, `row_ranges_covered`, `missing_data`);
+  - reduce step merges structured payload deterministically (`strategy=structured_map_reduce`);
+  - added setting `FULL_FILE_MAP_MAX_TOKENS`.
+- Stage 4 deterministic tabular path:
+  - ingestion creates sidecar SQLite dataset for `xlsx/xls/csv` (`custom_metadata.tabular_sidecar`);
+  - aggregate intents route to `retrieval_mode=tabular_sql` (LangChain SQL tool execution), LLM used only for presentation;
+  - file delete now cleans sidecar path best effort.
 - `full_file` retrieval: removed post-retrieval squeeze to hybrid limit (`top_k*4`); full retrieved set is preserved within `RAG_FULL_FILE_MAX_CHUNKS`.
 - Added full-file coverage diagnostics in debug: `retrieved_chunks_total`, `coverage.expected_chunks`, `coverage.retrieved_chunks`, `coverage.ratio`, `coverage.complete`.
 - Added explicit incomplete-coverage signal: when `retrieved < expected`, `truncated=true` and caveat about incomplete analysis.
@@ -34,6 +52,12 @@
 - Split metadata semantics for IDs:
   - `doc_id` now represents the whole document (`file_id`),
   - `chunk_id` represents the exact chunk (`<file_id>_<chunk_index>`).
+- Added regression tests:
+  - `test_xlsx_wide_sheet_chunking_adaptive`
+  - `test_full_file_row_coverage_debug_fields`
+  - `test_full_file_map_reduce_structured_preserves_ranges`
+  - `test_aihub_prompt_truncation_debug_visible`
+  - `test_tabular_intent_routes_to_sql_path`
 
 ### Backend Refactor (2026-03-03)
 - Decomposed `app/services/chat_orchestrator.py` into dedicated modules under `app/services/chat/*`.

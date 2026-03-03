@@ -418,12 +418,23 @@ async def delete_file(
             logger.warning("Vector index cleanup failed for file_id=%s", file_id, exc_info=True)
 
         path = Path(file_obj.path)
+        sidecar_path = None
+        if isinstance(file_obj.custom_metadata, dict):
+            sidecar = file_obj.custom_metadata.get("tabular_sidecar")
+            if isinstance(sidecar, dict) and sidecar.get("path"):
+                sidecar_path = Path(str(sidecar.get("path")))
         await crud_file.remove(db, id=file_id)
         try:
             if path.exists():
                 path.unlink()
         except Exception:
             pass
+        if sidecar_path is not None:
+            try:
+                if sidecar_path.exists():
+                    sidecar_path.unlink()
+            except Exception:
+                logger.warning("Failed to delete sidecar path for file_id=%s", file_id, exc_info=True)
     except Exception as e:
         logger.error("Failed to delete file: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete file")

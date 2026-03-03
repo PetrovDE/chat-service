@@ -6,6 +6,7 @@
 - Принимает сообщения в чат (`/api/v1/chat`, `/api/v1/chat/stream`).
 - Поддерживает провайдеры моделей: `ollama/local`, `aihub` (`corporate` alias), `openai`.
 - Загружает файлы, асинхронно индексирует их в ChromaDB и использует в RAG (`/api/v1/files/*`).
+- Для `xlsx/xls/csv` поддерживает adaptive row-dense ingestion и deterministic `tabular_sql` path для aggregate-вопросов.
 - Хранит пользователей, чаты, сообщения и файлы в PostgreSQL.
 - Отдаёт встроенный frontend из `frontend/` (SPA монтируется на `/`).
 
@@ -53,6 +54,7 @@ Browser SPA (frontend/index.html + static/js)
         -> Chat orchestration (app/services/chat_orchestrator.py)
             -> LLM providers (app/services/llm/providers/*)
             -> RAG retriever (app/rag/retriever.py)
+            -> Tabular SQL path (app/services/chat/tabular_sql.py, LangChain SQL tools)
                 -> ChromaDB (.chromadb)
         -> File ingestion worker (app/services/file.py, in-process queue)
             -> loaders/splitters/embeddings
@@ -101,12 +103,23 @@ Browser SPA (frontend/index.html + static/js)
 Где смотреть: отправить chat с `rag_debug=true` (или `?debug=true`), проверить `rag_debug.top_chunks`, `filters/where`, `retrieval_mode`; сравнить с `docs/examples/retrieve_debug.*.json`.
 Если файл табличный (`xlsx/xls/csv`) и в debug видно аномально малое `retrieved_chunks_total` при нормальном `chunks_count`, проверьте metadata chunk identity:
 `chunk_id`, `chunk_index` (dedup контекста выполняется по `chunk_id`, fallback: `file_id + chunk_index`).
+Для `full_file` дополнительно проверьте row-level поля:
+`rows_expected_total`, `rows_retrieved_total`, `rows_used_map_total`, `rows_used_reduce_total`, `row_coverage_ratio`.
 
 4. Не поднимается приложение из-за настроек.
 Где смотреть: значения в `.env` (`DATABASE_URL`, `ALEMBIC_DATABASE_URL`, `JWT_SECRET_KEY`), ошибки старта в логах uvicorn/FastAPI, проверка БД через `docker compose -f docker-compose.db.yml ps`.
 
 5. Модели недоступны/медленные ответы.
 Где смотреть: `GET /api/v1/models/status`, `GET /api/v1/models/list?mode=...`, логи провайдера в backend (`app/services/llm/providers/*`), общие метрики задержек в `/metrics`.
+
+## XLSX / CSV Settings (LangChain-first)
+- `XLSX_CHUNK_MAX_CHARS`: adaptive char-budget для row-dense чанков.
+- `XLSX_CHUNK_MAX_ROWS`: safety cap по строкам на chunk.
+- `XLSX_MAX_COLUMNS_PER_CHUNK`: soft cap колонок для wide-листов (value-dense pruning).
+- `FULL_FILE_MAP_MAX_TOKENS`: лимит map шага в structured full-file map/reduce.
+- `RAG_FULL_FILE_MIN_ROW_COVERAGE`: порог row coverage для full-file.
+- `RAG_FULL_FILE_ESCALATION_MAX_CHUNKS`: лимит repass-бюджета при low row coverage.
+- Для `xlsx/xls/csv` ingestion создает sidecar SQLite dataset (`custom_metadata.tabular_sidecar`) для deterministic `tabular_sql` path.
 
 ## Chat Service Internals (2026-03-03)
 

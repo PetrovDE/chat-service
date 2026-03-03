@@ -14,6 +14,8 @@ from contextlib import suppress
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import re
+import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
@@ -94,6 +96,113 @@ def _extract_xlsx_stats(docs: List[Any]) -> Dict[str, Any]:
     }
 
 
+def _safe_sql_identifier(name: str, fallback: str) -> str:
+    raw = (name or "").strip().lower()
+    cleaned = re.sub(r"[^a-z0-9_]+", "_", raw).strip("_")
+    if not cleaned:
+        cleaned = fallback
+    if cleaned[0].isdigit():
+        cleaned = f"t_{cleaned}"
+    return cleaned
+
+
+def _normalize_dataframe_columns(df) -> List[str]:
+    seen: Dict[str, int] = {}
+    final: List[str] = []
+    for idx, col in enumerate(df.columns):
+        base = _safe_sql_identifier(str(col), fallback=f"col_{idx + 1}")
+        count = seen.get(base, 0)
+        seen[base] = count + 1
+        final_col = base if count == 0 else f"{base}_{count + 1}"
+        final.append(final_col)
+    df.columns = final
+    return final
+
+
+def _build_tabular_sidecar(file_path: Path, file_type: str) -> Optional[Dict[str, Any]]:
+    if file_type not in {"xlsx", "xls", "csv"}:
+        return None
+
+    import pandas as pd
+
+    sidecar_path = file_path.with_suffix(file_path.suffix + ".tabular.sqlite")
+    if sidecar_path.exists():
+        sidecar_path.unlink()
+
+    tables: List[Dict[str, Any]] = []
+    conn = sqlite3.connect(str(sidecar_path))
+    try:
+        if file_type == "csv":
+            attempts = [{"encoding": "utf-8"}, {"encoding": "utf-8-sig"}, {"encoding": "cp1251"}, {"encoding": "latin-1"}]
+            df = None
+            for attempt in attempts:
+                try:
+                    df = pd.read_csv(
+                        str(file_path),
+                        dtype=str,
+                        keep_default_na=False,
+                        engine="python",
+                        sep=None,
+                        on_bad_lines="skip",
+                        **attempt,
+                    )
+                    break
+                except Exception:
+                    continue
+            if df is not None and not df.empty:
+                columns = _normalize_dataframe_columns(df)
+                table_name = _safe_sql_identifier("csv_data", "csv_data")
+                df.to_sql(table_name, conn, index=False, if_exists="replace")
+                tables.append(
+                    {
+                        "table_name": table_name,
+                        "sheet_name": "CSV",
+                        "row_count": int(len(df)),
+                        "columns": columns,
+                    }
+                )
+        else:
+            excel = pd.ExcelFile(str(file_path))
+            for idx, sheet in enumerate(excel.sheet_names, start=1):
+                try:
+                    df = pd.read_excel(
+                        str(file_path),
+                        sheet_name=sheet,
+                        dtype=str,
+                        keep_default_na=False,
+                    )
+                except Exception:
+                    logger.warning("Tabular sidecar: failed to read sheet '%s'", sheet, exc_info=True)
+                    continue
+                if df is None or df.empty:
+                    continue
+                columns = _normalize_dataframe_columns(df)
+                table_name = _safe_sql_identifier(f"sheet_{idx}_{sheet}", fallback=f"sheet_{idx}")
+                df.to_sql(table_name, conn, index=False, if_exists="replace")
+                tables.append(
+                    {
+                        "table_name": table_name,
+                        "sheet_name": str(sheet),
+                        "row_count": int(len(df)),
+                        "columns": columns,
+                    }
+                )
+    finally:
+        conn.close()
+
+    if not tables:
+        if sidecar_path.exists():
+            sidecar_path.unlink()
+        return None
+
+    return {
+        "engine": "sqlite",
+        "path": str(sidecar_path),
+        "tables": tables,
+        "generated_at": _utc_now_iso(),
+    }
+
+
 async def _finalize_ingestion(
     *,
     db: Any,
@@ -102,6 +211,7 @@ async def _finalize_ingestion(
     embedding_mode: str,
     embedding_model: str,
     error_message: Optional[str],
+    extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     expected = int(progress.get("total_chunks_expected", 0) or 0)
     processed = int(progress.get("chunks_processed", 0) or 0)
@@ -152,6 +262,8 @@ async def _finalize_ingestion(
     metadata_patch: Dict[str, Any] = {"ingestion_progress": progress}
     if error_message:
         metadata_patch["error"] = error_message
+    if extra_metadata:
+        metadata_patch.update(extra_metadata)
 
     await crud_file.update_processing_status(
         db,
@@ -389,6 +501,7 @@ async def _process_file(
         "bad_ratio": 0.0,
     }
     error_message: Optional[str] = None
+    extra_metadata: Dict[str, Any] = {}
 
     async with AsyncSessionLocal() as db:
         try:
@@ -429,11 +542,26 @@ async def _process_file(
             if total_chars < 50:
                 raise ValueError("Extracted text is empty/too small (possible scanned PDF).")
 
+            file_ext = file_path.suffix.lower().lstrip(".")
+            if file_ext in {"xlsx", "xls", "csv"}:
+                try:
+                    tabular_sidecar = await asyncio.to_thread(_build_tabular_sidecar, file_path, file_ext)
+                    if tabular_sidecar:
+                        extra_metadata["tabular_sidecar"] = tabular_sidecar
+                        logger.info(
+                            "Tabular sidecar generated: file_id=%s tables=%d path=%s",
+                            file_id,
+                            len(tabular_sidecar.get("tables", [])),
+                            tabular_sidecar.get("path"),
+                        )
+                except Exception:
+                    logger.warning("Tabular sidecar generation failed for file_id=%s", file_id, exc_info=True)
+                    extra_metadata["tabular_sidecar_error"] = "generation_failed"
+
             # split
             stage_t0 = asyncio.get_running_loop().time()
             progress["stage"] = "chunk"
-            file_ext = file_path.suffix.lower()
-            if file_ext in (".xlsx", ".xls", ".csv"):
+            if file_ext in ("xlsx", "xls", "csv"):
                 # Spreadsheet/CSV docs are already block-structured by loader.
                 chunks = docs
             else:
@@ -571,6 +699,7 @@ async def _process_file(
                     embedding_mode=embedding_mode,
                     embedding_model=embedding_model,
                     error_message=error_message,
+                    extra_metadata=extra_metadata,
                 )
                 retryable = bool(
                     final_status == "failed"

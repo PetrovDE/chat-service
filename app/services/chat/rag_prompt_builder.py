@@ -17,7 +17,12 @@ from app.services.chat.full_file_analysis import build_full_file_map_reduce_prom
 from app.services.chat.language import apply_language_policy_to_prompt, detect_preferred_response_language
 from app.services.chat.postprocess import build_rag_caveats
 from app.services.chat.retrieval_policy import build_retrieval_budget_plan, choose_escalation_plan
-from app.services.chat.sources_debug import build_sources_list, build_sources_list_with_mode
+from app.services.chat.sources_debug import (
+    build_row_coverage_stats,
+    build_sources_list,
+    build_sources_list_with_mode,
+)
+from app.services.chat.tabular_sql import execute_tabular_sql_path
 
 logger = logging.getLogger(__name__)
 
@@ -34,20 +39,50 @@ async def _run_grouped_retrieval(
     rag_mode: Optional[str],
     embedding_mode: str,
     embedding_model: Optional[str],
+    full_file_max_chunks: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     rag_results: List[Dict[str, Any]] = []
 
+    async def _query_with_optional_full_file_max(
+        *,
+        query_text: str,
+        top_k_value: int,
+        conv_id,
+        usr_id,
+        ids: List[str],
+        emb_mode: str,
+        emb_model: Optional[str],
+        mode: Optional[str],
+    ) -> Any:
+        kwargs: Dict[str, Any] = {
+            "query": query_text,
+            "top_k": top_k_value,
+            "user_id": str(usr_id),
+            "conversation_id": str(conv_id),
+            "file_ids": ids,
+            "embedding_mode": emb_mode,
+            "embedding_model": emb_model,
+            "rag_mode": mode,
+            "debug_return": True,
+        }
+        if full_file_max_chunks is not None:
+            kwargs["full_file_max_chunks"] = int(full_file_max_chunks)
+        try:
+            return await rag_retriever_client.query_rag(**kwargs)
+        except TypeError:
+            kwargs.pop("full_file_max_chunks", None)
+            return await rag_retriever_client.query_rag(**kwargs)
+
     if len(groups) == 1:
-        rag_result = await rag_retriever_client.query_rag(
-            query,
-            top_k=top_k,
-            user_id=str(user_id),
-            conversation_id=str(conversation_id),
-            file_ids=all_file_ids,
-            embedding_mode=embedding_mode,
-            embedding_model=embedding_model,
-            rag_mode=rag_mode,
-            debug_return=True,
+        rag_result = await _query_with_optional_full_file_max(
+            query_text=query,
+            top_k_value=top_k,
+            usr_id=user_id,
+            conv_id=conversation_id,
+            ids=all_file_ids,
+            emb_mode=embedding_mode,
+            emb_model=embedding_model,
+            mode=rag_mode,
         )
         if isinstance(rag_result, dict):
             rag_results.append(rag_result)
@@ -57,16 +92,15 @@ async def _run_grouped_retrieval(
     group_tasks = []
     for (group_mode, group_model), group_file_ids in groups.items():
         group_tasks.append(
-            rag_retriever_client.query_rag(
-                query,
-                top_k=max(top_k, 4),
-                user_id=str(user_id),
-                conversation_id=str(conversation_id),
-                file_ids=group_file_ids,
-                embedding_mode=group_mode,
-                embedding_model=group_model,
-                rag_mode=rag_mode,
-                debug_return=True,
+            _query_with_optional_full_file_max(
+                query_text=query,
+                top_k_value=max(top_k, 4),
+                usr_id=user_id,
+                conv_id=conversation_id,
+                ids=group_file_ids,
+                emb_mode=group_mode,
+                emb_model=group_model,
+                mode=rag_mode,
             )
         )
     group_results = await asyncio.gather(*group_tasks, return_exceptions=True)
@@ -166,10 +200,54 @@ async def build_rag_prompt(
     if not files:
         return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
 
+    expected_chunks_total = sum(int(getattr(file_obj, "chunks_count", 0) or 0) for file_obj in files)
+    tabular_sql_result = await execute_tabular_sql_path(query=query, files=files)
+    if isinstance(tabular_sql_result, dict):
+        rag_used = True
+        rag_sources = list(tabular_sql_result.get("sources") or [])
+        rag_debug = dict(tabular_sql_result.get("debug") or {})
+        rag_debug["file_ids"] = [str(file_obj.id) for file_obj in files]
+        rag_debug["rag_mode"] = rag_mode or "auto"
+        rag_debug["rag_mode_effective"] = "tabular_sql"
+        rag_debug["retrieval_policy"] = {
+            "mode": "tabular_sql",
+            "query_profile": "aggregate",
+            "requested_top_k": top_k,
+            "effective_top_k": 0,
+            "expected_chunks_total": expected_chunks_total,
+            "escalation": {"attempted": False, "applied": False, "reason": None},
+            "row_escalation": {"attempted": False, "applied": False, "reason": None},
+        }
+        rag_debug["retrieved_chunks_total"] = expected_chunks_total
+        rag_debug["coverage"] = {
+            "expected_chunks": expected_chunks_total,
+            "retrieved_chunks": expected_chunks_total,
+            "ratio": 1.0 if expected_chunks_total > 0 else 0.0,
+            "complete": True,
+        }
+        rag_debug["rows_expected_total"] = int(tabular_sql_result.get("rows_expected_total", 0) or 0)
+        rag_debug["rows_retrieved_total"] = int(tabular_sql_result.get("rows_retrieved_total", 0) or 0)
+        rag_debug["rows_used_map_total"] = int(tabular_sql_result.get("rows_used_map_total", 0) or 0)
+        rag_debug["rows_used_reduce_total"] = int(tabular_sql_result.get("rows_used_reduce_total", 0) or 0)
+        rag_debug["row_coverage_ratio"] = float(tabular_sql_result.get("row_coverage_ratio", 0.0) or 0.0)
+        rag_debug["truncated"] = False
+        final_prompt = apply_language_policy_to_prompt(
+            preferred_lang=preferred_lang,
+            prompt=(
+                "You are a data analyst.\n"
+                "Use deterministic SQL result below as source of truth.\n"
+                "Do not change numbers from SQL output.\n"
+                "Return sections in order: Answer, Limitations/Missing data, Sources.\n\n"
+                f"User question:\n{query}\n\n"
+                f"{tabular_sql_result.get('prompt_context')}\n\n"
+                "Final answer:"
+            ),
+        )
+        return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
+
     rag_file_ids = [str(file_obj.id) for file_obj in files]
     groups = group_files_by_embedding_config(files, model_source)
     embedding_mode, embedding_model = resolve_rag_embedding_config(files, model_source)
-    expected_chunks_total = sum(int(getattr(file_obj, "chunks_count", 0) or 0) for file_obj in files)
 
     budget_plan = build_retrieval_budget_plan(
         query=query,
@@ -257,6 +335,67 @@ async def build_rag_prompt(
             else:
                 escalation_meta["selected_docs"] = len(context_docs)
 
+        row_coverage_threshold = float(settings.RAG_FULL_FILE_MIN_ROW_COVERAGE)
+        row_escalation_meta: Dict[str, Any] = {
+            "attempted": False,
+            "applied": False,
+            "reason": None,
+            "coverage_threshold": row_coverage_threshold,
+        }
+        row_stats_before = build_row_coverage_stats(context_docs)
+        row_coverage_before = float(row_stats_before.get("row_coverage_ratio", 0.0) or 0.0)
+        rows_expected_before = int(row_stats_before.get("rows_expected_total", 0) or 0)
+        full_file_mode_detected = bool(
+            (selected_rag_mode or "").lower() == "full_file"
+            or any(
+                isinstance(dbg, dict)
+                and (dbg.get("retrieval_mode") == "full_file" or dbg.get("intent") == "analyze_full_file")
+                for dbg in debug_groups
+            )
+        )
+        if full_file_mode_detected and rows_expected_before > 0 and row_coverage_before < row_coverage_threshold:
+            row_escalation_meta["attempted"] = True
+            row_escalation_meta["reason"] = "low_row_coverage_full_file_repass"
+            row_escalation_meta["coverage_ratio"] = row_coverage_before
+            base_full_file_cap = int(settings.RAG_FULL_FILE_MAX_CHUNKS)
+            max_escalation_cap = int(settings.RAG_FULL_FILE_ESCALATION_MAX_CHUNKS)
+            next_full_file_cap = min(max_escalation_cap, max(base_full_file_cap * 2, len(context_docs) * 2, selected_top_k))
+            row_escalation_meta["next_full_file_max_chunks"] = next_full_file_cap
+
+            can_repass = next_full_file_cap > base_full_file_cap or (selected_rag_mode or "").lower() != "full_file"
+            if can_repass:
+                retried_top_k = max(selected_top_k, expected_chunks_total or selected_top_k)
+                retried_results = await _run_grouped_retrieval(
+                    rag_retriever_client=rag_retriever_client,
+                    query=query,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    groups=groups,
+                    all_file_ids=rag_file_ids,
+                    top_k=retried_top_k,
+                    rag_mode="full_file",
+                    embedding_mode=embedding_mode,
+                    embedding_model=embedding_model,
+                    full_file_max_chunks=next_full_file_cap,
+                )
+                retried_docs, retried_debug_groups, _ = _collect_context_and_debug(
+                    rag_results=retried_results,
+                    non_full_file_top_k=retried_top_k,
+                )
+                retried_row_stats = build_row_coverage_stats(retried_docs)
+                retried_ratio = float(retried_row_stats.get("row_coverage_ratio", 0.0) or 0.0)
+                row_escalation_meta["retried_coverage_ratio"] = retried_ratio
+                row_escalation_meta["retried_rows_retrieved"] = int(
+                    retried_row_stats.get("rows_retrieved_total", 0) or 0
+                )
+                improved = retried_ratio > row_coverage_before or len(retried_docs) > len(context_docs)
+                if improved:
+                    context_docs = retried_docs
+                    debug_groups = retried_debug_groups
+                    selected_rag_mode = "full_file"
+                    selected_top_k = retried_top_k
+                    row_escalation_meta["applied"] = True
+
         rag_debug = (debug_groups[0] if debug_groups else {}) if isinstance(debug_groups, list) else {}
         if not isinstance(rag_debug, dict):
             rag_debug = {}
@@ -280,6 +419,7 @@ async def build_rag_prompt(
             "effective_top_k": selected_top_k,
             "expected_chunks_total": expected_chunks_total,
             "escalation": escalation_meta,
+            "row_escalation": row_escalation_meta,
         }
 
         retrieved_chunks_total = len(context_docs)
@@ -291,6 +431,26 @@ async def build_rag_prompt(
             "ratio": coverage_ratio,
             "complete": bool(expected_chunks_total == 0 or retrieved_chunks_total >= expected_chunks_total),
         }
+        row_stats = build_row_coverage_stats(context_docs)
+        rag_debug["rows_expected_total"] = int(row_stats.get("rows_expected_total", 0) or 0)
+        rag_debug["rows_retrieved_total"] = int(row_stats.get("rows_retrieved_total", 0) or 0)
+        rag_debug["rows_used_map_total"] = int(rag_debug["rows_retrieved_total"])
+        rag_debug["rows_used_reduce_total"] = int(rag_debug["rows_retrieved_total"])
+        rag_debug["row_coverage_ratio"] = (
+            float(rag_debug["rows_used_reduce_total"] / rag_debug["rows_expected_total"])
+            if rag_debug["rows_expected_total"] > 0
+            else float(row_stats.get("row_coverage_ratio", 0.0))
+        )
+        chunk_coverage_close = bool(
+            expected_chunks_total > 0 and retrieved_chunks_total >= max(1, int(expected_chunks_total * 0.9))
+        )
+        if (
+            chunk_coverage_close
+            and rag_debug.get("rows_expected_total", 0) > 0
+            and rag_debug.get("row_coverage_ratio", 0.0) < row_coverage_threshold
+        ):
+            rag_debug["silent_row_loss_detected"] = True
+            rag_debug["truncated"] = True
 
         if context_docs:
             retrieval_mode = (rag_debug or {}).get("retrieval_mode") if isinstance(rag_debug, dict) else None
@@ -306,11 +466,28 @@ async def build_rag_prompt(
                     prompt_max_chars=prompt_max_chars,
                 )
                 rag_debug["full_file_map_reduce"] = map_reduce_meta
+                rag_debug["rows_used_map_total"] = int(
+                    map_reduce_meta.get("rows_used_map_total", rag_debug.get("rows_used_map_total", 0)) or 0
+                )
+                rag_debug["rows_used_reduce_total"] = int(
+                    map_reduce_meta.get("rows_used_reduce_total", rag_debug.get("rows_used_reduce_total", 0)) or 0
+                )
+                if rag_debug.get("rows_expected_total", 0) > 0:
+                    rag_debug["row_coverage_ratio"] = float(
+                        rag_debug["rows_used_reduce_total"] / max(1, rag_debug["rows_expected_total"])
+                    )
                 rag_debug["truncated"] = bool(
+                    rag_debug.get("truncated")
+                    or
                     map_reduce_meta.get("truncated_batches")
                     or rag_debug.get("full_file_limit_hit")
                 )
                 if not rag_debug.get("coverage", {}).get("complete", True):
+                    rag_debug["truncated"] = True
+                if (
+                    rag_debug.get("rows_expected_total", 0) > 0
+                    and rag_debug.get("rows_used_reduce_total", 0) < rag_debug.get("rows_expected_total", 0)
+                ):
                     rag_debug["truncated"] = True
             else:
                 final_prompt = rag_retriever_client.build_context_prompt(query=query, context_documents=context_docs)

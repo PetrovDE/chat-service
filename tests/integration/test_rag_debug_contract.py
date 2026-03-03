@@ -4,6 +4,7 @@ from app.services.chat.sources_debug import (
     build_sources_list,
     build_standard_rag_debug_payload,
 )
+from app.services.llm.providers import aihub as aihub_module
 
 
 def test_standard_rag_debug_payload_contains_filters_and_top_chunks():
@@ -108,3 +109,26 @@ def test_append_caveats_and_sources_localizes_english_titles():
     )
     assert "### Limitations/Missing Data" in merged
     assert "### Sources (short)" in merged
+
+
+def test_aihub_prompt_truncation_debug_visible(monkeypatch):
+    monkeypatch.setattr(aihub_module.settings, "AIHUB_MAX_PROMPT_CHARS", 2100)
+    prompt = "x" * 2600
+    _messages, provider_debug = aihub_module.aihub_provider._prepare_messages(
+        conversation_history=None,
+        prompt=prompt,
+        prompt_max_chars=None,
+    )
+
+    payload = build_standard_rag_debug_payload(
+        rag_debug={"retrieval_mode": "full_file"},
+        context_docs=[],
+        rag_sources=[],
+        llm_tokens_used=0,
+        provider_debug=provider_debug,
+        max_items=8,
+    )
+
+    assert payload["prompt_chars_before"] == 2600
+    assert payload["prompt_chars_after"] == 2100
+    assert payload["prompt_truncated"] is True

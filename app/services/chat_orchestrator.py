@@ -146,6 +146,7 @@ class ChatOrchestrator:
         context_docs,
         rag_sources,
         llm_tokens_used: Optional[int],
+        provider_debug: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         debug_max_items = 64 if isinstance(rag_debug, dict) and rag_debug.get("retrieval_mode") == "full_file" else 8
         return _build_standard_rag_debug_payload(
@@ -153,6 +154,7 @@ class ChatOrchestrator:
             context_docs=context_docs,
             rag_sources=rag_sources,
             llm_tokens_used=llm_tokens_used,
+            provider_debug=provider_debug,
             max_items=debug_max_items,
         )
 
@@ -237,6 +239,7 @@ class ChatOrchestrator:
                         context_docs=ctx["context_docs"],
                         rag_sources=ctx["rag_sources"],
                         llm_tokens_used=None,
+                        provider_debug=None,
                     )
                 try:
                     start_payload_json = json.dumps(start_payload)
@@ -349,6 +352,7 @@ class ChatOrchestrator:
                 context_docs=ctx["context_docs"],
                 rag_sources=ctx["rag_sources"],
                 llm_tokens_used=result.get("tokens_used"),
+                provider_debug=result.get("provider_debug"),
             )
 
         return ChatResponse(

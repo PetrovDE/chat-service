@@ -97,6 +97,15 @@ def build_rag_caveats(
             caveats.append(
                 f"Full-file coverage is incomplete: retrieved {retrieved}/{expected} chunks."
             )
+    if isinstance(rag_debug, dict):
+        rows_expected = int(rag_debug.get("rows_expected_total", 0) or 0)
+        rows_used_reduce = int(rag_debug.get("rows_used_reduce_total", 0) or 0)
+        if rows_expected > 0 and rows_used_reduce < rows_expected:
+            caveats.append(
+                f"Row-level coverage is incomplete: used {rows_used_reduce}/{rows_expected} rows."
+            )
+        if bool(rag_debug.get("silent_row_loss_detected", False)):
+            caveats.append("Potential silent row loss detected: chunk coverage looks high but row coverage is low.")
     if isinstance(rag_debug, dict) and rag_debug.get("truncated"):
         caveats.append("Context was truncated by retrieval limits; answer may be incomplete.")
     return caveats

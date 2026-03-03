@@ -2,7 +2,7 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import httpx
 import numpy as np
@@ -73,7 +73,7 @@ class AIHubProvider(BaseLLMProvider):
         conversation_history: Optional[List[Dict[str, str]]],
         prompt: str,
         prompt_max_chars: Optional[int] = None,
-    ) -> List[Dict[str, str]]:
+    ) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
         messages: List[Dict[str, str]] = []
 
         max_history_chars = max(200, int(getattr(settings, "AIHUB_MAX_HISTORY_MESSAGE_CHARS", 2000) or 2000))
@@ -89,14 +89,24 @@ class AIHubProvider(BaseLLMProvider):
                     messages.append({"role": role, "text": text})
 
         prompt_text = (prompt or "")
-        if len(prompt_text) > max_prompt_chars:
-            logger.warning("AI HUB prompt truncated: %d -> %d chars", len(prompt_text), max_prompt_chars)
+        prompt_chars_before = len(prompt_text)
+        prompt_truncated = prompt_chars_before > max_prompt_chars
+        if prompt_truncated:
+            logger.warning("AI HUB prompt truncated: %d -> %d chars", prompt_chars_before, max_prompt_chars)
+            inc_counter("llm_prompt_truncated_total", provider="aihub")
             prompt_text = prompt_text[:max_prompt_chars]
         messages.append({"role": "user", "text": prompt_text})
+        prompt_chars_after = len(prompt_text)
 
         if len(messages) > 10:
             messages = messages[-10:]
-        return messages
+        return messages, {
+            "provider": "aihub",
+            "prompt_chars_before": int(prompt_chars_before),
+            "prompt_chars_after": int(prompt_chars_after),
+            "prompt_truncated": bool(prompt_truncated),
+            "prompt_chars_limit": int(max_prompt_chars),
+        }
 
     async def get_available_models(self) -> List[str]:
         detailed = await self.get_available_models_detailed()
@@ -153,7 +163,11 @@ class AIHubProvider(BaseLLMProvider):
         conversation_history: Optional[List[Dict[str, str]]] = None,
         prompt_max_chars: Optional[int] = None,
     ) -> Dict[str, Any]:
-        messages = self._prepare_messages(conversation_history, prompt, prompt_max_chars=prompt_max_chars)
+        messages, provider_debug = self._prepare_messages(
+            conversation_history,
+            prompt,
+            prompt_max_chars=prompt_max_chars,
+        )
         max_tokens_int = max(1, int(max_tokens or 1))
         payload = {
             "messages": messages,
@@ -185,6 +199,7 @@ class AIHubProvider(BaseLLMProvider):
                 "model": model,
                 "tokens_used": usage.get("totalTokens", 0),
                 "finish_reason": data.get("finishReason", "stop"),
+                "provider_debug": provider_debug,
             }
         except Exception as e:
             logger.error("AI HUB generation error: %s", e, exc_info=True)
@@ -200,7 +215,11 @@ class AIHubProvider(BaseLLMProvider):
         conversation_history: Optional[List[Dict[str, str]]] = None,
         prompt_max_chars: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
-        messages = self._prepare_messages(conversation_history, prompt, prompt_max_chars=prompt_max_chars)
+        messages, _provider_debug = self._prepare_messages(
+            conversation_history,
+            prompt,
+            prompt_max_chars=prompt_max_chars,
+        )
         max_tokens_int = max(1, int(max_tokens or 1))
         payload_stream = {
             "messages": messages,

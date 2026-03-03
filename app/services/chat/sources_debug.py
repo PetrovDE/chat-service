@@ -149,6 +149,52 @@ def build_top_chunks_debug(context_documents: List[Dict[str, Any]], max_items: i
     return rows
 
 
+def _row_range_key(meta: Dict[str, Any]) -> Tuple[str, str]:
+    file_id = str(meta.get("file_id") or meta.get("source") or meta.get("filename") or "unknown")
+    sheet = str(meta.get("sheet_name") or "")
+    return file_id, sheet
+
+
+def build_row_coverage_stats(context_documents: List[Dict[str, Any]]) -> Dict[str, Any]:
+    expected_per_key: Dict[Tuple[str, str], int] = {}
+    ranges_per_key: Dict[Tuple[str, str], List[Tuple[int, int]]] = {}
+
+    for doc in context_documents:
+        meta = doc.get("metadata") or {}
+        key = _row_range_key(meta)
+
+        row_start = to_int(meta.get("row_start"))
+        row_end = to_int(meta.get("row_end"))
+        total_rows = to_int(meta.get("total_rows"))
+
+        if row_start is not None and row_end is not None:
+            start = min(row_start, row_end)
+            end = max(row_start, row_end)
+            ranges_per_key.setdefault(key, []).append((start, end))
+            expected_per_key[key] = max(expected_per_key.get(key, 0), end)
+
+        if total_rows is not None and total_rows > 0:
+            expected_per_key[key] = max(expected_per_key.get(key, 0), total_rows)
+
+    rows_expected_total = sum(max(0, v) for v in expected_per_key.values())
+    rows_retrieved_total = 0
+    merged_ranges: Dict[str, List[Tuple[int, int]]] = {}
+
+    for key, ranges in ranges_per_key.items():
+        merged = merge_ranges(ranges)
+        rows_retrieved_total += sum((end - start + 1) for start, end in merged)
+        key_str = f"{key[0]}::{key[1]}"
+        merged_ranges[key_str] = merged
+
+    ratio = float(rows_retrieved_total / rows_expected_total) if rows_expected_total > 0 else 0.0
+    return {
+        "rows_expected_total": int(rows_expected_total),
+        "rows_retrieved_total": int(rows_retrieved_total),
+        "row_coverage_ratio": ratio,
+        "row_ranges_merged": merged_ranges,
+    }
+
+
 def estimate_text_tokens(text: str) -> int:
     # Fast, provider-agnostic approximation for observability/debug.
     if not text:
@@ -162,6 +208,7 @@ def build_standard_rag_debug_payload(
     context_docs: List[Dict[str, Any]],
     rag_sources: List[str],
     llm_tokens_used: Optional[int],
+    provider_debug: Optional[Dict[str, Any]] = None,
     max_items: int = 8,
 ) -> Dict[str, Any]:
     payload = dict(rag_debug or {})
@@ -182,6 +229,29 @@ def build_standard_rag_debug_payload(
     payload["avg_score"] = float(avg_score)
     payload["context_tokens"] = int(context_tokens)
     payload["llm_tokens_used"] = llm_tokens_used
+
+    row_stats = build_row_coverage_stats(context_docs)
+    rows_expected = payload.get("rows_expected_total", row_stats["rows_expected_total"])
+    rows_retrieved = payload.get("rows_retrieved_total", row_stats["rows_retrieved_total"])
+    rows_used_map = payload.get("rows_used_map_total", rows_retrieved)
+    rows_used_reduce = payload.get("rows_used_reduce_total", rows_used_map)
+    payload["rows_expected_total"] = int(rows_expected or 0)
+    payload["rows_retrieved_total"] = int(rows_retrieved or 0)
+    payload["rows_used_map_total"] = int(rows_used_map or 0)
+    payload["rows_used_reduce_total"] = int(rows_used_reduce or 0)
+    if payload.get("rows_expected_total", 0):
+        payload["row_coverage_ratio"] = float(
+            payload.get("rows_used_reduce_total", 0) / max(1, payload.get("rows_expected_total", 0))
+        )
+    else:
+        payload["row_coverage_ratio"] = float(row_stats["row_coverage_ratio"])
+
+    debug_info = provider_debug if isinstance(provider_debug, dict) else payload.get("provider_debug")
+    if isinstance(debug_info, dict):
+        payload["provider_debug"] = debug_info
+        payload["prompt_chars_before"] = int(debug_info.get("prompt_chars_before", 0) or 0)
+        payload["prompt_chars_after"] = int(debug_info.get("prompt_chars_after", 0) or 0)
+        payload["prompt_truncated"] = bool(debug_info.get("prompt_truncated", False))
     return payload
 
 

@@ -402,6 +402,7 @@ class RAGRetriever:
         return_debug: bool = False,
         query_intent: Optional[str] = None,
         rag_mode: Optional[str] = None,
+        full_file_max_chunks: Optional[int] = None,
     ) -> Union[List[Document], Tuple[List[Document], RetrievalDebug]]:
         t0 = time.perf_counter()
         query = (query or "").strip()
@@ -424,6 +425,7 @@ class RAGRetriever:
                 conversation_id=conversation_id,
                 user_id=user_id,
                 file_ids=file_ids,
+                max_chunks=full_file_max_chunks,
             )
             inc_counter("rag_retrieve_total", intent=intent, mode="full_file")
             observe_ms("rag_retrieve_duration_ms", (time.perf_counter() - t0) * 1000.0, intent=intent)
@@ -604,6 +606,7 @@ class RAGRetriever:
         score_threshold: Optional[float] = None,
         debug_return: bool = False,
         rag_mode: Optional[str] = None,
+        full_file_max_chunks: Optional[int] = None,
     ) -> Any:
         intent = self._resolve_intent(
             query=query,
@@ -626,6 +629,7 @@ class RAGRetriever:
                 return_debug=False,
                 query_intent=intent,
                 rag_mode=rag_mode,
+                full_file_max_chunks=full_file_max_chunks,
             )
             return [
                 {
@@ -650,6 +654,7 @@ class RAGRetriever:
             return_debug=True,
             query_intent=intent,
             rag_mode=rag_mode,
+            full_file_max_chunks=full_file_max_chunks,
         )
         full_file_limit_hit = False
         full_file_max_chunks = None

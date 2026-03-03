@@ -1,5 +1,6 @@
 ﻿import asyncio
 import json
+import re
 import uuid
 from types import SimpleNamespace
 
@@ -244,6 +245,159 @@ def test_full_file_prompt_preserves_all_retrieved_chunks(monkeypatch):
     assert rag_sources[0] == "table.xlsx | sheet=Sheet1 | rows=1-300"
 
 
+def test_full_file_row_coverage_debug_fields(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                embedding_model="local:nomic-embed-text:latest",
+                chunks_count=4,
+                is_processed="completed",
+                original_filename="table.xlsx",
+            )
+        ]
+
+    async def fake_query_rag(
+        query,  # noqa: ARG001
+        top_k=5,  # noqa: ARG001
+        fetch_k=None,  # noqa: ARG001
+        conversation_id=None,  # noqa: ARG001
+        user_id=None,  # noqa: ARG001
+        file_ids=None,  # noqa: ARG001
+        embedding_mode="local",  # noqa: ARG001
+        embedding_model=None,  # noqa: ARG001
+        score_threshold=None,  # noqa: ARG001
+        debug_return=False,  # noqa: ARG001
+        rag_mode=None,  # noqa: ARG001
+    ):
+        docs = []
+        for idx in range(4):
+            docs.append(
+                {
+                    "content": f"chunk-{idx}",
+                    "metadata": {
+                        "file_id": str(file_id),
+                        "chunk_index": idx,
+                        "filename": "table.xlsx",
+                        "sheet_name": "Sheet1",
+                        "row_start": idx * 25 + 1,
+                        "row_end": (idx + 1) * 25,
+                        "total_rows": 100,
+                    },
+                    "similarity_score": 1.0,
+                    "distance": 0.0,
+                }
+            )
+        return {
+            "docs": docs,
+            "debug": {"intent": "analyze_full_file", "retrieval_mode": "full_file"},
+        }
+
+    async def fake_map_reduce(**kwargs):
+        return "full-file prompt", {
+            "enabled": True,
+            "truncated_batches": False,
+            "rows_used_map_total": 100,
+            "rows_used_reduce_total": 95,
+            "batch_diagnostics": [
+                {
+                    "batch_index": 1,
+                    "batch_rows_start_end": [{"sheet_name": "Sheet1", "row_start": 1, "row_end": 100}],
+                    "batch_input_chars": 2048,
+                    "batch_output_chars": 512,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
+    monkeypatch.setattr(rag_builder, "build_full_file_map_reduce_prompt", fake_map_reduce)
+
+    _, rag_used, rag_debug, context_docs, _, _ = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="analyze full file",
+            top_k=8,
+            model_source="local",
+            rag_mode="full_file",
+        )
+    )
+
+    assert rag_used is True
+    assert len(context_docs) == 4
+    assert rag_debug["rows_expected_total"] == 100
+    assert rag_debug["rows_retrieved_total"] == 100
+    assert rag_debug["rows_used_map_total"] == 100
+    assert rag_debug["rows_used_reduce_total"] == 95
+    assert rag_debug["row_coverage_ratio"] == 0.95
+    assert rag_debug["full_file_map_reduce"]["batch_diagnostics"][0]["batch_input_chars"] == 2048
+
+
+def test_tabular_intent_routes_to_sql_path(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                embedding_model="local:nomic-embed-text:latest",
+                file_type="xlsx",
+                chunks_count=12,
+                is_processed="completed",
+                original_filename="table.xlsx",
+                custom_metadata={"tabular_sidecar": {"path": "D:/tmp/sidecar.sqlite", "tables": [{"table_name": "sheet_1"}]}},
+            )
+        ]
+
+    async def fake_tabular_sql_path(*, query, files):  # noqa: ARG001
+        return {
+            "prompt_context": "Deterministic tabular SQL result (source of truth): sql=SELECT COUNT(*) FROM sheet_1 result=308",
+            "debug": {"retrieval_mode": "tabular_sql", "intent": "tabular_aggregate", "deterministic_path": True},
+            "sources": ["table.xlsx | table=sheet_1 | sql"],
+            "rows_expected_total": 308,
+            "rows_retrieved_total": 308,
+            "rows_used_map_total": 308,
+            "rows_used_reduce_total": 308,
+            "row_coverage_ratio": 1.0,
+        }
+
+    async def fail_query_rag(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("query_rag should not be used for deterministic tabular aggregate path")
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder, "execute_tabular_sql_path", fake_tabular_sql_path)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fail_query_rag)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Сколько всего строк в таблице?",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is True
+    assert context_docs == []
+    assert rag_caveats == []
+    assert rag_sources == ["table.xlsx | table=sheet_1 | sql"]
+    assert rag_debug["retrieval_mode"] == "tabular_sql"
+    assert rag_debug["deterministic_path"] is True
+    assert rag_debug["row_coverage_ratio"] == 1.0
+    assert "Deterministic tabular SQL result" in final_prompt
+
+
 def test_query_language_policy_applied_without_user():
     final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
         rag_builder.build_rag_prompt(
@@ -300,6 +454,73 @@ def test_full_file_small_context_uses_direct_strategy(monkeypatch):
     assert meta["enabled"] is True
     assert meta["strategy"] == "direct_context"
     assert meta["covered_chunks"] == 16
+    assert meta["batch_diagnostics"]
+    assert meta["batch_diagnostics"][0]["batch_rows_start_end"]
+    assert meta["batch_diagnostics"][0]["batch_input_chars"] > 0
     assert "Full retrieved context" in prompt
     assert "chunk=15" in prompt
+
+
+def test_full_file_map_reduce_structured_preserves_ranges(monkeypatch):
+    docs = []
+    for idx, (row_start, row_end) in enumerate([(1, 50), (51, 100), (101, 150), (151, 200)]):
+        docs.append(
+            {
+                "content": f"Row range {row_start}-{row_end}",
+                "metadata": {
+                    "file_id": "f1",
+                    "chunk_index": idx,
+                    "filename": "sheet.xlsx",
+                    "sheet_name": "Sheet1",
+                    "row_start": row_start,
+                    "row_end": row_end,
+                    "total_rows": 200,
+                },
+            }
+        )
+
+    async def fake_generate_response(**kwargs):
+        prompt = kwargs.get("prompt") or ""
+        ranges = re.findall(r"rows=(\d+)-(\d+)", prompt)
+        row_ranges = [
+            {
+                "file_key": "f1",
+                "sheet_name": "Sheet1",
+                "row_start": int(start),
+                "row_end": int(end),
+            }
+            for start, end in ranges
+        ]
+        payload = {
+            "facts": ["batch fact"],
+            "aggregates": ["sum=100"],
+            "row_ranges_covered": row_ranges,
+            "missing_data": [],
+        }
+        return {"response": json.dumps(payload)}
+
+    monkeypatch.setattr(full_file_analysis.settings, "FULL_FILE_DIRECT_CONTEXT_MAX_CHUNKS", 1)
+    monkeypatch.setattr(full_file_analysis.settings, "FULL_FILE_DIRECT_CONTEXT_MAX_CHARS", 1000)
+    monkeypatch.setattr(full_file_analysis.settings, "FULL_FILE_MAP_BATCH_MAX_DOCS", 2)
+    monkeypatch.setattr(full_file_analysis.settings, "FULL_FILE_MAP_BATCH_MAX_CHARS", 10000)
+    monkeypatch.setattr(full_file_analysis.settings, "FULL_FILE_REDUCE_CONTEXT_MAX_CHARS", 12000)
+    monkeypatch.setattr(full_file_analysis.settings, "FULL_FILE_MAP_MAX_TOKENS", 900)
+    monkeypatch.setattr(full_file_analysis.llm_manager, "generate_response", fake_generate_response)
+
+    prompt, meta = asyncio.run(
+        build_full_file_map_reduce_prompt(
+            query="Сделай анализ по всем строкам",
+            context_documents=docs,
+            preferred_lang="ru",
+            model_source="local",
+            model_name="llama",
+            prompt_max_chars=None,
+        )
+    )
+
+    assert meta["strategy"] == "structured_map_reduce"
+    assert meta["rows_used_map_total"] == 200
+    assert meta["rows_used_reduce_total"] == 200
+    assert meta["structured_reduce"]["row_ranges_covered"]
+    assert "Structured reduce JSON" in prompt
 

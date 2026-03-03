@@ -21,8 +21,8 @@ docker compose -f docker-compose.db.yml up -d
 ```
 3. Заполнить `.env` минимумом:
 ```env
-DATABASE_URL=postgresql+asyncpg://llama_chat_user:1306@localhost:5432/llama_chat_db
-ALEMBIC_DATABASE_URL=postgresql://llama_chat_user:1306@localhost:5432/llama_chat_db
+DATABASE_URL=postgresql+asyncpg://llama_chat_user:5432@localhost:5432/llama_chat_db
+ALEMBIC_DATABASE_URL=postgresql://llama_chat_user:5432@localhost:5432/llama_chat_db
 JWT_SECRET_KEY=change-me
 ```
 4. Применить миграции:

@@ -80,7 +80,12 @@ def _group_files_by_embedding_config(
     return groups
 
 
-def _merge_context_docs(docs: List[Dict[str, Any]], max_docs: int = 64) -> List[Dict[str, Any]]:
+def _merge_context_docs(
+    docs: List[Dict[str, Any]],
+    max_docs: int = 64,
+    *,
+    sort_by_score: bool = True,
+) -> List[Dict[str, Any]]:
     if not docs:
         return []
 
@@ -99,8 +104,9 @@ def _merge_context_docs(docs: List[Dict[str, Any]], max_docs: int = 64) -> List[
         seen.add(key)
         merged.append(d)
 
-    merged.sort(key=lambda x: float(x.get("similarity_score", 0.0)), reverse=True)
-    return merged[:max_docs]
+    if sort_by_score:
+        merged.sort(key=lambda x: float(x.get("similarity_score", 0.0)), reverse=True)
+    return merged[:max_docs] if max_docs and max_docs > 0 else merged
 
 
 def _build_rag_conversation_memory(history: List[Dict[str, str]], max_messages: int = 6) -> List[Dict[str, str]]:
@@ -118,10 +124,15 @@ def _build_sources_list(context_documents: List[Dict[str, Any]], max_items: int 
         filename = str(meta.get("filename") or meta.get("source") or "unknown")
         sheet = meta.get("sheet_name")
         chunk_index = meta.get("chunk_index", "?")
+        row_start = meta.get("row_start")
+        row_end = meta.get("row_end")
+        row_part = ""
+        if row_start is not None and row_end is not None:
+            row_part = f" | rows={row_start}-{row_end}"
         if sheet:
-            src = f"{filename} | sheet={sheet} | chunk={chunk_index}"
+            src = f"{filename} | sheet={sheet} | chunk={chunk_index}{row_part}"
         else:
-            src = f"{filename} | chunk={chunk_index}"
+            src = f"{filename} | chunk={chunk_index}{row_part}"
         if src in seen:
             continue
         seen.add(src)
@@ -133,7 +144,8 @@ def _build_sources_list(context_documents: List[Dict[str, Any]], max_items: int 
 
 def _build_top_chunks_debug(context_documents: List[Dict[str, Any]], max_items: int = 8) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    for d in context_documents[:max_items]:
+    docs = context_documents if (max_items is None or max_items <= 0) else context_documents[:max_items]
+    for d in docs:
         meta = d.get("metadata") or {}
         file_id = str(meta.get("file_id") or "")
         chunk_index = meta.get("chunk_index")
@@ -149,6 +161,9 @@ def _build_top_chunks_debug(context_documents: List[Dict[str, Any]], max_items: 
                 "filename": str(meta.get("filename") or meta.get("source") or "unknown"),
                 "sheet_name": meta.get("sheet_name"),
                 "chunk_index": chunk_index,
+                "row_start": meta.get("row_start"),
+                "row_end": meta.get("row_end"),
+                "total_rows": meta.get("total_rows"),
                 "preview": (d.get("content") or "")[:220],
             }
         )
@@ -180,8 +195,11 @@ def _build_standard_rag_debug_payload(
     context_tokens = sum(_estimate_text_tokens((d.get("content") or "")) for d in context_docs)
     payload["filters"] = payload.get("filters") or payload.get("where")
     payload["top_chunks"] = top_chunks
+    payload["top_chunks_limit"] = max_items
+    payload["top_chunks_total"] = len(context_docs)
     payload["sources"] = rag_sources
     payload["retrieval_hits"] = int(payload.get("returned_count", len(context_docs)) or 0)
+    payload["retrieved_chunks_total"] = len(context_docs)
     payload["avg_score"] = float(avg_score)
     payload["context_tokens"] = int(context_tokens)
     payload["llm_tokens_used"] = llm_tokens_used
@@ -211,6 +229,15 @@ def _build_rag_caveats(
         caveats.append("Some files were indexed partially: " + "; ".join(partial_files[:5]))
     if not context_documents:
         caveats.append("No relevant chunks were retrieved for this query.")
+    coverage = rag_debug.get("coverage") if isinstance(rag_debug, dict) and isinstance(rag_debug.get("coverage"), dict) else {}
+    if coverage:
+        expected = int(coverage.get("expected_chunks", 0) or 0)
+        retrieved = int(coverage.get("retrieved_chunks", 0) or 0)
+        complete = bool(coverage.get("complete", False))
+        if expected > 0 and not complete:
+            caveats.append(
+                f"Full-file coverage is incomplete: retrieved {retrieved}/{expected} chunks."
+            )
     if isinstance(rag_debug, dict) and rag_debug.get("truncated"):
         caveats.append("Context was truncated by retrieval limits; answer may be incomplete.")
     return caveats
@@ -501,24 +528,39 @@ async def _build_full_file_map_reduce_prompt(
 
     partials: List[str] = []
     processed_batches = 0
+    covered_chunks = 0
     for i, batch in enumerate(batches[:max_batches], start=1):
         chunk_lines: List[str] = []
         for j, d in enumerate(batch, start=1):
             meta = d.get("metadata") or {}
-            filename = meta.get("filename") or "unknown"
+            filename = meta.get("filename") or meta.get("source") or "unknown"
             chunk_index = meta.get("chunk_index", "?")
+            sheet_name = meta.get("sheet_name")
+            row_start = meta.get("row_start")
+            row_end = meta.get("row_end")
+            total_rows = meta.get("total_rows")
             content = (d.get("content") or "").strip()
             if not content:
                 continue
-            chunk_lines.append(f"[{j}] file={filename} chunk={chunk_index}\n{content}")
+            label_parts = [f"file={filename}", f"chunk={chunk_index}"]
+            if sheet_name:
+                label_parts.append(f"sheet={sheet_name}")
+            if row_start is not None and row_end is not None:
+                rows = f"{row_start}-{row_end}"
+                if total_rows is not None:
+                    rows = f"{rows}/{total_rows}"
+                label_parts.append(f"rows={rows}")
+            chunk_lines.append(f"[{j}] " + " ".join(label_parts) + f"\n{content}")
 
         if not chunk_lines:
             continue
         processed_batches += 1
+        covered_chunks += len(chunk_lines)
 
         map_prompt = (
-            "You are summarizing one batch of a large document.\n"
-            "Extract key facts relevant to the user question.\n"
+            "You are summarizing one batch of a large document for full-file analysis.\n"
+            "Extract key facts relevant to the user question and preserve important numeric values.\n"
+            "For tabular data, explicitly include row ranges and notable outliers/trends in this batch.\n"
             "If the batch has no relevant facts, explicitly say so.\n"
             "Be concise and factual.\n\n"
             f"User question:\n{query}\n\n"
@@ -596,6 +638,7 @@ async def _build_full_file_map_reduce_prompt(
         "max_batches": max_batches,
         "truncated_batches": bool(truncated_batches or reduce_meta.get("truncated")),
         "partials_count": len(partials),
+        "covered_chunks": covered_chunks,
         "fallback_to_query": False,
         "hierarchical_reduce": reduce_meta,
     }
@@ -691,7 +734,19 @@ async def _try_build_rag_prompt(
             collected_docs.extend(docs)
             debug_groups.append(dbg)
 
-        context_docs = _merge_context_docs(collected_docs, max_docs=max(top_k * 4, 32))
+        is_full_file_mode = any(
+            isinstance(dbg, dict) and (
+                dbg.get("retrieval_mode") == "full_file"
+                or dbg.get("intent") == "analyze_full_file"
+            )
+            for dbg in debug_groups
+        )
+        max_docs = int(settings.RAG_FULL_FILE_MAX_CHUNKS) if is_full_file_mode else max(top_k * 4, 32)
+        context_docs = _merge_context_docs(
+            collected_docs,
+            max_docs=max_docs,
+            sort_by_score=not is_full_file_mode,
+        )
         rag_debug = (debug_groups[0] if debug_groups else {}) if isinstance(debug_groups, list) else {}
         if not isinstance(rag_debug, dict):
             rag_debug = {}
@@ -709,6 +764,16 @@ async def _try_build_rag_prompt(
         rag_debug["group_count"] = len(groups)
         # Keep debug payload JSON-serializable and avoid self-references.
         rag_debug["group_debug"] = [deepcopy(d) if isinstance(d, dict) else d for d in debug_groups]
+        expected_chunks_total = sum(int(getattr(f, "chunks_count", 0) or 0) for f in files)
+        retrieved_chunks_total = len(context_docs)
+        coverage_ratio = (float(retrieved_chunks_total / expected_chunks_total) if expected_chunks_total > 0 else 0.0)
+        rag_debug["retrieved_chunks_total"] = retrieved_chunks_total
+        rag_debug["coverage"] = {
+            "expected_chunks": expected_chunks_total,
+            "retrieved_chunks": retrieved_chunks_total,
+            "ratio": coverage_ratio,
+            "complete": bool(expected_chunks_total == 0 or retrieved_chunks_total >= expected_chunks_total),
+        }
 
         if context_docs:
             retrieval_mode = (rag_debug or {}).get("retrieval_mode") if isinstance(rag_debug, dict) else None
@@ -727,6 +792,8 @@ async def _try_build_rag_prompt(
                     map_reduce_meta.get("truncated_batches")
                     or rag_debug.get("full_file_limit_hit")
                 )
+                if not rag_debug.get("coverage", {}).get("complete", True):
+                    rag_debug["truncated"] = True
             else:
                 final_prompt = rag_retriever.build_context_prompt(query=query, context_documents=context_docs)
 
@@ -842,12 +909,13 @@ class ChatOrchestrator:
                     "rag_debug": rag_debug,
                 }
                 if chat_data.rag_debug:
+                    debug_max_items = 64 if isinstance(rag_debug, dict) and rag_debug.get("retrieval_mode") == "full_file" else 8
                     start_payload["rag_debug"] = _build_standard_rag_debug_payload(
                         rag_debug=rag_debug,
                         context_docs=context_docs,
                         rag_sources=rag_sources,
                         llm_tokens_used=None,
-                        max_items=8,
+                        max_items=debug_max_items,
                     )
                 try:
                     start_payload_json = json.dumps(start_payload)
@@ -996,6 +1064,16 @@ class ChatOrchestrator:
             tokens_used=result.get("tokens_used"),
             generation_time=generation_time,
         )
+        rag_debug_payload = None
+        if chat_data.rag_debug:
+            debug_max_items = 64 if isinstance(rag_debug, dict) and rag_debug.get("retrieval_mode") == "full_file" else 8
+            rag_debug_payload = _build_standard_rag_debug_payload(
+                rag_debug=rag_debug,
+                context_docs=context_docs,
+                rag_sources=rag_sources,
+                llm_tokens_used=result.get("tokens_used"),
+                max_items=debug_max_items,
+            )
 
         return ChatResponse(
             response=result["response"],
@@ -1007,17 +1085,7 @@ class ChatOrchestrator:
             summary=summary_text,
             caveats=rag_caveats,
             sources=rag_sources,
-            rag_debug=(
-                _build_standard_rag_debug_payload(
-                    rag_debug=rag_debug,
-                    context_docs=context_docs,
-                    rag_sources=rag_sources,
-                    llm_tokens_used=result.get("tokens_used"),
-                    max_items=8,
-                )
-                if chat_data.rag_debug
-                else None
-            ),
+            rag_debug=rag_debug_payload,
         )
 
 

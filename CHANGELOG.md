@@ -11,6 +11,13 @@
 - В sidebar чатов `Del` заменён на отдельную заметную кнопку удаления с иконкой корзины справа от строки чата.
 - Блок `RAG debug` под сообщением больше не отображается при выключенном флаге: debug-мета показывается только если запрос отправлен с `rag_debug=true`.
 
+### Backend RAG (2026-03-03)
+- `full_file` retrieval: removed post-retrieval squeeze to hybrid limit (`top_k*4`); full retrieved set is preserved within `RAG_FULL_FILE_MAX_CHUNKS`.
+- Added full-file coverage diagnostics in debug: `retrieved_chunks_total`, `coverage.expected_chunks`, `coverage.retrieved_chunks`, `coverage.ratio`, `coverage.complete`.
+- Added explicit incomplete-coverage signal: when `retrieved < expected`, `truncated=true` and caveat about incomplete analysis.
+- Extended tabular debug/source metadata: `row_start`, `row_end`, `total_rows`; sources now include `rows=<start>-<end>` when available.
+- Updated full-file map-reduce prompts for table batches to preserve row ranges and numeric signals (outliers/trends).
+
 ## [1.0.0] - 2025-10-16
 
 ### Добавлено

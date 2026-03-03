@@ -154,3 +154,88 @@ def test_mixed_group_partial_failure_fallback(monkeypatch):
     assert rag_debug["mixed_embeddings"] is True
     assert isinstance(rag_caveats, list)
     assert isinstance(rag_sources, list)
+
+
+def test_full_file_prompt_preserves_all_retrieved_chunks(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    total_chunks = 60
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                embedding_model="local:nomic-embed-text:latest",
+                chunks_count=total_chunks,
+                is_processed="completed",
+                original_filename="table.xlsx",
+            )
+        ]
+
+    async def fake_query_rag(
+        query,  # noqa: ARG001
+        top_k=5,  # noqa: ARG001
+        fetch_k=None,  # noqa: ARG001
+        conversation_id=None,  # noqa: ARG001
+        user_id=None,  # noqa: ARG001
+        file_ids=None,  # noqa: ARG001
+        embedding_mode="local",  # noqa: ARG001
+        embedding_model=None,  # noqa: ARG001
+        score_threshold=None,  # noqa: ARG001
+        debug_return=False,  # noqa: ARG001
+        rag_mode=None,  # noqa: ARG001
+    ):
+        docs = []
+        for idx in range(total_chunks):
+            row_start = idx * 5 + 1
+            row_end = min((idx + 1) * 5, 300)
+            docs.append(
+                {
+                    "content": f"chunk-{idx}",
+                    "metadata": {
+                        "file_id": str(file_id),
+                        "chunk_index": idx,
+                        "filename": "table.xlsx",
+                        "sheet_name": "Sheet1",
+                        "row_start": row_start,
+                        "row_end": row_end,
+                        "total_rows": 300,
+                    },
+                    "similarity_score": 1.0,
+                    "distance": 0.0,
+                }
+            )
+        return {
+            "docs": docs,
+            "debug": {"intent": "analyze_full_file", "retrieval_mode": "full_file"},
+        }
+
+    async def fake_map_reduce(**kwargs):
+        docs = kwargs.get("context_documents") or []
+        return "full-file prompt", {"enabled": True, "truncated_batches": False, "covered_chunks": len(docs)}
+
+    monkeypatch.setattr(chat_service.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(chat_service.rag_retriever, "query_rag", fake_query_rag)
+    monkeypatch.setattr(chat_service, "_build_full_file_map_reduce_prompt", fake_map_reduce)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        chat_service._try_build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="analyze full file",
+            top_k=8,
+            model_source="local",
+            rag_mode="full_file",
+        )
+    )
+
+    assert rag_used is True
+    assert final_prompt == "full-file prompt"
+    assert len(context_docs) == total_chunks
+    assert rag_debug["coverage"]["complete"] is True
+    assert rag_debug["retrieved_chunks_total"] == total_chunks
+    assert rag_debug["truncated"] is False
+    assert not rag_caveats
+    assert rag_sources

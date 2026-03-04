@@ -37,7 +37,41 @@ logger = logging.getLogger(__name__)
 
 class ChatOrchestrator:
     @staticmethod
+    def _default_route_telemetry() -> Dict[str, Any]:
+        return {
+            "model_route": "aihub_primary",
+            "fallback_reason": "none",
+            "fallback_allowed": False,
+            "fallback_policy_version": settings.LLM_FALLBACK_POLICY_VERSION,
+        }
+
+    @staticmethod
+    def _planner_requires_clarification(ctx: Dict[str, Any]) -> bool:
+        rag_debug = ctx.get("rag_debug")
+        if not isinstance(rag_debug, dict):
+            return False
+        if bool(rag_debug.get("requires_clarification", False)):
+            return True
+        planner_decision = rag_debug.get("planner_decision")
+        return bool(isinstance(planner_decision, dict) and planner_decision.get("requires_clarification", False))
+
+    @staticmethod
+    def _clarification_text(ctx: Dict[str, Any]) -> str:
+        rag_debug = ctx.get("rag_debug")
+        if isinstance(rag_debug, dict):
+            value = str(rag_debug.get("clarification_prompt") or "").strip()
+            if value:
+                return value
+            planner_decision = rag_debug.get("planner_decision")
+            if isinstance(planner_decision, dict):
+                value = str(planner_decision.get("clarification_prompt") or "").strip()
+                if value:
+                    return value
+        return str(ctx.get("final_prompt") or "").strip()
+
+    @staticmethod
     def _build_generation_kwargs(*, chat_data: ChatMessage, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        sla_tier = str(chat_data.sla_tier or "").strip().lower()
         return {
             "prompt": ctx["final_prompt"],
             "model_source": chat_data.model_source,
@@ -46,6 +80,9 @@ class ChatOrchestrator:
             "max_tokens": chat_data.max_tokens or 2000,
             "conversation_history": ctx["history_for_generation"],
             "prompt_max_chars": chat_data.prompt_max_chars,
+            "cannot_wait": bool(chat_data.cannot_wait),
+            "sla_critical": sla_tier == "critical",
+            "policy_class": chat_data.policy_class,
         }
 
     @staticmethod
@@ -134,8 +171,8 @@ class ChatOrchestrator:
 
         conv_data = ConversationCreate(
             title=chat_data.message[:100] if len(chat_data.message) <= 100 else chat_data.message[:97] + "...",
-            model_source=chat_data.model_source or "ollama",
-            model_name=chat_data.model_name or llm_manager.ollama_model,
+            model_source=chat_data.model_source or "aihub",
+            model_name=chat_data.model_name or llm_manager.aihub_model,
         )
         return await crud_conversation.create_for_user(db=db, obj_in=conv_data, user_id=user_id)
 
@@ -224,14 +261,81 @@ class ChatOrchestrator:
             full_response = ""
             start_time = datetime.utcnow()
             summary_text: Optional[str] = None
+            route_telemetry: Dict[str, Any] = self._default_route_telemetry()
 
             try:
+                if self._planner_requires_clarification(ctx):
+                    clarification_text = self._clarification_text(ctx)
+                    full_response = clarification_text
+                    start_payload = {
+                        "type": "start",
+                        "conversation_id": str(conversation_id),
+                        "message_id": str(assistant_message_id),
+                        "rag_enabled": ctx["rag_used"],
+                        "rag_debug": ctx["rag_debug"],
+                        **route_telemetry,
+                    }
+                    if chat_data.rag_debug:
+                        start_payload["rag_debug"] = self._build_rag_debug_payload(
+                            rag_debug=ctx["rag_debug"],
+                            context_docs=ctx["context_docs"],
+                            rag_sources=ctx["rag_sources"],
+                            llm_tokens_used=None,
+                            provider_debug=None,
+                        )
+                    try:
+                        start_payload_json = json.dumps(start_payload)
+                    except ValueError:
+                        logger.warning(
+                            "RAG start payload is not JSON-serializable; sending reduced debug payload",
+                            exc_info=True,
+                        )
+                        start_payload["rag_debug"] = {"serialization_error": True}
+                        start_payload_json = json.dumps(start_payload)
+                    yield f"data: {start_payload_json}\n\n"
+
+                    if clarification_text:
+                        yield f"data: {json.dumps({'type': 'chunk', 'content': clarification_text})}\n\n"
+
+                    generation_time = (datetime.utcnow() - start_time).total_seconds()
+                    await crud_message.create_message(
+                        db=db,
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=clarification_text,
+                        model_name=chat_data.model_name or "planner_clarification",
+                        temperature=chat_data.temperature,
+                        max_tokens=chat_data.max_tokens,
+                        generation_time=generation_time,
+                    )
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "done",
+                                "generation_time": generation_time,
+                                "rag_used": ctx["rag_used"],
+                                "summary_available": False,
+                                "caveats": ctx["rag_caveats"],
+                                "sources": ctx["rag_sources"],
+                                **route_telemetry,
+                            }
+                        )
+                        + "\n\n"
+                    )
+                    return
+
+                generation_kwargs = self._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
+                routed_stream = await llm_manager.create_routed_stream(**generation_kwargs)
+                route_telemetry = dict(routed_stream.telemetry.as_dict())
+
                 start_payload = {
                     "type": "start",
                     "conversation_id": str(conversation_id),
                     "message_id": str(assistant_message_id),
                     "rag_enabled": ctx["rag_used"],
                     "rag_debug": ctx["rag_debug"],
+                    **route_telemetry,
                 }
                 if chat_data.rag_debug:
                     start_payload["rag_debug"] = self._build_rag_debug_payload(
@@ -249,10 +353,11 @@ class ChatOrchestrator:
                     start_payload_json = json.dumps(start_payload)
                 yield f"data: {start_payload_json}\n\n"
 
-                generation_kwargs = self._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
-                async for chunk in llm_manager.generate_response_stream(**generation_kwargs):
+                async for chunk in routed_stream.stream:
                     full_response += chunk
                     yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
+
+                route_telemetry = dict(routed_stream.telemetry.as_dict())
 
                 generation_time = (datetime.utcnow() - start_time).total_seconds()
                 postprocess = await self._postprocess_generated_answer(
@@ -287,6 +392,7 @@ class ChatOrchestrator:
                             "summary_available": bool(summary_text),
                             "caveats": ctx["rag_caveats"],
                             "sources": ctx["rag_sources"],
+                            **route_telemetry,
                         }
                     )
                     + "\n\n"
@@ -294,7 +400,13 @@ class ChatOrchestrator:
 
             except Exception as exc:
                 logger.error("Streaming error: %s", exc, exc_info=True)
-                yield f"data: {json.dumps({'type': 'error', 'message': str(exc), 'error_type': type(exc).__name__})}\n\n"
+                error_payload = {
+                    "type": "error",
+                    "message": str(exc),
+                    "error_type": type(exc).__name__,
+                    **route_telemetry,
+                }
+                yield f"data: {json.dumps(error_payload)}\n\n"
 
         return StreamingResponse(
             event_stream(),
@@ -317,6 +429,49 @@ class ChatOrchestrator:
         conversation_id = ctx["conversation_id"]
 
         start_time = datetime.utcnow()
+        if self._planner_requires_clarification(ctx):
+            response_text = self._clarification_text(ctx)
+            generation_time = (datetime.utcnow() - start_time).total_seconds()
+            assistant_message = await crud_message.create_message(
+                db=db,
+                conversation_id=conversation_id,
+                role="assistant",
+                content=response_text,
+                model_name=chat_data.model_name or "planner_clarification",
+                temperature=chat_data.temperature,
+                max_tokens=chat_data.max_tokens,
+                generation_time=generation_time,
+            )
+            rag_debug_payload = None
+            if chat_data.rag_debug:
+                rag_debug_payload = self._build_rag_debug_payload(
+                    rag_debug=ctx["rag_debug"],
+                    context_docs=ctx["context_docs"],
+                    rag_sources=ctx["rag_sources"],
+                    llm_tokens_used=None,
+                    provider_debug=None,
+                )
+
+            route_telemetry = self._default_route_telemetry()
+            return ChatResponse(
+                response=response_text,
+                conversation_id=conversation_id,
+                message_id=assistant_message.id,
+                model_used=chat_data.model_name or "planner_clarification",
+                model_route=str(route_telemetry.get("model_route", "aihub_primary")),
+                fallback_reason=str(route_telemetry.get("fallback_reason", "none")),
+                fallback_allowed=bool(route_telemetry.get("fallback_allowed", False)),
+                fallback_policy_version=str(
+                    route_telemetry.get("fallback_policy_version", settings.LLM_FALLBACK_POLICY_VERSION)
+                ),
+                tokens_used=None,
+                generation_time=generation_time,
+                summary=None,
+                caveats=ctx["rag_caveats"],
+                sources=ctx["rag_sources"],
+                rag_debug=rag_debug_payload,
+            )
+
         generation_kwargs = self._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
         result = await llm_manager.generate_response(**generation_kwargs)
 
@@ -360,6 +515,10 @@ class ChatOrchestrator:
             conversation_id=conversation_id,
             message_id=assistant_message.id,
             model_used=result["model"],
+            model_route=str(result.get("model_route", "aihub_primary")),
+            fallback_reason=str(result.get("fallback_reason", "none")),
+            fallback_allowed=bool(result.get("fallback_allowed", False)),
+            fallback_policy_version=str(result.get("fallback_policy_version", settings.LLM_FALLBACK_POLICY_VERSION)),
             tokens_used=result.get("tokens_used"),
             generation_time=generation_time,
             summary=summary_text,

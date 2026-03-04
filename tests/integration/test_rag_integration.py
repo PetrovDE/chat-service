@@ -4,6 +4,7 @@ import re
 import uuid
 from types import SimpleNamespace
 
+from app.observability.metrics import reset_metrics, snapshot_metrics
 from app.services.chat import rag_prompt_builder as rag_builder
 from app.services.chat import full_file_analysis
 from app.services.chat.full_file_analysis import build_full_file_map_reduce_prompt
@@ -353,7 +354,22 @@ def test_tabular_intent_routes_to_sql_path(monkeypatch):
                 chunks_count=12,
                 is_processed="completed",
                 original_filename="table.xlsx",
-                custom_metadata={"tabular_sidecar": {"path": "D:/tmp/sidecar.sqlite", "tables": [{"table_name": "sheet_1"}]}},
+                custom_metadata={
+                    "tabular_dataset": {
+                        "dataset_id": "ds-1",
+                        "dataset_version": 1,
+                        "dataset_provenance_id": "prov-1",
+                        "tables": [
+                            {
+                                "table_name": "sheet_1",
+                                "sheet_name": "Sheet1",
+                                "row_count": 308,
+                                "columns": ["city", "amount"],
+                                "column_aliases": {},
+                            }
+                        ],
+                    }
+                },
             )
         ]
 
@@ -396,6 +412,151 @@ def test_tabular_intent_routes_to_sql_path(monkeypatch):
     assert rag_debug["deterministic_path"] is True
     assert rag_debug["row_coverage_ratio"] == 1.0
     assert "Deterministic tabular SQL result" in final_prompt
+
+
+def test_tabular_sql_error_returns_clarification_without_narrative_fallback(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                embedding_model="local:nomic-embed-text:latest",
+                file_type="xlsx",
+                chunks_count=8,
+                is_processed="completed",
+                original_filename="table.xlsx",
+                custom_metadata={
+                    "tabular_dataset": {
+                        "dataset_id": "ds-1",
+                        "dataset_version": 1,
+                        "dataset_provenance_id": "prov-1",
+                        "tables": [
+                            {
+                                "table_name": "sheet_1",
+                                "sheet_name": "Sheet1",
+                                "row_count": 50,
+                                "columns": ["city", "amount"],
+                                "column_aliases": {},
+                            }
+                        ],
+                    }
+                },
+            )
+        ]
+
+    async def fake_tabular_sql_path(*, query, files):  # noqa: ARG001
+        return {
+            "status": "error",
+            "clarification_prompt": "Deterministic SQL execution timed out. Please narrow the filter and retry.",
+            "debug": {
+                "retrieval_mode": "tabular_sql",
+                "intent": "tabular_aggregate",
+                "deterministic_path": True,
+                "deterministic_error": {"code": "sql_timeout", "category": "timeout"},
+            },
+            "sources": [],
+            "rows_expected_total": 0,
+            "rows_retrieved_total": 0,
+            "rows_used_map_total": 0,
+            "rows_used_reduce_total": 0,
+            "row_coverage_ratio": 0.0,
+        }
+
+    async def fail_query_rag(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("query_rag should not be used when deterministic SQL path returns classified error")
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder, "execute_tabular_sql_path", fake_tabular_sql_path)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fail_query_rag)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Сколько всего строк в таблице?",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert context_docs == []
+    assert rag_caveats == []
+    assert rag_sources == []
+    assert "timed out" in final_prompt
+    assert rag_debug["requires_clarification"] is True
+    assert rag_debug["deterministic_error"]["code"] == "sql_timeout"
+    assert rag_debug["rag_mode_effective"] == "tabular_sql_error"
+
+
+def test_metric_critical_ambiguous_query_returns_clarification(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                embedding_model="local:nomic-embed-text:latest",
+                file_type="xlsx",
+                chunks_count=12,
+                is_processed="completed",
+                original_filename="table.xlsx",
+                custom_metadata={
+                    "tabular_dataset": {
+                        "dataset_id": "ds-1",
+                        "dataset_version": 1,
+                        "dataset_provenance_id": "prov-1",
+                        "tables": [
+                            {
+                                "table_name": "sheet_1",
+                                "sheet_name": "Sheet1",
+                                "row_count": 100,
+                                "columns": ["region", "revenue"],
+                                "column_aliases": {"revenue": "Выручка"},
+                            }
+                        ],
+                    }
+                },
+            )
+        ]
+
+    async def fail_tabular_sql_path(*, query, files):  # noqa: ARG001
+        raise AssertionError("execute_tabular_sql_path should not run for ambiguous metric-critical query")
+
+    async def fail_query_rag(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("query_rag should not run for ambiguous metric-critical query")
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder, "execute_tabular_sql_path", fail_tabular_sql_path)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fail_query_rag)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Какая средняя?",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert context_docs == []
+    assert rag_caveats == []
+    assert rag_sources == []
+    assert "Уточните" in final_prompt
+    assert rag_debug["requires_clarification"] is True
+    assert rag_debug["planner_decision"]["route"] == "deterministic_analytics"
+    assert "metric_critical_ambiguous" in rag_debug["planner_decision"]["reason_codes"]
 
 
 def test_query_language_policy_applied_without_user():
@@ -523,4 +684,102 @@ def test_full_file_map_reduce_structured_preserves_ranges(monkeypatch):
     assert meta["rows_used_reduce_total"] == 200
     assert meta["structured_reduce"]["row_ranges_covered"]
     assert "Structured reduce JSON" in prompt
+
+
+def test_rag_prompt_emits_coverage_slo_metrics(monkeypatch):
+    reset_metrics()
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                embedding_model="local:nomic-embed-text:latest",
+                file_type="xlsx",
+                chunks_count=10,
+                is_processed="completed",
+                original_filename="sheet.xlsx",
+                custom_metadata={},
+            )
+        ]
+
+    async def fake_query_rag(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return {
+            "docs": [
+                {
+                    "content": "row 1-20",
+                    "metadata": {
+                        "file_id": str(file_id),
+                        "chunk_index": 0,
+                        "filename": "sheet.xlsx",
+                        "sheet_name": "Sheet1",
+                        "row_start": 1,
+                        "row_end": 20,
+                        "total_rows": 100,
+                    },
+                    "similarity_score": 0.9,
+                },
+                {
+                    "content": "row 21-40",
+                    "metadata": {
+                        "file_id": str(file_id),
+                        "chunk_index": 1,
+                        "filename": "sheet.xlsx",
+                        "sheet_name": "Sheet1",
+                        "row_start": 21,
+                        "row_end": 40,
+                        "total_rows": 100,
+                    },
+                    "similarity_score": 0.8,
+                },
+            ],
+            "debug": {"intent": "analyze_full_file", "retrieval_mode": "full_file"},
+        }
+
+    async def fake_map_reduce(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return "full-file prompt", {"enabled": True, "truncated_batches": False}
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
+
+    final_prompt, rag_used, rag_debug, _, _, _ = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Сделай полный анализ",
+            top_k=8,
+            model_source="local",
+            rag_mode="full_file",
+            full_file_prompt_builder=fake_map_reduce,
+        )
+    )
+
+    assert rag_used is True
+    assert final_prompt == "full-file prompt"
+    assert rag_debug["coverage"]["ratio"] == 0.2
+    assert rag_debug["row_coverage_ratio"] == 0.4
+
+    snap = snapshot_metrics()
+    counters = snap["counters"]
+    gauges = snap["gauges"]
+    assert any(
+        "llama_service_retrieval_coverage_events_total" in key
+        and "retrieval_mode=full_file" in key
+        for key in counters
+    )
+    assert any(
+        "llama_service_tabular_row_coverage_events_total" in key
+        and "retrieval_mode=full_file" in key
+        for key in counters
+    )
+    assert any(
+        "llama_service_retrieval_coverage_ratio" in key
+        and "retrieval_mode=full_file" in key
+        for key in gauges
+    )
 

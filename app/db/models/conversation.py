@@ -16,7 +16,7 @@ class Conversation(Base):
     # ИСПРАВЛЕНО: user_id может быть NULL для анонимных пользователей
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     title = Column(String(200), nullable=False)
-    model_source = Column(String(50), default="ollama")  # ollama, openai, corporate
+    model_source = Column(String(50), default="aihub")  # aihub primary, ollama emergency fallback
     model_name = Column(String(100))
     is_archived = Column(Boolean, default=False)
     message_count = Column(Integer, default=0)

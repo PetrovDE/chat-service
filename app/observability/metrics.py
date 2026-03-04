@@ -16,6 +16,7 @@ class TimerStat:
 _lock = Lock()
 _counters: Dict[str, int] = {}
 _timers: Dict[str, TimerStat] = {}
+_gauges: Dict[str, float] = {}
 
 
 def _make_key(name: str, labels: Dict[str, Any]) -> str:
@@ -44,9 +45,23 @@ def observe_ms(name: str, value_ms: float, **labels: Any) -> None:
             stat.max_ms = float(value_ms)
 
 
+def set_gauge(name: str, value: float, **labels: Any) -> None:
+    key = _make_key(name, labels)
+    with _lock:
+        _gauges[key] = float(value)
+
+
+def reset_metrics() -> None:
+    with _lock:
+        _counters.clear()
+        _timers.clear()
+        _gauges.clear()
+
+
 def snapshot_metrics() -> Dict[str, Dict[str, Any]]:
     with _lock:
         counters = dict(_counters)
+        gauges = dict(_gauges)
         timers = {
             k: {
                 "count": v.count,
@@ -56,7 +71,7 @@ def snapshot_metrics() -> Dict[str, Dict[str, Any]]:
             }
             for k, v in _timers.items()
         }
-    return {"counters": counters, "timers": timers}
+    return {"counters": counters, "timers": timers, "gauges": gauges}
 
 
 def _parse_metric_key(raw_key: str) -> Tuple[str, Dict[str, str]]:
@@ -103,6 +118,7 @@ def render_prometheus_metrics() -> str:
     snap = snapshot_metrics()
     counters = snap.get("counters", {})
     timers = snap.get("timers", {})
+    gauges = snap.get("gauges", {})
 
     lines = []
 
@@ -145,6 +161,18 @@ def render_prometheus_metrics() -> str:
             lines.append(f"{sum_name}{label_text} {float(value.get('total_ms', 0.0))}")
             lines.append(f"{max_name}{label_text} {float(value.get('max_ms', 0.0))}")
             lines.append(f"{avg_name}{label_text} {float(value.get('avg_ms', 0.0))}")
+
+    grouped_gauges: Dict[str, list] = {}
+    for raw_key, value in gauges.items():
+        name, labels = _parse_metric_key(raw_key)
+        metric_name = _sanitize_metric_name(name)
+        grouped_gauges.setdefault(metric_name, []).append((labels, float(value)))
+
+    for metric_name in sorted(grouped_gauges.keys()):
+        lines.append(f"# HELP {metric_name} In-memory gauge metric.")
+        lines.append(f"# TYPE {metric_name} gauge")
+        for labels, value in sorted(grouped_gauges[metric_name], key=lambda x: sorted(x[0].items())):
+            lines.append(f"{metric_name}{_format_labels(labels)} {value}")
 
     if not lines:
         return ""

@@ -10,14 +10,12 @@ Notes:
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 from datetime import datetime, timezone
+import hashlib
 import logging
 from pathlib import Path
-import re
-import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
@@ -32,6 +30,14 @@ from app.rag.text_splitter import SmartTextSplitter
 from app.rag.vector_store import VectorStoreManager
 from app.observability.context import file_id_ctx
 from app.observability.metrics import inc_counter, observe_ms
+from app.observability.slo_metrics import observe_ingestion_enqueue, set_ingestion_queue_snapshot
+from app.services.ingestion import (
+    DurableIngestionWorker,
+    IngestionJobPayload,
+    IngestionWorkerConfig,
+    SqliteIngestionQueueAdapter,
+)
+from app.services.tabular.storage_adapter import build_tabular_dataset_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +46,9 @@ text_splitter = SmartTextSplitter(chunk_size=settings.CHUNK_SIZE, chunk_overlap=
 vector_store = VectorStoreManager()
 
 EMBED_BATCH_SIZE = 32
-MAX_BACKGROUND_RETRIES = 3
-RETRY_DELAY_SECONDS = 2.0
 
-_job_queue: Optional[asyncio.Queue[Tuple[UUID, Path, str, str, int]]] = None
-_worker_task: Optional[asyncio.Task] = None
-_worker_lock = asyncio.Lock()
+_ingestion_worker: Optional[DurableIngestionWorker] = None
+_ingestion_worker_lock = asyncio.Lock()
 
 
 def _batch(items: List[Any], size: int) -> List[List[Any]]:
@@ -93,113 +96,6 @@ def _extract_xlsx_stats(docs: List[Any]) -> Dict[str, Any]:
     return {
         "xlsx_sheets_count": len(sheet_names),
         "xlsx_rows_estimate": total_rows,
-    }
-
-
-def _safe_sql_identifier(name: str, fallback: str) -> str:
-    raw = (name or "").strip().lower()
-    cleaned = re.sub(r"[^a-z0-9_]+", "_", raw).strip("_")
-    if not cleaned:
-        cleaned = fallback
-    if cleaned[0].isdigit():
-        cleaned = f"t_{cleaned}"
-    return cleaned
-
-
-def _normalize_dataframe_columns(df) -> List[str]:
-    seen: Dict[str, int] = {}
-    final: List[str] = []
-    for idx, col in enumerate(df.columns):
-        base = _safe_sql_identifier(str(col), fallback=f"col_{idx + 1}")
-        count = seen.get(base, 0)
-        seen[base] = count + 1
-        final_col = base if count == 0 else f"{base}_{count + 1}"
-        final.append(final_col)
-    df.columns = final
-    return final
-
-
-def _build_tabular_sidecar(file_path: Path, file_type: str) -> Optional[Dict[str, Any]]:
-    if file_type not in {"xlsx", "xls", "csv"}:
-        return None
-
-    import pandas as pd
-
-    sidecar_path = file_path.with_suffix(file_path.suffix + ".tabular.sqlite")
-    if sidecar_path.exists():
-        sidecar_path.unlink()
-
-    tables: List[Dict[str, Any]] = []
-    conn = sqlite3.connect(str(sidecar_path))
-    try:
-        if file_type == "csv":
-            attempts = [{"encoding": "utf-8"}, {"encoding": "utf-8-sig"}, {"encoding": "cp1251"}, {"encoding": "latin-1"}]
-            df = None
-            for attempt in attempts:
-                try:
-                    df = pd.read_csv(
-                        str(file_path),
-                        dtype=str,
-                        keep_default_na=False,
-                        engine="python",
-                        sep=None,
-                        on_bad_lines="skip",
-                        **attempt,
-                    )
-                    break
-                except Exception:
-                    continue
-            if df is not None and not df.empty:
-                columns = _normalize_dataframe_columns(df)
-                table_name = _safe_sql_identifier("csv_data", "csv_data")
-                df.to_sql(table_name, conn, index=False, if_exists="replace")
-                tables.append(
-                    {
-                        "table_name": table_name,
-                        "sheet_name": "CSV",
-                        "row_count": int(len(df)),
-                        "columns": columns,
-                    }
-                )
-        else:
-            excel = pd.ExcelFile(str(file_path))
-            for idx, sheet in enumerate(excel.sheet_names, start=1):
-                try:
-                    df = pd.read_excel(
-                        str(file_path),
-                        sheet_name=sheet,
-                        dtype=str,
-                        keep_default_na=False,
-                    )
-                except Exception:
-                    logger.warning("Tabular sidecar: failed to read sheet '%s'", sheet, exc_info=True)
-                    continue
-                if df is None or df.empty:
-                    continue
-                columns = _normalize_dataframe_columns(df)
-                table_name = _safe_sql_identifier(f"sheet_{idx}_{sheet}", fallback=f"sheet_{idx}")
-                df.to_sql(table_name, conn, index=False, if_exists="replace")
-                tables.append(
-                    {
-                        "table_name": table_name,
-                        "sheet_name": str(sheet),
-                        "row_count": int(len(df)),
-                        "columns": columns,
-                    }
-                )
-    finally:
-        conn.close()
-
-    if not tables:
-        if sidecar_path.exists():
-            sidecar_path.unlink()
-        return None
-
-    return {
-        "engine": "sqlite",
-        "path": str(sidecar_path),
-        "tables": tables,
-        "generated_at": _utc_now_iso(),
     }
 
 
@@ -327,22 +223,129 @@ def _resolve_embedding_model(mode: str, override: Optional[str]) -> str:
     return base
 
 
+def _normalize_embedding_mode(mode: str) -> str:
+    normalized = (mode or "local").strip().lower()
+    if normalized == "corporate":
+        return "aihub"
+    if normalized == "ollama":
+        return "local"
+    return normalized or "local"
+
+
+def _build_ingestion_idempotency_key(
+    *,
+    file_id: UUID,
+    file_path: Path,
+    embedding_mode: str,
+    embedding_model: str,
+) -> str:
+    raw = f"{file_id}|{str(file_path)}|{embedding_mode}|{embedding_model}"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+    return f"ingestion:{file_id}:{digest}"
+
+
+def _build_worker_config() -> IngestionWorkerConfig:
+    return IngestionWorkerConfig(
+        worker_id=f"api-{uuid4().hex[:8]}",
+        lease_seconds=float(settings.INGESTION_WORKER_LEASE_SECONDS),
+        poll_interval_seconds=float(settings.INGESTION_WORKER_POLL_INTERVAL_SECONDS),
+        heartbeat_interval_seconds=float(settings.INGESTION_WORKER_HEARTBEAT_SECONDS),
+        retry_base_seconds=float(settings.INGESTION_RETRY_BASE_SECONDS),
+        retry_max_seconds=float(settings.INGESTION_RETRY_MAX_SECONDS),
+    )
+
+
+async def _process_payload_for_worker(payload: IngestionJobPayload) -> Tuple[bool, bool]:
+    try:
+        file_id = UUID(payload.file_id)
+    except Exception:
+        logger.error("Invalid ingestion payload file_id=%s", payload.file_id)
+        return False, False
+    return await _process_file(
+        file_id=file_id,
+        file_path=Path(payload.file_path),
+        embedding_mode=payload.embedding_mode,
+        embedding_model=payload.embedding_model,
+    )
+
+
+async def _ensure_worker_started() -> DurableIngestionWorker:
+    global _ingestion_worker
+    if _ingestion_worker is not None and bool(_ingestion_worker.snapshot().get("worker_running")):
+        return _ingestion_worker
+
+    async with _ingestion_worker_lock:
+        if _ingestion_worker is not None and bool(_ingestion_worker.snapshot().get("worker_running")):
+            return _ingestion_worker
+
+        adapter = SqliteIngestionQueueAdapter(Path(settings.INGESTION_QUEUE_SQLITE_PATH))
+        worker = DurableIngestionWorker(
+            queue=adapter,
+            processor=_process_payload_for_worker,
+            config=_build_worker_config(),
+        )
+        await worker.start()
+        _ingestion_worker = worker
+        logger.info("Durable ingestion runtime started: queue=%s", settings.INGESTION_QUEUE_SQLITE_PATH)
+        return worker
+
+
 async def process_file_async(
     file_id: UUID,
     file_path: Path,
     embedding_mode: str = "local",
     embedding_model: Optional[str] = None,
 ) -> None:
-    resolved = _resolve_embedding_model(embedding_mode, embedding_model)
+    mode = _normalize_embedding_mode(embedding_mode)
+    resolved = _resolve_embedding_model(mode, embedding_model)
     logger.info(
         "Scheduling file processing: file_id=%s mode=%s model_override=%s resolved_model=%s path=%s",
-        file_id, embedding_mode, embedding_model, resolved, file_path
+        file_id, mode, embedding_model, resolved, file_path
     )
-    await _ensure_worker_started()
-    assert _job_queue is not None
-    await _job_queue.put((file_id, file_path, embedding_mode, resolved, 0))
-    inc_counter("file_processing_enqueued_total", mode=embedding_mode)
-    observe_ms("file_processing_queue_depth", float(_job_queue.qsize()))
+    worker = await _ensure_worker_started()
+    job_payload = IngestionJobPayload(
+        file_id=str(file_id),
+        file_path=str(file_path),
+        embedding_mode=mode,
+        embedding_model=resolved,
+    )
+    result = await worker.enqueue(
+        payload=job_payload,
+        idempotency_key=_build_ingestion_idempotency_key(
+            file_id=file_id,
+            file_path=file_path,
+            embedding_mode=mode,
+            embedding_model=resolved,
+        ),
+        max_retries=int(settings.INGESTION_MAX_RETRIES),
+        allow_requeue_terminal=True,
+    )
+    if result.deduplicated:
+        inc_counter("ingestion_jobs_deduplicated_total", mode=mode)
+    else:
+        inc_counter("ingestion_jobs_enqueued_total", mode=mode)
+    observe_ingestion_enqueue(mode=mode, deduplicated=bool(result.deduplicated))
+
+    stats = worker.snapshot()
+    observe_ms("file_processing_queue_depth", float(stats.get("queue_size", 0)))
+    set_ingestion_queue_snapshot(
+        depth=float(stats.get("queue_size", 0) or 0.0),
+        processing=float(stats.get("processing", 0) or 0.0),
+        dead_letter_depth=float(stats.get("dead_letter", 0) or 0.0),
+        lag_seconds=float(stats.get("lag_seconds", 0.0) or 0.0),
+        heartbeat_age_seconds=(
+            float(stats["heartbeat_age_seconds"])
+            if stats.get("heartbeat_age_seconds") is not None
+            else None
+        ),
+    )
+    logger.info(
+        "Ingestion job queued: file_id=%s job_id=%s deduplicated=%s status=%s",
+        file_id,
+        result.job_id,
+        result.deduplicated,
+        result.status,
+    )
 
 
 async def process_file_background(
@@ -351,102 +354,58 @@ async def process_file_background(
     embedding_mode: str = "local",
     embedding_model: Optional[str] = None,
 ) -> None:
-    resolved = _resolve_embedding_model(embedding_mode, embedding_model)
+    mode = _normalize_embedding_mode(embedding_mode)
+    resolved = _resolve_embedding_model(mode, embedding_model)
     logger.info(
         "Running file processing (await): file_id=%s mode=%s model_override=%s resolved_model=%s path=%s",
-        file_id, embedding_mode, embedding_model, resolved, file_path
+        file_id, mode, embedding_model, resolved, file_path
     )
-    await _process_file(file_id, file_path, embedding_mode, resolved)
-
-
-async def _ensure_worker_started() -> None:
-    global _job_queue, _worker_task
-    if _worker_task is not None and not _worker_task.done():
-        return
-
-    async with _worker_lock:
-        if _worker_task is not None and not _worker_task.done():
-            return
-        _job_queue = asyncio.Queue()
-        _worker_task = asyncio.create_task(_file_processing_worker(), name="file-processing-worker")
-        logger.info("File processing worker started")
-
-
-async def _file_processing_worker() -> None:
-    assert _job_queue is not None
-    while True:
-        try:
-            file_id, file_path, embedding_mode, embedding_model, attempt = await _job_queue.get()
-        except asyncio.CancelledError:
-            logger.info("File processing worker cancelled")
-            break
-        try:
-            loop = asyncio.get_running_loop()
-            started = loop.time()
-            ok, retryable = await _process_file(file_id, file_path, embedding_mode, embedding_model)
-            if (not ok) and retryable and attempt < MAX_BACKGROUND_RETRIES:
-                delay = RETRY_DELAY_SECONDS * (attempt + 1)
-                inc_counter("file_processing_retry_total", mode=embedding_mode)
-                logger.warning(
-                    "Retrying file processing: file_id=%s attempt=%d/%d delay=%.1fs",
-                    file_id,
-                    attempt + 1,
-                    MAX_BACKGROUND_RETRIES,
-                    delay,
-                )
-                await asyncio.sleep(delay)
-                await _job_queue.put((file_id, file_path, embedding_mode, embedding_model, attempt + 1))
-            elif ok:
-                inc_counter("file_processing_completed_total", mode=embedding_mode)
-            else:
-                inc_counter("file_processing_failed_total", mode=embedding_mode)
-            observe_ms("file_processing_job_duration_ms", (loop.time() - started) * 1000.0, mode=embedding_mode)
-        except Exception:
-            logger.exception("Unexpected worker failure while processing file_id=%s", file_id)
-            inc_counter("file_processing_worker_errors_total")
-        finally:
-            _job_queue.task_done()
+    await _process_file(file_id, file_path, mode, resolved)
 
 
 def get_file_processing_worker_stats() -> Dict[str, Any]:
-    queue_size = _job_queue.qsize() if _job_queue is not None else 0
-    running = bool(_worker_task is not None and not _worker_task.done())
-    return {
-        "worker_running": running,
-        "queue_size": queue_size,
-        "max_retries": MAX_BACKGROUND_RETRIES,
-        "retry_delay_seconds": RETRY_DELAY_SECONDS,
-    }
+    if _ingestion_worker is None:
+        return {
+            "worker_running": False,
+            "worker_id": None,
+            "queue_size": 0,
+            "processing": 0,
+            "completed": 0,
+            "dead_letter": 0,
+            "lag_seconds": 0.0,
+            "heartbeat_age_seconds": None,
+            "healthy": False,
+            "max_retries": int(settings.INGESTION_MAX_RETRIES),
+            "retry_base_seconds": float(settings.INGESTION_RETRY_BASE_SECONDS),
+            "retry_max_seconds": float(settings.INGESTION_RETRY_MAX_SECONDS),
+            "retry_delay_seconds": float(settings.INGESTION_RETRY_BASE_SECONDS),
+        }
+
+    snapshot = dict(_ingestion_worker.snapshot())
+    snapshot["max_retries"] = int(settings.INGESTION_MAX_RETRIES)
+    snapshot["retry_delay_seconds"] = float(settings.INGESTION_RETRY_BASE_SECONDS)
+    return snapshot
 
 
 async def shutdown_file_processing_worker(timeout_seconds: float = 15.0) -> None:
-    global _job_queue, _worker_task
-    if _worker_task is None:
+    global _ingestion_worker
+    worker = _ingestion_worker
+    _ingestion_worker = None
+    if worker is None:
         return
 
-    queue = _job_queue
-    if queue is not None:
-        try:
-            await asyncio.wait_for(queue.join(), timeout=timeout_seconds)
-        except asyncio.TimeoutError:
-            logger.warning("File worker shutdown timeout: queue still has pending tasks")
-
-    task = _worker_task
-    _worker_task = None
-    _job_queue = None
-
-    if task is not None and not task.done():
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-    logger.info("File processing worker stopped")
+    effective_timeout = timeout_seconds
+    if timeout_seconds == 15.0:
+        effective_timeout = float(settings.INGESTION_WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+    await worker.stop(timeout_seconds=float(effective_timeout))
 
 
 async def recover_pending_file_jobs(limit: int = 200) -> int:
     """
     Recover files stuck in pending/processing states after service restart.
-    Best effort: enqueue existing files back to the in-process queue.
+    Best effort: enqueue existing files back to durable queue (idempotent).
     """
+    await _ensure_worker_started()
     recovered = 0
     async with AsyncSessionLocal() as db:
         stmt = (
@@ -542,21 +501,32 @@ async def _process_file(
             if total_chars < 50:
                 raise ValueError("Extracted text is empty/too small (possible scanned PDF).")
 
+            file_record = await crud_file.get(db, id=file_id)
+            if not file_record:
+                raise ValueError(f"File record not found: {file_id}")
+
             file_ext = file_path.suffix.lower().lstrip(".")
             if file_ext in {"xlsx", "xls", "csv"}:
                 try:
-                    tabular_sidecar = await asyncio.to_thread(_build_tabular_sidecar, file_path, file_ext)
-                    if tabular_sidecar:
-                        extra_metadata["tabular_sidecar"] = tabular_sidecar
+                    tabular_dataset = await asyncio.to_thread(
+                        build_tabular_dataset_metadata,
+                        file_id=file_id,
+                        file_path=file_path,
+                        file_type=file_ext,
+                        source_filename=file_record.original_filename,
+                    )
+                    if tabular_dataset:
+                        extra_metadata["tabular_dataset"] = tabular_dataset
                         logger.info(
-                            "Tabular sidecar generated: file_id=%s tables=%d path=%s",
+                            "Tabular dataset generated: file_id=%s dataset_version=%s tables=%d engine=%s",
                             file_id,
-                            len(tabular_sidecar.get("tables", [])),
-                            tabular_sidecar.get("path"),
+                            tabular_dataset.get("dataset_version"),
+                            len(tabular_dataset.get("tables", [])),
+                            tabular_dataset.get("engine"),
                         )
                 except Exception:
-                    logger.warning("Tabular sidecar generation failed for file_id=%s", file_id, exc_info=True)
-                    extra_metadata["tabular_sidecar_error"] = "generation_failed"
+                    logger.warning("Tabular dataset generation failed for file_id=%s", file_id, exc_info=True)
+                    extra_metadata["tabular_dataset_error"] = "generation_failed"
 
             # split
             stage_t0 = asyncio.get_running_loop().time()
@@ -577,10 +547,6 @@ async def _process_file(
                 file_id,
             )
             observe_ms("ingestion_stage_ms", (asyncio.get_running_loop().time() - stage_t0) * 1000.0, stage="chunk")
-
-            file_record = await crud_file.get(db, id=file_id)
-            if not file_record:
-                raise ValueError(f"File record not found: {file_id}")
 
             emb = EmbeddingsManager(mode=embedding_mode, model=embedding_model)
             logger.info("Embedding mode=%s resolved_model=%s", embedding_mode, embedding_model)

@@ -25,6 +25,7 @@ from app.db.models.conversation_file import ConversationFile
 from app.db.models.file import File as FileModel
 from app.db.session import get_db
 from app.schemas.file import FileDeleteResponse, FileInfo, FileProcessingStatus, FileReprocessResponse, FileUploadResponse
+from app.services.tabular.storage_adapter import cleanup_tabular_artifacts_for_file
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -418,23 +419,27 @@ async def delete_file(
             logger.warning("Vector index cleanup failed for file_id=%s", file_id, exc_info=True)
 
         path = Path(file_obj.path)
-        sidecar_path = None
-        if isinstance(file_obj.custom_metadata, dict):
-            sidecar = file_obj.custom_metadata.get("tabular_sidecar")
-            if isinstance(sidecar, dict) and sidecar.get("path"):
-                sidecar_path = Path(str(sidecar.get("path")))
         await crud_file.remove(db, id=file_id)
         try:
             if path.exists():
                 path.unlink()
         except Exception:
             pass
-        if sidecar_path is not None:
-            try:
-                if sidecar_path.exists():
-                    sidecar_path.unlink()
-            except Exception:
-                logger.warning("Failed to delete sidecar path for file_id=%s", file_id, exc_info=True)
+        try:
+            cleanup = cleanup_tabular_artifacts_for_file(
+                file_id=file_id,
+                custom_metadata=file_obj.custom_metadata if isinstance(file_obj.custom_metadata, dict) else None,
+            )
+            logger.info(
+                "Tabular artifact cleanup: file_id=%s datasets_deleted=%d tables_deleted=%d parquet_deleted=%d legacy_sidecars_deleted=%d",
+                file_id,
+                cleanup.datasets_deleted,
+                cleanup.tables_deleted,
+                cleanup.parquet_files_deleted,
+                cleanup.legacy_sidecars_deleted,
+            )
+        except Exception:
+            logger.warning("Tabular artifact cleanup failed for file_id=%s", file_id, exc_info=True)
     except Exception as e:
         logger.error("Failed to delete file: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete file")

@@ -16,6 +16,9 @@ class ChatMessage(BaseModel):
     rag_mode: Optional[str] = Field(None, pattern=r"^(auto|hybrid|full_file)$")
     summarize: bool = False
     rag_debug: bool = False
+    cannot_wait: bool = False
+    sla_tier: Optional[str] = Field(None, pattern=r"^(normal|critical)$")
+    policy_class: Optional[str] = Field(None, max_length=64)
 
 
 class ChatResponse(BaseModel):
@@ -23,6 +26,10 @@ class ChatResponse(BaseModel):
     conversation_id: uuid.UUID
     message_id: uuid.UUID
     model_used: str
+    model_route: str = Field(default="aihub_primary", pattern=r"^(aihub_primary|ollama_fallback)$")
+    fallback_reason: str = Field(default="none", pattern=r"^(none|timeout|network|hub_5xx|circuit_open)$")
+    fallback_allowed: bool = False
+    fallback_policy_version: str = "p1-aihub-first-v1"
     tokens_used: Optional[int] = None
     generation_time: Optional[float] = None
     summary: Optional[str] = None

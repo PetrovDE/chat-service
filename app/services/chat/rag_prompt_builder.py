@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.crud import crud_file
+from app.domain.chat.query_planner import ROUTE_DETERMINISTIC_ANALYTICS, plan_query
 from app.rag.retriever import rag_retriever
 from app.services.chat.context import merge_context_docs
 from app.services.chat.embedding_config import group_files_by_embedding_config, resolve_rag_embedding_config
@@ -22,6 +23,7 @@ from app.services.chat.sources_debug import (
     build_sources_list,
     build_sources_list_with_mode,
 )
+from app.observability.slo_metrics import observe_retrieval_coverage, observe_tabular_row_coverage
 from app.services.chat.tabular_sql import execute_tabular_sql_path
 
 logger = logging.getLogger(__name__)
@@ -164,6 +166,7 @@ async def build_rag_prompt(
     rag_caveats_builder: Optional[
         Callable[..., List[str]]
     ] = None,
+    query_planner=None,
 ):
     preferred_lang = detect_preferred_response_language(query)
     final_prompt = apply_language_policy_to_prompt(prompt=query, preferred_lang=preferred_lang)
@@ -181,6 +184,8 @@ async def build_rag_prompt(
         crud_file_module = crud_file
     if rag_retriever_client is None:
         rag_retriever_client = rag_retriever
+    if query_planner is None:
+        query_planner = plan_query
 
     if not user_id:
         return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
@@ -200,50 +205,139 @@ async def build_rag_prompt(
     if not files:
         return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
 
-    expected_chunks_total = sum(int(getattr(file_obj, "chunks_count", 0) or 0) for file_obj in files)
-    tabular_sql_result = await execute_tabular_sql_path(query=query, files=files)
-    if isinstance(tabular_sql_result, dict):
-        rag_used = True
-        rag_sources = list(tabular_sql_result.get("sources") or [])
-        rag_debug = dict(tabular_sql_result.get("debug") or {})
-        rag_debug["file_ids"] = [str(file_obj.id) for file_obj in files]
-        rag_debug["rag_mode"] = rag_mode or "auto"
-        rag_debug["rag_mode_effective"] = "tabular_sql"
-        rag_debug["retrieval_policy"] = {
-            "mode": "tabular_sql",
-            "query_profile": "aggregate",
-            "requested_top_k": top_k,
-            "effective_top_k": 0,
-            "expected_chunks_total": expected_chunks_total,
-            "escalation": {"attempted": False, "applied": False, "reason": None},
-            "row_escalation": {"attempted": False, "applied": False, "reason": None},
+    planner_decision = query_planner(query=query, files=files)
+    planner_decision_payload = dict(planner_decision.as_dict())
+    logger.info(
+        "Query planner decision: route=%s intent=%s confidence=%.2f requires_clarification=%s reasons=%s",
+        planner_decision_payload.get("route"),
+        planner_decision_payload.get("intent"),
+        float(planner_decision_payload.get("confidence", 0.0) or 0.0),
+        bool(planner_decision_payload.get("requires_clarification", False)),
+        planner_decision_payload.get("reason_codes") or [],
+    )
+
+    if planner_decision.requires_clarification:
+        rag_debug = {
+            "planner_decision": planner_decision_payload,
+            "intent": planner_decision.intent,
+            "retrieval_mode": "clarification",
+            "requires_clarification": True,
+            "clarification_prompt": planner_decision.clarification_prompt,
+            "rag_mode": rag_mode or "auto",
+            "rag_mode_effective": "clarification",
+            "file_ids": [str(file_obj.id) for file_obj in files],
+            "retrieval_policy": {
+                "mode": "clarification",
+                "query_profile": "metric_critical",
+                "requested_top_k": top_k,
+                "effective_top_k": 0,
+                "expected_chunks_total": sum(int(getattr(file_obj, "chunks_count", 0) or 0) for file_obj in files),
+                "escalation": {"attempted": False, "applied": False, "reason": "clarification_required"},
+                "row_escalation": {"attempted": False, "applied": False, "reason": "clarification_required"},
+            },
         }
-        rag_debug["retrieved_chunks_total"] = expected_chunks_total
-        rag_debug["coverage"] = {
-            "expected_chunks": expected_chunks_total,
-            "retrieved_chunks": expected_chunks_total,
-            "ratio": 1.0 if expected_chunks_total > 0 else 0.0,
-            "complete": True,
-        }
-        rag_debug["rows_expected_total"] = int(tabular_sql_result.get("rows_expected_total", 0) or 0)
-        rag_debug["rows_retrieved_total"] = int(tabular_sql_result.get("rows_retrieved_total", 0) or 0)
-        rag_debug["rows_used_map_total"] = int(tabular_sql_result.get("rows_used_map_total", 0) or 0)
-        rag_debug["rows_used_reduce_total"] = int(tabular_sql_result.get("rows_used_reduce_total", 0) or 0)
-        rag_debug["row_coverage_ratio"] = float(tabular_sql_result.get("row_coverage_ratio", 0.0) or 0.0)
-        rag_debug["truncated"] = False
-        final_prompt = apply_language_policy_to_prompt(
-            preferred_lang=preferred_lang,
-            prompt=(
-                "You are a data analyst.\n"
-                "Use deterministic tabular context below as source of truth.\n"
-                "Do not change numbers from SQL output.\n"
-                "Return sections in order: Answer, Limitations/Missing data, Sources.\n\n"
-                f"User question:\n{query}\n\n"
-                f"{tabular_sql_result.get('prompt_context')}\n\n"
-                "Final answer:"
-            ),
+        final_prompt = planner_decision.clarification_prompt or (
+            "Please clarify the metric and scope before I run deterministic analytics."
         )
         return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
+
+    expected_chunks_total = sum(int(getattr(file_obj, "chunks_count", 0) or 0) for file_obj in files)
+    if planner_decision.route == ROUTE_DETERMINISTIC_ANALYTICS:
+        tabular_sql_result = await execute_tabular_sql_path(query=query, files=files)
+        if isinstance(tabular_sql_result, dict):
+            if str(tabular_sql_result.get("status") or "ok") == "error":
+                rag_used = False
+                rag_sources = []
+                rag_debug = dict(tabular_sql_result.get("debug") or {})
+                rag_debug["planner_decision"] = planner_decision_payload
+                rag_debug["file_ids"] = [str(file_obj.id) for file_obj in files]
+                rag_debug["rag_mode"] = rag_mode or "auto"
+                rag_debug["rag_mode_effective"] = "tabular_sql_error"
+                rag_debug["requires_clarification"] = True
+                clarification_prompt = str(tabular_sql_result.get("clarification_prompt") or "").strip()
+                if not clarification_prompt:
+                    clarification_prompt = (
+                        "Deterministic SQL execution failed. "
+                        "Please clarify metric, filter, or period and retry."
+                    )
+                rag_debug["clarification_prompt"] = clarification_prompt
+                observe_retrieval_coverage(
+                    coverage_ratio=0.0,
+                    retrieval_mode="tabular_sql_error",
+                    expected_chunks=expected_chunks_total,
+                    retrieved_chunks=0,
+                )
+                observe_tabular_row_coverage(
+                    coverage_ratio=float(tabular_sql_result.get("row_coverage_ratio", 0.0) or 0.0),
+                    retrieval_mode="tabular_sql_error",
+                    rows_expected_total=int(tabular_sql_result.get("rows_expected_total", 0) or 0),
+                    rows_retrieved_total=int(tabular_sql_result.get("rows_retrieved_total", 0) or 0),
+                )
+                final_prompt = clarification_prompt
+                return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
+
+            rag_used = True
+            rag_sources = list(tabular_sql_result.get("sources") or [])
+            rag_debug = dict(tabular_sql_result.get("debug") or {})
+            rag_debug["planner_decision"] = planner_decision_payload
+            rag_debug["file_ids"] = [str(file_obj.id) for file_obj in files]
+            rag_debug["rag_mode"] = rag_mode or "auto"
+            rag_debug["rag_mode_effective"] = "tabular_sql"
+            rag_debug["retrieval_policy"] = {
+                "mode": "tabular_sql",
+                "query_profile": planner_decision.intent,
+                "requested_top_k": top_k,
+                "effective_top_k": 0,
+                "expected_chunks_total": expected_chunks_total,
+                "escalation": {"attempted": False, "applied": False, "reason": None},
+                "row_escalation": {"attempted": False, "applied": False, "reason": None},
+            }
+            rag_debug["retrieved_chunks_total"] = expected_chunks_total
+            rag_debug["coverage"] = {
+                "expected_chunks": expected_chunks_total,
+                "retrieved_chunks": expected_chunks_total,
+                "ratio": 1.0 if expected_chunks_total > 0 else 0.0,
+                "complete": True,
+            }
+            rag_debug["rows_expected_total"] = int(tabular_sql_result.get("rows_expected_total", 0) or 0)
+            rag_debug["rows_retrieved_total"] = int(tabular_sql_result.get("rows_retrieved_total", 0) or 0)
+            rag_debug["rows_used_map_total"] = int(tabular_sql_result.get("rows_used_map_total", 0) or 0)
+            rag_debug["rows_used_reduce_total"] = int(tabular_sql_result.get("rows_used_reduce_total", 0) or 0)
+            rag_debug["row_coverage_ratio"] = float(tabular_sql_result.get("row_coverage_ratio", 0.0) or 0.0)
+            rag_debug["truncated"] = False
+            observe_retrieval_coverage(
+                coverage_ratio=float(rag_debug["coverage"]["ratio"]),
+                retrieval_mode="tabular_sql",
+                expected_chunks=int(rag_debug["coverage"]["expected_chunks"]),
+                retrieved_chunks=int(rag_debug["coverage"]["retrieved_chunks"]),
+            )
+            observe_tabular_row_coverage(
+                coverage_ratio=float(rag_debug.get("row_coverage_ratio", 0.0) or 0.0),
+                retrieval_mode="tabular_sql",
+                rows_expected_total=int(rag_debug.get("rows_expected_total", 0) or 0),
+                rows_retrieved_total=int(rag_debug.get("rows_retrieved_total", 0) or 0),
+            )
+            final_prompt = apply_language_policy_to_prompt(
+                preferred_lang=preferred_lang,
+                prompt=(
+                    "You are a data analyst.\n"
+                    "Use deterministic tabular context below as source of truth.\n"
+                    "Do not change numbers from SQL output.\n"
+                    "Return sections in order: Answer, Limitations/Missing data, Sources.\n\n"
+                    f"User question:\n{query}\n\n"
+                    f"{tabular_sql_result.get('prompt_context')}\n\n"
+                    "Final answer:"
+                ),
+            )
+            return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
+
+        planner_decision_payload.setdefault("reason_codes", [])
+        if "deterministic_execution_unavailable_fallback_narrative" not in planner_decision_payload["reason_codes"]:
+            planner_decision_payload["reason_codes"].append("deterministic_execution_unavailable_fallback_narrative")
+        planner_decision_payload["confidence"] = min(
+            0.7,
+            float(planner_decision_payload.get("confidence", 0.7) or 0.7),
+        )
 
     rag_file_ids = [str(file_obj.id) for file_obj in files]
     groups = group_files_by_embedding_config(files, model_source)
@@ -404,6 +498,7 @@ async def build_rag_prompt(
 
         rag_debug["embedding_mode"] = embedding_mode
         rag_debug["embedding_model"] = embedding_model
+        rag_debug["planner_decision"] = planner_decision_payload
         rag_debug["file_ids"] = rag_file_ids
         rag_debug["rag_mode"] = rag_mode or "auto"
         rag_debug["rag_mode_effective"] = selected_rag_mode or rag_mode or "auto"
@@ -451,6 +546,21 @@ async def build_rag_prompt(
         ):
             rag_debug["silent_row_loss_detected"] = True
             rag_debug["truncated"] = True
+
+        retrieval_mode_observed = str(rag_debug.get("retrieval_mode") or selected_rag_mode or rag_mode or "auto")
+        observe_retrieval_coverage(
+            coverage_ratio=float(coverage_ratio),
+            retrieval_mode=retrieval_mode_observed,
+            expected_chunks=int(expected_chunks_total),
+            retrieved_chunks=int(retrieved_chunks_total),
+        )
+        if int(rag_debug.get("rows_expected_total", 0) or 0) > 0:
+            observe_tabular_row_coverage(
+                coverage_ratio=float(rag_debug.get("row_coverage_ratio", 0.0) or 0.0),
+                retrieval_mode=retrieval_mode_observed,
+                rows_expected_total=int(rag_debug.get("rows_expected_total", 0) or 0),
+                rows_retrieved_total=int(rag_debug.get("rows_retrieved_total", 0) or 0),
+            )
 
         if context_docs:
             retrieval_mode = (rag_debug or {}).get("retrieval_mode") if isinstance(rag_debug, dict) else None
@@ -522,6 +632,11 @@ async def build_rag_prompt(
         if isinstance(context_docs, dict) and "docs" in context_docs:
             context_docs_list = context_docs.get("docs") or []
             rag_debug = context_docs.get("debug")
+            if isinstance(rag_debug, dict):
+                rag_debug = deepcopy(rag_debug)
+                rag_debug["planner_decision"] = planner_decision_payload
+            else:
+                rag_debug = {"planner_decision": planner_decision_payload}
             if context_docs_list:
                 final_prompt = rag_retriever_client.build_context_prompt(query=query, context_documents=context_docs_list)
                 final_prompt = apply_language_policy_to_prompt(prompt=final_prompt, preferred_lang=preferred_lang)

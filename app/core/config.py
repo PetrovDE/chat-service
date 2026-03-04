@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     AIHUB_CHAT_STREAM_PATH: str = Field(default="")
     AIHUB_MAX_PROMPT_CHARS: int = Field(default=50000, ge=1000)
     AIHUB_MAX_HISTORY_MESSAGE_CHARS: int = Field(default=2000, ge=100)
+    AIHUB_CIRCUIT_WINDOW_SECONDS: int = Field(default=60, ge=5, le=600)
+    AIHUB_CIRCUIT_MIN_REQUESTS: int = Field(default=4, ge=1, le=1000)
+    AIHUB_CIRCUIT_FAILURE_RATIO: float = Field(default=0.5, ge=0.01, le=1.0)
+    AIHUB_CIRCUIT_OPEN_SECONDS: int = Field(default=30, ge=1, le=3600)
+    AIHUB_CIRCUIT_HALF_OPEN_MAX_REQUESTS: int = Field(default=1, ge=1, le=100)
+    LLM_FALLBACK_POLICY_VERSION: str = Field(default="p1-aihub-first-v1")
+    LLM_FALLBACK_ENABLED: bool = Field(default=True)
+    LLM_FALLBACK_RESTRICTED_CLASSES: str = Field(default="restricted")
 
     # LLM/RAG defaults
     default_llm_mode: str = Field(default="local")
@@ -103,6 +111,22 @@ class Settings(BaseSettings):
     FULL_FILE_REDUCE_MAX_ROUNDS: int = Field(default=4, ge=1, le=12)
     CHAT_HISTORY_MAX_MESSAGES: int = Field(default=30, ge=4, le=500)
     INGESTION_BAD_CHUNK_RATIO_THRESHOLD: float = Field(default=0.35, ge=0.0, le=1.0)
+    INGESTION_MAX_RETRIES: int = Field(default=3, ge=1, le=20)
+    INGESTION_RETRY_BASE_SECONDS: float = Field(default=2.0, ge=0.1, le=300.0)
+    INGESTION_RETRY_MAX_SECONDS: float = Field(default=60.0, ge=0.5, le=3600.0)
+    INGESTION_WORKER_POLL_INTERVAL_SECONDS: float = Field(default=0.5, ge=0.05, le=30.0)
+    INGESTION_WORKER_LEASE_SECONDS: float = Field(default=120.0, ge=5.0, le=86400.0)
+    INGESTION_WORKER_HEARTBEAT_SECONDS: float = Field(default=5.0, ge=0.5, le=120.0)
+    INGESTION_WORKER_SHUTDOWN_TIMEOUT_SECONDS: float = Field(default=15.0, ge=1.0, le=300.0)
+    INGESTION_QUEUE_SQLITE_PATH: str = Field(default="uploads/.ingestion_jobs.sqlite3")
+    TABULAR_RUNTIME_ROOT: str = Field(default="uploads/tabular_runtime/datasets")
+    TABULAR_RUNTIME_CATALOG_PATH: str = Field(default="uploads/tabular_runtime/catalog.duckdb")
+    TABULAR_SQL_TIMEOUT_SECONDS: float = Field(default=8.0, ge=0.5, le=120.0)
+    TABULAR_SQL_MAX_RESULT_ROWS: int = Field(default=200, ge=10, le=10000)
+    TABULAR_SQL_MAX_RESULT_BYTES: int = Field(default=200000, ge=1024, le=20000000)
+    TABULAR_SQL_MAX_SCANNED_ROWS: int = Field(default=1000000, ge=100, le=100000000)
+    TABULAR_SQL_MAX_CHARS: int = Field(default=4000, ge=200, le=50000)
+    TABULAR_PROFILE_MAX_COLUMNS: int = Field(default=160, ge=1, le=5000)
     ENABLE_POST_ANSWER_SUMMARIZE: bool = Field(default=False)
     ENABLE_CACHE: bool = Field(default=True)
     MAX_FILESIZE_MB: int = Field(default=50, ge=1)
@@ -115,7 +139,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = Field(default="INFO")
     SERVER_HOST: str = Field(default="127.0.0.1")
     SERVER_PORT: int = Field(default=8000, ge=1, le=65535)
-    DEFAULT_MODEL_SOURCE: str = Field(default="ollama")
+    DEFAULT_MODEL_SOURCE: str = Field(default="aihub")
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
@@ -156,6 +180,10 @@ class Settings(BaseSettings):
 
     def is_file_supported(self, filename: str) -> bool:
         return filename.lower().endswith(self.supported_filetypes_tuple)
+
+    @property
+    def llm_fallback_restricted_classes_set(self) -> set[str]:
+        return {x.strip().lower() for x in self.LLM_FALLBACK_RESTRICTED_CLASSES.split(",") if x.strip()}
 
 
 settings = Settings()

@@ -2,13 +2,16 @@
 LLM Manager with Provider Architecture
 """
 import logging
-from typing import Optional, Dict, Any, List, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from app.core.config import settings
+from app.services.llm.provider_clients import ProviderRegistry
 from app.services.llm.providers.base import BaseLLMProvider
+from app.services.llm.providers.aihub import aihub_provider
 from app.services.llm.providers.ollama import ollama_provider
 from app.services.llm.providers.openai import openai_provider
-from app.services.llm.providers.aihub import aihub_provider
+from app.services.llm.reliability import CircuitBreaker, CircuitBreakerConfig
+from app.services.llm.routing import FallbackPolicy, ModelRouter, RoutedStream, RoutingPolicyContext
 
 logger = logging.getLogger(__name__)
 
@@ -21,34 +24,39 @@ class LLMManager:
         self.ollama_model = settings.OLLAMA_CHAT_MODEL or settings.EMBEDDINGS_MODEL
         self.openai_model = settings.OPENAI_MODEL
         self.aihub_model = settings.AIHUB_DEFAULT_MODEL
-        self.providers: Dict[str, BaseLLMProvider] = {
-            "ollama": ollama_provider,
-            "local": ollama_provider,
-            "openai": openai_provider,
-            "aihub": aihub_provider,
-            "corporate": aihub_provider,  # compatibility alias
-        }
+        self.providers: Dict[str, BaseLLMProvider] = {"ollama": ollama_provider, "openai": openai_provider, "aihub": aihub_provider}
+        self.provider_registry = ProviderRegistry(self.providers)
+        self.aihub_circuit_breaker = CircuitBreaker(
+            CircuitBreakerConfig(
+                window_seconds=settings.AIHUB_CIRCUIT_WINDOW_SECONDS,
+                min_requests=settings.AIHUB_CIRCUIT_MIN_REQUESTS,
+                failure_ratio_threshold=settings.AIHUB_CIRCUIT_FAILURE_RATIO,
+                open_duration_seconds=settings.AIHUB_CIRCUIT_OPEN_SECONDS,
+                half_open_max_requests=settings.AIHUB_CIRCUIT_HALF_OPEN_MAX_REQUESTS,
+            )
+        )
+        self.fallback_policy = FallbackPolicy(
+            policy_version=settings.LLM_FALLBACK_POLICY_VERSION,
+            enabled=settings.LLM_FALLBACK_ENABLED,
+            restricted_classes=settings.llm_fallback_restricted_classes_set,
+        )
+        self.model_router = ModelRouter(
+            provider_registry=self.provider_registry,
+            fallback_policy=self.fallback_policy,
+            circuit_breaker=self.aihub_circuit_breaker,
+        )
 
-        logger.info("LLMManager initialized with providers: %s", list(self.providers.keys()))
+        logger.info("LLMManager initialized with providers: %s", list(sorted(self.providers.keys())))
         logger.info("Default source: %s", self.default_source)
 
     @staticmethod
     def _normalize_source(source: Optional[str]) -> str:
-        src = (source or "").strip().lower()
-        if not src:
-            src = (settings.DEFAULT_MODEL_SOURCE or "ollama").strip().lower()
-        if src == "corporate":
-            src = "aihub"
-        return src
+        return ProviderRegistry.normalize_source(source)
 
     def _get_provider(self, source: str) -> BaseLLMProvider:
-        normalized = self._normalize_source(source)
-        provider = self.providers.get(normalized)
-        if not provider:
-            raise ValueError(f"Unknown model source: {source}. Available: {list(self.providers.keys())}")
-        return provider
+        return self.provider_registry.get(source)
 
-    async def get_available_models(self, source: str = "ollama") -> List[str]:
+    async def get_available_models(self, source: str = "aihub") -> List[str]:
         try:
             normalized = self._normalize_source(source)
             provider = self._get_provider(normalized)
@@ -68,27 +76,63 @@ class LLMManager:
         max_tokens: int = 2000,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         prompt_max_chars: Optional[int] = None,
+        cannot_wait: bool = False,
+        sla_critical: bool = False,
+        policy_class: Optional[str] = None,
     ) -> Dict[str, Any]:
-        source = self._normalize_source(model_source or self.default_source)
-        provider = self._get_provider(source)
-
-        if not model_name:
-            if source in ("ollama", "local"):
-                model_name = settings.OLLAMA_CHAT_MODEL or settings.EMBEDDINGS_MODEL
-            elif source == "openai":
-                model_name = settings.OPENAI_MODEL
-            elif source == "aihub":
-                model_name = settings.AIHUB_DEFAULT_MODEL
-
-        logger.info("Generating response: source=%s, model=%s", source, model_name)
-
-        return await provider.generate_response(
+        requested_source = self._normalize_source(model_source or self.default_source)
+        if requested_source == "openai":
+            logger.warning("OpenAI source requested, but routing policy remains AI HUB-first")
+        logger.info(
+            "Generating response via ModelRouter: requested_source=%s model=%s cannot_wait=%s sla_critical=%s policy_class=%s",
+            requested_source,
+            model_name,
+            bool(cannot_wait),
+            bool(sla_critical),
+            policy_class,
+        )
+        return await self.model_router.generate_response(
             prompt=prompt,
-            model=model_name,
+            requested_source=requested_source,
+            model_name=model_name,
             temperature=temperature,
             max_tokens=max_tokens,
             conversation_history=conversation_history,
             prompt_max_chars=prompt_max_chars,
+            policy_context=RoutingPolicyContext(
+                cannot_wait=bool(cannot_wait),
+                sla_critical=bool(sla_critical),
+                policy_class=policy_class,
+            ),
+        )
+
+    async def create_routed_stream(
+        self,
+        prompt: str,
+        model_source: Optional[str] = None,
+        model_name: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        prompt_max_chars: Optional[int] = None,
+        cannot_wait: bool = False,
+        sla_critical: bool = False,
+        policy_class: Optional[str] = None,
+    ) -> RoutedStream:
+        requested_source = self._normalize_source(model_source or self.default_source)
+        return await self.model_router.create_stream(
+            prompt=prompt,
+            requested_source=requested_source,
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            conversation_history=conversation_history,
+            prompt_max_chars=prompt_max_chars,
+            policy_context=RoutingPolicyContext(
+                cannot_wait=bool(cannot_wait),
+                sla_critical=bool(sla_critical),
+                policy_class=policy_class,
+            ),
         )
 
     async def generate_response_stream(
@@ -100,31 +144,26 @@ class LLMManager:
         max_tokens: int = 2000,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         prompt_max_chars: Optional[int] = None,
+        cannot_wait: bool = False,
+        sla_critical: bool = False,
+        policy_class: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
-        source = self._normalize_source(model_source or self.default_source)
-        provider = self._get_provider(source)
-
-        if not model_name:
-            if source in ("ollama", "local"):
-                model_name = settings.OLLAMA_CHAT_MODEL or settings.EMBEDDINGS_MODEL
-            elif source == "openai":
-                model_name = settings.OPENAI_MODEL
-            elif source == "aihub":
-                model_name = settings.AIHUB_DEFAULT_MODEL
-
-        logger.info("Streaming response: source=%s, model=%s", source, model_name)
-
-        async for chunk in provider.generate_response_stream(
+        routed_stream = await self.create_routed_stream(
             prompt=prompt,
-            model=model_name,
+            model_source=model_source,
+            model_name=model_name,
             temperature=temperature,
             max_tokens=max_tokens,
             conversation_history=conversation_history,
             prompt_max_chars=prompt_max_chars,
-        ):
+            cannot_wait=cannot_wait,
+            sla_critical=sla_critical,
+            policy_class=policy_class,
+        )
+        async for chunk in routed_stream.stream:
             yield chunk
 
-    async def get_available_models_detailed(self, source: str = "ollama") -> List[Dict[str, Any]]:
+    async def get_available_models_detailed(self, source: str = "aihub") -> List[Dict[str, Any]]:
         normalized = self._normalize_source(source)
         provider = self._get_provider(normalized)
 
@@ -148,12 +187,7 @@ class LLMManager:
     ) -> Optional[List[float]]:
         source = self._normalize_source(model_source or self.default_source)
         provider = self._get_provider(source)
-
-        if not model_name:
-            if source == "aihub":
-                model_name = settings.AIHUB_EMBEDDING_MODEL
-            elif source in ("ollama", "local"):
-                model_name = settings.OLLAMA_EMBED_MODEL or settings.EMBEDDINGS_MODEL
+        model_name = self.provider_registry.resolve_embedding_model(source, model_name)
 
         logger.debug("Generating embedding: source=%s, model=%s", source, model_name)
 

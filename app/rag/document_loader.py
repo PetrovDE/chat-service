@@ -30,11 +30,13 @@ class DocumentLoader:
         logger.info("DocumentLoader initialized")
 
     @staticmethod
-    def _normalize_cell(value: Any, *, max_len: int = 200) -> str:
+    def _normalize_cell(value: Any, *, max_len: int = 0) -> str:
         text = str(value or "").strip()
         if not text:
             return ""
-        return text if len(text) <= max_len else (text[:max_len] + "...")
+        if max_len and max_len > 0 and len(text) > max_len:
+            return text[:max_len] + "..."
+        return text
 
     def _pick_columns_for_chunk(self, df, columns: List[str]) -> Tuple[List[str], List[str]]:
         max_cols = int(getattr(settings, "XLSX_MAX_COLUMNS_PER_CHUNK", 0) or 0)
@@ -71,6 +73,7 @@ class DocumentLoader:
     ) -> List[Document]:
         max_chars = int(getattr(settings, "XLSX_CHUNK_MAX_CHARS", 9000) or 9000)
         max_rows = int(getattr(settings, "XLSX_CHUNK_MAX_ROWS", 40) or 40)
+        max_cell_chars = int(getattr(settings, "XLSX_CELL_MAX_CHARS", 0) or 0)
         max_chars = max(1000, max_chars)
         max_rows = max(1, max_rows)
 
@@ -83,9 +86,37 @@ class DocumentLoader:
         chunk_lines: List[str] = []
         chunk_row_start = 0
         chunk_chars = 0
+        chunk_source_rows = 0
+
+        def build_row_lines(row_number: int, row_values: List[str]) -> List[str]:
+            prefix = f"Row {row_number}: "
+            cont_prefix = f"Row {row_number} (cont): "
+            max_payload = max(120, max_chars - len(cont_prefix) - 8)
+            if not row_values:
+                return [prefix + "<empty>"]
+
+            lines: List[str] = []
+            current = ""
+            for part in row_values:
+                candidate = part if not current else f"{current} | {part}"
+                head = prefix if not lines else cont_prefix
+                if len(head) + len(candidate) <= max_chars:
+                    current = candidate
+                    continue
+                if current:
+                    lines.append(head + current)
+                remain = part
+                while len(cont_prefix) + len(remain) > max_chars:
+                    chunk = remain[:max_payload]
+                    lines.append((prefix if not lines else cont_prefix) + chunk)
+                    remain = remain[max_payload:]
+                current = remain
+            if current:
+                lines.append((prefix if not lines else cont_prefix) + current)
+            return lines
 
         def flush_chunk(row_end_idx: int) -> None:
-            nonlocal chunk_lines, chunk_row_start, chunk_chars
+            nonlocal chunk_lines, chunk_row_start, chunk_chars, chunk_source_rows
             if not chunk_lines:
                 return
             row_start = chunk_row_start + 1
@@ -116,27 +147,33 @@ class DocumentLoader:
             docs.append(Document(page_content=page, metadata=doc_meta))
             chunk_lines = []
             chunk_chars = 0
+            chunk_source_rows = 0
 
         for ridx in range(total_rows):
             row = df.iloc[ridx]
             values: List[str] = []
             for col in selected_columns:
-                cell = self._normalize_cell(row.get(col))
+                cell = self._normalize_cell(row.get(col), max_len=max_cell_chars)
                 if cell:
                     values.append(f"{col}: {cell}")
-            row_line = f"Row {ridx + 1}: " + (" | ".join(values) if values else "<empty>")
-            row_line = row_line[: max_chars - 120] if len(row_line) > max_chars else row_line
-            projected_rows = len(chunk_lines) + 1
-            projected_chars = chunk_chars + len(row_line) + (1 if chunk_lines else 0)
+            row_lines = build_row_lines(ridx + 1, values)
+            row_chars = sum(len(line) for line in row_lines) + max(0, len(row_lines) - 1)
 
-            if chunk_lines and (projected_rows > max_rows or projected_chars > max_chars):
+            if chunk_lines and ((chunk_source_rows + 1) > max_rows or (chunk_chars + row_chars) > max_chars):
                 flush_chunk(ridx - 1)
                 chunk_row_start = ridx
 
             if not chunk_lines:
                 chunk_row_start = ridx
-            chunk_lines.append(row_line)
-            chunk_chars += len(row_line) + (1 if len(chunk_lines) > 1 else 0)
+            for line in row_lines:
+                if chunk_lines and (chunk_chars + len(line) + 1) > max_chars:
+                    flush_chunk(ridx - 1)
+                    chunk_row_start = ridx
+                if not chunk_lines:
+                    chunk_row_start = ridx
+                chunk_lines.append(line)
+                chunk_chars += len(line) + (1 if len(chunk_lines) > 1 else 0)
+            chunk_source_rows += 1
 
         flush_chunk(total_rows - 1)
         return docs

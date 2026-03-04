@@ -7,6 +7,7 @@
 - Поддерживает провайдеры моделей: `ollama/local`, `aihub` (`corporate` alias), `openai`.
 - Загружает файлы, асинхронно индексирует их в ChromaDB и использует в RAG (`/api/v1/files/*`).
 - Для `xlsx/xls/csv` поддерживает adaptive row-dense ingestion и deterministic `tabular_sql` path для aggregate-вопросов.
+- Для аналитических запросов по файлу поддерживает deterministic `tabular_profile` (per-column SQL stats).
 - Хранит пользователей, чаты, сообщения и файлы в PostgreSQL.
 - Отдаёт встроенный frontend из `frontend/` (SPA монтируется на `/`).
 
@@ -119,6 +120,9 @@ Browser SPA (frontend/index.html + static/js)
 - `FULL_FILE_MAP_MAX_TOKENS`: лимит map шага в structured full-file map/reduce.
 - `RAG_FULL_FILE_MIN_ROW_COVERAGE`: порог row coverage для full-file.
 - `RAG_FULL_FILE_ESCALATION_MAX_CHUNKS`: лимит repass-бюджета при low row coverage.
+- `XLSX_CELL_MAX_CHARS`: optional cap на длину ячейки в chunk serialization (`0` = без cap).
+- `OLLAMA_EMBED_MAX_INPUT_CHARS`: max размер одного embed-сегмента для local/Ollama.
+- `OLLAMA_EMBED_SEGMENT_OVERLAP_CHARS`: overlap между embed-сегментами.
 - Для `xlsx/xls/csv` ingestion создает sidecar SQLite dataset (`custom_metadata.tabular_sidecar`) для deterministic `tabular_sql` path.
 
 ## Chat Service Internals (2026-03-03)
@@ -136,3 +140,16 @@ Most chat internals are split into `app/services/chat/*` modules:
 - Stream and non-stream chat flows now share internal generation/post-processing steps in `ChatOrchestrator`.
 
 This keeps HTTP/SSE behavior stable while reducing file size and improving testability.
+
+## Target architecture direction
+
+- Use `AI HUB` as the default and primary model provider for all chat/file analytics requests.
+- Allow `Ollama (llama)` only as emergency fallback when `AI HUB` is unavailable and request waiting is not acceptable.
+- Enforce policy-based model routing with circuit breaker and explicit route telemetry (`model_route`, `fallback_reason`).
+- Keep dual-path answering: deterministic `tabular_sql/profile` for numeric truth, retrieval+LLM only for narrative analysis.
+- Replace in-process ingestion worker with a durable queue/executor (idempotent jobs, retry policy, restart recovery).
+- Evolve tabular storage from per-file SQLite sidecars to shared `DuckDB/Parquet` runtime for large `xlsx/csv`.
+- Keep full-file coverage diagnostics as a hard quality gate (`rows_expected/retrieved/used`, coverage ratios, truncation flags).
+- Implement unified observability + eval framework for offline contour (including fallback-rate and SLO alarms).
+- Use [`docs/11_llm_file_chat_best_practices_architecture.md`](docs/11_llm_file_chat_best_practices_architecture.md) as the architecture baseline.
+- Use [`docs/12_codex_cursor_prompts_offline_architecture.md`](docs/12_codex_cursor_prompts_offline_architecture.md) as implementation prompt pack for Cursor/Codex.

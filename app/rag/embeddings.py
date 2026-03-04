@@ -134,22 +134,79 @@ class EmbeddingsManager:
             f"model: {embedding_model}, expected dimension: {expected_dim}"
         )
 
+        local_max_chars = int(getattr(settings, "OLLAMA_EMBED_MAX_INPUT_CHARS", 3500) or 3500)
+        local_overlap_chars = int(getattr(settings, "OLLAMA_EMBED_SEGMENT_OVERLAP_CHARS", 250) or 250)
+
+        def _split_for_embedding(text: str, max_chars: int, overlap_chars: int) -> List[str]:
+            raw = str(text or "")
+            if len(raw) <= max_chars:
+                return [raw]
+            overlap = max(0, min(overlap_chars, max_chars - 1))
+            step = max(1, max_chars - overlap)
+            out: List[str] = []
+            start = 0
+            while start < len(raw):
+                end = min(start + max_chars, len(raw))
+                seg = raw[start:end]
+                if seg.strip():
+                    out.append(seg)
+                if end >= len(raw):
+                    break
+                start += step
+            return out or [raw[:max_chars]]
+
+        def _mean_pool(vectors: List[List[float]]) -> List[float]:
+            if not vectors:
+                return []
+            dim = len(vectors[0])
+            total = [0.0] * dim
+            for vec in vectors:
+                if len(vec) != dim:
+                    raise RuntimeError("Inconsistent embedding dimensions across segments")
+                for i, value in enumerate(vec):
+                    total[i] += float(value)
+            n = float(len(vectors))
+            return [value / n for value in total]
+
         all_embeddings = []
 
         concurrency = settings.AIHUB_EMBEDDING_CONCURRENCY if self.mode == "aihub" else settings.EMBEDDING_CONCURRENCY
         semaphore = asyncio.Semaphore(max(1, int(concurrency)))
         results: List[Optional[List[float]]] = [None] * len(texts)
+        segmented_inputs = 0
+        segment_calls_total = 0
 
         async def _embed_one(idx: int, text: str) -> None:
-            async with semaphore:
-                embedding = await llm_manager.generate_embedding(
-                    text=text,
-                    model_source=self.mode,
-                    model_name=embedding_model
-                )
+            nonlocal segmented_inputs, segment_calls_total
+            source_text = str(text or "")
+            segments = [source_text]
+            if self.mode in ("local", "ollama"):
+                segments = _split_for_embedding(source_text, local_max_chars, local_overlap_chars)
 
-            if not embedding or len(embedding) == 0:
-                raise RuntimeError(f"Empty embedding returned for text {idx+1}")
+            if len(segments) > 1:
+                segmented_inputs += 1
+                segment_calls_total += len(segments)
+                segment_vectors: List[List[float]] = []
+                for seg in segments:
+                    async with semaphore:
+                        seg_embedding = await llm_manager.generate_embedding(
+                            text=seg,
+                            model_source=self.mode,
+                            model_name=embedding_model
+                        )
+                    if not seg_embedding or len(seg_embedding) == 0:
+                        raise RuntimeError(f"Empty embedding returned for text {idx+1} segment")
+                    segment_vectors.append(seg_embedding)
+                embedding = _mean_pool(segment_vectors)
+            else:
+                async with semaphore:
+                    embedding = await llm_manager.generate_embedding(
+                        text=source_text,
+                        model_source=self.mode,
+                        model_name=embedding_model
+                    )
+                if not embedding or len(embedding) == 0:
+                    raise RuntimeError(f"Empty embedding returned for text {idx+1}")
 
             actual_dim = len(embedding)
             if expected_dim and actual_dim != expected_dim:
@@ -164,6 +221,16 @@ class EmbeddingsManager:
         except Exception as e:
             logger.error(f"❌ Failed to generate embeddings batch: {e}")
             raise RuntimeError(f"Embedding generation failed: {e}")
+
+        if segmented_inputs > 0:
+            logger.info(
+                "🔀 Segmented %d/%d embedding inputs into %d local calls (max_chars=%d overlap=%d)",
+                segmented_inputs,
+                len(texts),
+                segment_calls_total,
+                local_max_chars,
+                local_overlap_chars,
+            )
 
         for emb in results:
             if emb is None:

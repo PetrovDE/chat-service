@@ -235,7 +235,7 @@ async def build_rag_prompt(
             preferred_lang=preferred_lang,
             prompt=(
                 "You are a data analyst.\n"
-                "Use deterministic SQL result below as source of truth.\n"
+                "Use deterministic tabular context below as source of truth.\n"
                 "Do not change numbers from SQL output.\n"
                 "Return sections in order: Answer, Limitations/Missing data, Sources.\n\n"
                 f"User question:\n{query}\n\n"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import asyncio
+import json
 import logging
 import re
 from pathlib import Path
@@ -25,13 +27,37 @@ _AGGREGATE_HINTS = (
     "whole file",
     "entire file",
 )
+_PROFILE_HINTS = (
+    "по каждой колон",
+    "каждой колон",
+    "все колонки",
+    "всех колон",
+    "общий анализ",
+    "полный анализ",
+    "какие данные",
+    "что ты можешь сказать",
+    "покажи статистики",
+    "покажи метрики",
+    "column statistics",
+    "per column",
+    "full analysis",
+    "analyze dataset",
+)
 
 
 def is_tabular_aggregate_intent(query: str) -> bool:
+    return detect_tabular_intent(query) == "aggregate"
+
+
+def detect_tabular_intent(query: str) -> Optional[str]:
     q = (query or "").strip().lower()
     if not q:
-        return False
-    return any(h in q for h in (_COUNT_HINTS + _SUM_HINTS + _AVG_HINTS + _MIN_HINTS + _MAX_HINTS + _AGGREGATE_HINTS))
+        return None
+    if any(h in q for h in _PROFILE_HINTS):
+        return "profile"
+    if any(h in q for h in (_COUNT_HINTS + _SUM_HINTS + _AVG_HINTS + _MIN_HINTS + _MAX_HINTS + _AGGREGATE_HINTS)):
+        return "aggregate"
+    return None
 
 
 def _norm(text: str) -> str:
@@ -56,6 +82,22 @@ def _extract_sidecar(file_obj: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(tables, list) or not tables:
         return None
     return sidecar
+
+
+def _select_table_for_query(query: str, sidecar: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    tables = sidecar.get("tables")
+    if not isinstance(tables, list):
+        return None
+    candidates = [t for t in tables if isinstance(t, dict)]
+    if not candidates:
+        return None
+    q_norm = _norm(query)
+    for table in candidates:
+        name = _norm(str(table.get("table_name") or ""))
+        sheet = _norm(str(table.get("sheet_name") or ""))
+        if (name and name in q_norm) or (sheet and sheet in q_norm):
+            return table
+    return max(candidates, key=lambda t: int(t.get("row_count", 0) or 0))
 
 
 def _choose_operation(query: str) -> str:
@@ -144,12 +186,119 @@ def _build_sql(
     }
 
 
+async def _run_sql(sql_tool: QuerySQLDatabaseTool, sql: str) -> str:
+    try:
+        result = await asyncio.to_thread(sql_tool.invoke, sql)
+        return str(result or "").strip()
+    except Exception as exc:
+        logger.warning("Tabular SQL tool error for query: %s", sql, exc_info=True)
+        return f"ERROR: {type(exc).__name__}: {exc}"
+
+
+def _parse_sql_rows(raw: str) -> List[Tuple[Any, ...]]:
+    text = str(raw or "").strip()
+    if not text or text.startswith("ERROR:"):
+        return []
+    try:
+        parsed = ast.literal_eval(text)
+    except Exception:
+        return []
+    if isinstance(parsed, list):
+        if not parsed:
+            return []
+        if isinstance(parsed[0], tuple):
+            return parsed
+        if isinstance(parsed[0], list):
+            return [tuple(x) for x in parsed]
+        return [(parsed[0],)]
+    if isinstance(parsed, tuple):
+        return [parsed]
+    return [(parsed,)]
+
+
+def _first_int(rows_text: str, default: int = 0) -> int:
+    rows = _parse_sql_rows(rows_text)
+    if not rows:
+        return int(default)
+    first = rows[0][0] if rows[0] else default
+    try:
+        return int(first)
+    except Exception:
+        try:
+            return int(float(first))
+        except Exception:
+            return int(default)
+
+
+async def _build_profile_context(
+    *,
+    sql_tool: QuerySQLDatabaseTool,
+    table_name: str,
+    columns: List[str],
+    table_row_count: int,
+) -> Tuple[str, Dict[str, Any], int]:
+    table_q = _quote_ident(table_name)
+    row_count_sql = f"SELECT COUNT(*) AS value FROM {table_q}"
+    row_count_text = await _run_sql(sql_tool, row_count_sql)
+    row_count = _first_int(row_count_text, default=table_row_count)
+    sample_rows_sql = f"SELECT * FROM {table_q} LIMIT 5"
+    sample_rows_text = await _run_sql(sql_tool, sample_rows_sql)
+
+    column_stats: List[Dict[str, Any]] = []
+    max_profiled_columns = min(len(columns), 160)
+    for col in columns[:max_profiled_columns]:
+        cq = _quote_ident(col)
+        non_empty_sql = f"SELECT COUNT(*) AS value FROM {table_q} WHERE TRIM(COALESCE({cq}, '')) <> ''"
+        distinct_sql = f"SELECT COUNT(DISTINCT {cq}) AS value FROM {table_q} WHERE TRIM(COALESCE({cq}, '')) <> ''"
+        top_values_sql = (
+            f"SELECT {cq} AS value, COUNT(*) AS cnt "
+            f"FROM {table_q} "
+            f"WHERE TRIM(COALESCE({cq}, '')) <> '' "
+            f"GROUP BY {cq} "
+            f"ORDER BY cnt DESC LIMIT 3"
+        )
+        non_empty_text = await _run_sql(sql_tool, non_empty_sql)
+        distinct_text = await _run_sql(sql_tool, distinct_sql)
+        top_values_text = await _run_sql(sql_tool, top_values_sql)
+        column_stats.append(
+            {
+                "column": col,
+                "non_empty_count": _first_int(non_empty_text, default=0),
+                "distinct_non_empty_count": _first_int(distinct_text, default=0),
+                "top_values": _parse_sql_rows(top_values_text),
+            }
+        )
+
+    profile_payload = {
+        "table_name": table_name,
+        "row_count": row_count,
+        "columns_total": len(columns),
+        "profiled_columns": max_profiled_columns,
+        "column_stats": column_stats,
+        "sample_rows": _parse_sql_rows(sample_rows_text),
+    }
+    prompt_context = (
+        "Deterministic tabular profile (source of truth):\n"
+        + json.dumps(profile_payload, ensure_ascii=False, indent=2)
+    )
+    debug = {
+        "profile_kind": "per_column",
+        "row_count_sql": row_count_sql,
+        "row_count_result": row_count_text,
+        "sample_rows_sql": sample_rows_sql,
+        "sample_rows_result": sample_rows_text,
+        "profiled_columns": max_profiled_columns,
+    }
+    return prompt_context, debug, row_count
+
+
 async def execute_tabular_sql_path(
     *,
     query: str,
     files: List[Any],
 ) -> Optional[Dict[str, Any]]:
-    if not is_tabular_aggregate_intent(query):
+    intent_kind = detect_tabular_intent(query)
+    if intent_kind is None:
         return None
 
     target_file = None
@@ -166,8 +315,7 @@ async def execute_tabular_sql_path(
     if target_file is None or sidecar is None:
         return None
 
-    tables = sidecar.get("tables") or []
-    table = tables[0] if isinstance(tables[0], dict) else None
+    table = _select_table_for_query(query, sidecar)
     if not isinstance(table, dict):
         return None
 
@@ -177,12 +325,41 @@ async def execute_tabular_sql_path(
     if not table_name or not columns or not sidecar_path.exists():
         return None
 
-    sql, plan = _build_sql(query=query, table_name=table_name, columns=[str(c) for c in columns])
+    columns_norm = [str(c) for c in columns]
     db = SQLDatabase.from_uri(f"sqlite:///{sidecar_path}")
     sql_tool = QuerySQLDatabaseTool(db=db)
-    result_text = await asyncio.to_thread(sql_tool.invoke, sql)
-
     rows_total = int(table.get("row_count", 0) or 0)
+    if intent_kind == "profile":
+        prompt_context, profile_debug, profile_rows_total = await _build_profile_context(
+            sql_tool=sql_tool,
+            table_name=table_name,
+            columns=columns_norm,
+            table_row_count=rows_total,
+        )
+        rows_total = max(rows_total, profile_rows_total)
+        return {
+            "prompt_context": prompt_context,
+            "debug": {
+                "retrieval_mode": "tabular_sql",
+                "intent": "tabular_profile",
+                "deterministic_path": True,
+                "tabular_sql": {
+                    "sidecar_path": str(sidecar_path),
+                    "table_name": table_name,
+                    "table_row_count": rows_total,
+                    **profile_debug,
+                },
+            },
+            "sources": [f"{getattr(target_file, 'original_filename', 'unknown')} | table={table_name} | sql_profile"],
+            "rows_expected_total": rows_total,
+            "rows_retrieved_total": rows_total,
+            "rows_used_map_total": rows_total,
+            "rows_used_reduce_total": rows_total,
+            "row_coverage_ratio": 1.0 if rows_total > 0 else 0.0,
+        }
+
+    sql, plan = _build_sql(query=query, table_name=table_name, columns=columns_norm)
+    result_text = await _run_sql(sql_tool, sql)
     return {
         "prompt_context": (
             "Deterministic tabular SQL result (source of truth):\n"

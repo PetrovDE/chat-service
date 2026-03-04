@@ -153,6 +153,22 @@ class OllamaProvider(BaseLLMProvider):
             logger.error("Unexpected payload from /api/embed model=%s", embedding_model)
             inc_counter("llm_provider_error_total", provider="ollama", operation="embedding")
             return None
+        except httpx.HTTPStatusError as e:
+            status = int(getattr(e.response, "status_code", 0) or 0)
+            body_preview = ""
+            try:
+                body_preview = (e.response.text or "")[:300]
+            except Exception:
+                body_preview = ""
+            logger.warning(
+                "Ollama embedding HTTP %s model=%s input_chars=%d body=%s",
+                status,
+                embedding_model,
+                len(text or ""),
+                body_preview,
+            )
+            inc_counter("llm_provider_error_total", provider="ollama", operation="embedding")
+            return None
         except Exception as e:
             logger.error("Ollama embedding error: %s", e, exc_info=True)
             inc_counter("llm_provider_error_total", provider="ollama", operation="embedding")
@@ -160,4 +176,3 @@ class OllamaProvider(BaseLLMProvider):
 
 
 ollama_provider = OllamaProvider()
-

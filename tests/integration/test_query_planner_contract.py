@@ -58,3 +58,14 @@ def test_query_planner_metric_critical_ambiguous_returns_clarification():
     assert payload["requires_clarification"] is True
     assert "metric_critical_ambiguous" in payload["reason_codes"]
     assert isinstance(payload.get("clarification_prompt"), str) and payload["clarification_prompt"]
+
+
+def test_query_planner_routes_python_requests_to_complex_analytics():
+    decision = plan_query(
+        query="Run Python pandas analysis with heatmap and NLP on comment_text",
+        files=[_resolved_tabular_file()],
+    )
+    payload = decision.as_dict()
+    assert payload["route"] == "complex_analytics"
+    assert payload["intent"] == "complex_analytics"
+    assert payload["requires_clarification"] is False

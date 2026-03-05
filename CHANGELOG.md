@@ -2,6 +2,131 @@
 
 ## [Unreleased] - 2026-03-03
 
+### Complex Analytics Dynamic Codegen (2026-03-05)
+- Added LLM-assisted Python code generation stage for `complex_analytics`:
+  - prompt includes user task + dataframe profile,
+  - generated code is parsed and validated against sandbox contract before execution,
+  - supports request-specific dependency analysis/heatmap generation scenarios.
+- Added strict stability fallback:
+  - invalid/unsafe generated code falls back to template executor,
+  - runtime failures in generated code trigger controlled fallback (`template_runtime_fallback`) instead of user-visible hard failure.
+- Added richer report layer:
+  - `insights` section in formatted analytics response (RU/EN),
+  - dependency-focused fallback visualizations for relevant queries.
+- Added codegen observability:
+  - `complex_analytics_codegen_total{status,reason}` counter,
+  - debug metadata: `complex_analytics.code_source` + `complex_analytics.codegen`.
+- Routing integration:
+  - `build_rag_prompt` now forwards `model_source/provider_mode/model_name` into complex analytics executor,
+  - codegen defaults to forced local provider (`COMPLEX_ANALYTICS_CODEGEN_FORCE_LOCAL=true`) for offline constraints.
+- Added regression coverage:
+  - unit tests for codegen success/fallback contract,
+  - integration test for dependency-request codegen path with heatmap artifact,
+  - preserved deterministic SQL and short-circuit behavior regressions.
+
+### Complex Analytics Hardening & Hygiene (2026-03-05)
+- Hardened sandbox security checks:
+  - blocked dynamic bypass primitives (`getattr/setattr/delattr/globals/locals/vars`),
+  - blocked dunder attribute access.
+- Artifact response sanitization:
+  - `artifacts.path` is now relative (`uploads/...`),
+  - no absolute filesystem paths in response text/payloads.
+- Added retention cleanup for `uploads/complex_analytics` runs:
+  - TTL-based cleanup (`COMPLEX_ANALYTICS_ARTIFACT_TTL_HOURS`),
+  - max-run-directories cap (`COMPLEX_ANALYTICS_ARTIFACT_MAX_RUN_DIRS`).
+- Added observability counters for complex analytics quality:
+  - `complex_analytics_executor_success_total`,
+  - `complex_analytics_artifacts_generated_total`,
+  - `complex_analytics_artifact_kind_total`,
+  - `complex_analytics_artifacts_cleanup_total`.
+- Improved RU report localization for numeric/date labels and common note messages.
+- Added regression tests:
+  - stream request-id coverage (`/api/v1/chat/stream`),
+  - sandbox security bypass blocking,
+  - no datetime-infer warning noise,
+  - metrics emission checks.
+
+### Request ID Logging Consistency Fix (2026-03-05)
+- Fixed access-log correlation in `app.main` so request completion/error logs no longer emit `rid=-` during normal request flow.
+- `x-request-id` is now consistently resolved for access logs from:
+  - response header set by middleware,
+  - current request context,
+  - incoming request header fallback,
+  - generated UUID fallback.
+- Added smoke coverage:
+  - response contains `x-request-id`,
+  - incoming `x-request-id` is echoed,
+  - `app.main` access log records include non-empty `request_id`.
+
+### Complex Analytics Report Localization Fix (2026-03-05)
+- Fixed RU report formatting for `complex_analytics` short-circuit responses:
+  - removed mojibake/garbled section labels,
+  - ensured RU query returns RU report structure and localized field semantics.
+- Added localization mapping for common analytics field semantics (`purpose_hint`, process context).
+- Added regression coverage:
+  - `tests/unit/test_complex_analytics_executor.py::test_russian_report_is_localized_without_mojibake`.
+- Updated examples:
+  - `docs/examples/chat.request.complex_analytics.ru.json`,
+  - `docs/examples/chat.response.complex_analytics.ru.json`.
+
+### Complex Analytics Chart Rendering UX (2026-03-05)
+- Exposed complex analytics artifacts as browser-accessible URLs under `/uploads/*` (static mount in `app/main.py`).
+- Added artifact URL derivation in `app/services/chat/complex_analytics.py` and embedded chart markdown in report text:
+  - `![chart](/uploads/...)`
+- Extended streaming and non-streaming chat payloads to include artifact metadata list:
+  - SSE `done.artifacts[]`
+  - `ChatResponse.artifacts[]` (optional, non-breaking)
+- Updated frontend chat renderer to show chart previews in assistant metadata gallery (`frontend/static/js/chat-manager.js` + CSS).
+- Updated docs/examples for complex analytics response contract and artifact URL semantics.
+
+Migration note:
+- `ChatResponse` now may include optional `artifacts` list for complex analytics responses.
+- Existing clients ignoring unknown fields remain fully compatible.
+
+### Backend Complex Analytics Executor (2026-03-05)
+- Added new planner route `complex_analytics` for requests that require sandboxed Python analytics (`python/pandas/heatmap/NLP/multi-step`).
+- Added isolated executor module:
+  - `app/services/chat/complex_analytics.py`
+  - sandbox AST policy blocks network/system/subprocess imports and calls,
+  - bounded timeout/output/artifact limits,
+  - artifact persistence in controlled temp contour (`uploads/complex_analytics`),
+  - tabular data loading from existing tabular runtime metadata.
+- `rag_prompt_builder` now routes complex prompts to executor path (no deterministic SQL guardrail path misuse).
+- Added controlled degradation on executor failures:
+  - reason-specific clarification responses,
+  - no implicit fallback to unsafe execution paths.
+- Extended chat telemetry/debug contract with execution-plane fields:
+  - `execution_route`,
+  - `executor_attempted`,
+  - `executor_status`,
+  - `executor_error_code`,
+  - `artifacts_count`.
+- Added structured log enrichment in `chat_route_decision` with execution route + executor status.
+- Added tests:
+  - `tests/unit/test_complex_analytics_executor.py`,
+  - `tests/integration/test_complex_analytics_path.py`,
+  - `tests/smoke/test_complex_analytics_smoke.py`,
+  - planner and response compatibility updates.
+- Added docs/ADR updates:
+  - `docs/05_query_planner.md`,
+  - `docs/07_llm_routing.md`,
+  - `docs/01_architecture_overview.md`,
+  - `docs/11_llm_file_chat_best_practices_architecture.md`,
+  - `docs/02_api_contracts.md`,
+  - `docs/12_architecture_decisions.md`,
+  - `docs/adr/ADR-014-complex-analytics-sandbox-executor.md`,
+  - `docs/examples/chat.request.complex_analytics.json`,
+  - `docs/examples/chat.response.complex_analytics.json`.
+
+Migration note:
+- `ChatResponse` now includes additional non-breaking fields:
+  - `execution_route` (`tabular_sql|complex_analytics|narrative|clarification|unknown`),
+  - `executor_attempted` (bool),
+  - `executor_status` (`not_attempted|success|error|timeout|blocked`),
+  - `executor_error_code` (nullable string),
+  - `artifacts_count` (int).
+- Existing routing fields (`model_route`, `provider_effective`, `fallback_*`, `aihub_attempted`) remain unchanged.
+
 ### Documentation Reconciliation (2026-03-05)
 - Performed full architecture audit and documentation reconciliation against current codebase.
 - Added canonical architecture docs:

@@ -1,9 +1,11 @@
 from types import SimpleNamespace
 
 from app.domain.chat.query_planner import (
+    INTENT_COMPLEX_ANALYTICS,
     INTENT_NARRATIVE_RETRIEVAL,
     INTENT_TABULAR_AGGREGATE,
     INTENT_TABULAR_PROFILE,
+    ROUTE_COMPLEX_ANALYTICS,
     ROUTE_DETERMINISTIC_ANALYTICS,
     ROUTE_NARRATIVE_RETRIEVAL,
     plan_query,
@@ -63,3 +65,12 @@ def test_planner_routes_non_tabular_query_to_narrative():
     assert decision.intent == INTENT_NARRATIVE_RETRIEVAL
     assert decision.requires_clarification is False
 
+
+def test_planner_routes_python_pandas_request_to_complex_analytics():
+    decision = plan_query(
+        query="Write Python pandas code, run NLP on comment_text and build a heatmap by office",
+        files=[_tabular_file()],
+    )
+    assert decision.route == ROUTE_COMPLEX_ANALYTICS
+    assert decision.intent == INTENT_COMPLEX_ANALYTICS
+    assert decision.requires_clarification is False

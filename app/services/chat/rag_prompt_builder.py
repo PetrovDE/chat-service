@@ -10,9 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.crud import crud_file
-from app.domain.chat.query_planner import ROUTE_DETERMINISTIC_ANALYTICS, plan_query
+from app.domain.chat.query_planner import (
+    ROUTE_COMPLEX_ANALYTICS,
+    ROUTE_DETERMINISTIC_ANALYTICS,
+    plan_query,
+)
 from app.rag.retriever import rag_retriever
 from app.services.chat.context import merge_context_docs
+from app.services.chat.complex_analytics import execute_complex_analytics_path
 from app.services.chat.embedding_config import group_files_by_embedding_config, resolve_rag_embedding_config
 from app.services.chat.full_file_analysis import build_full_file_map_reduce_prompt
 from app.services.chat.language import apply_language_policy_to_prompt, detect_preferred_response_language
@@ -155,6 +160,7 @@ async def build_rag_prompt(
     top_k: int = 3,
     file_ids: Optional[List[str]] = None,
     model_source: Optional[str] = None,
+    provider_mode: Optional[str] = None,
     model_name: Optional[str] = None,
     rag_mode: Optional[str] = None,
     prompt_max_chars: Optional[int] = None,
@@ -223,6 +229,11 @@ async def build_rag_prompt(
             "retrieval_mode": "clarification",
             "requires_clarification": True,
             "clarification_prompt": planner_decision.clarification_prompt,
+            "execution_route": "clarification",
+            "executor_attempted": False,
+            "executor_status": "not_attempted",
+            "executor_error_code": None,
+            "artifacts_count": 0,
             "rag_mode": rag_mode or "auto",
             "rag_mode_effective": "clarification",
             "file_ids": [str(file_obj.id) for file_obj in files],
@@ -242,6 +253,108 @@ async def build_rag_prompt(
         return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
 
     expected_chunks_total = sum(int(getattr(file_obj, "chunks_count", 0) or 0) for file_obj in files)
+    if planner_decision.route == ROUTE_COMPLEX_ANALYTICS:
+        complex_result = await execute_complex_analytics_path(
+            query=query,
+            files=files,
+            model_source=model_source,
+            provider_mode=provider_mode,
+            model_name=model_name,
+        )
+        if isinstance(complex_result, dict):
+            rag_debug = dict(complex_result.get("debug") or {})
+            rag_debug["planner_decision"] = planner_decision_payload
+            rag_debug["file_ids"] = [str(file_obj.id) for file_obj in files]
+            rag_debug["rag_mode"] = rag_mode or "auto"
+            rag_debug["execution_route"] = "complex_analytics"
+            rag_debug["artifacts"] = list(complex_result.get("artifacts") or [])
+            rag_debug["artifacts_count"] = int(
+                rag_debug.get("artifacts_count", len(rag_debug.get("artifacts") or [])) or 0
+            )
+            rag_sources = list(complex_result.get("sources") or [])
+            status = str(complex_result.get("status") or "ok")
+            if status == "ok":
+                rag_used = False
+                rag_debug["rag_mode_effective"] = "complex_analytics"
+                rag_debug["requires_clarification"] = False
+                rag_debug["executor_attempted"] = True
+                rag_debug["executor_status"] = str(rag_debug.get("executor_status") or "success")
+                rag_debug["short_circuit_response"] = True
+                rag_debug["short_circuit_response_text"] = str(complex_result.get("final_response") or "").strip()
+                observe_retrieval_coverage(
+                    coverage_ratio=1.0,
+                    retrieval_mode="complex_analytics",
+                    expected_chunks=expected_chunks_total,
+                    retrieved_chunks=expected_chunks_total,
+                )
+                observe_tabular_row_coverage(
+                    coverage_ratio=1.0,
+                    retrieval_mode="complex_analytics",
+                    rows_expected_total=int(rag_debug.get("rows_expected_total", 0) or 0),
+                    rows_retrieved_total=int(rag_debug.get("rows_retrieved_total", 0) or 0),
+                )
+                final_prompt = rag_debug["short_circuit_response_text"] or str(complex_result.get("final_response") or "")
+                return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
+
+            rag_used = False
+            rag_debug["rag_mode_effective"] = "complex_analytics_error"
+            rag_debug["requires_clarification"] = True
+            rag_debug["short_circuit_response"] = True
+            clarification_prompt = str(complex_result.get("clarification_prompt") or "").strip()
+            if not clarification_prompt:
+                clarification_prompt = (
+                    "Complex analytics sandbox execution failed. "
+                    "Please clarify metric, filters, or simplify analysis steps."
+                )
+            rag_debug["clarification_prompt"] = clarification_prompt
+            rag_debug["short_circuit_response_text"] = clarification_prompt
+            observe_retrieval_coverage(
+                coverage_ratio=0.0,
+                retrieval_mode="complex_analytics_error",
+                expected_chunks=expected_chunks_total,
+                retrieved_chunks=0,
+            )
+            observe_tabular_row_coverage(
+                coverage_ratio=0.0,
+                retrieval_mode="complex_analytics_error",
+                rows_expected_total=0,
+                rows_retrieved_total=0,
+            )
+            final_prompt = clarification_prompt
+            return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
+
+        rag_debug = {
+            "planner_decision": planner_decision_payload,
+            "intent": "complex_analytics",
+            "retrieval_mode": "clarification",
+            "requires_clarification": True,
+            "execution_route": "complex_analytics",
+            "executor_attempted": True,
+            "executor_status": "error",
+            "executor_error_code": "executor_unavailable",
+            "artifacts_count": 0,
+            "rag_mode": rag_mode or "auto",
+            "rag_mode_effective": "complex_analytics_error",
+            "file_ids": [str(file_obj.id) for file_obj in files],
+            "retrieval_policy": {
+                "mode": "clarification",
+                "query_profile": "complex_analytics",
+                "requested_top_k": top_k,
+                "effective_top_k": 0,
+                "expected_chunks_total": expected_chunks_total,
+                "escalation": {"attempted": False, "applied": False, "reason": "executor_unavailable"},
+                "row_escalation": {"attempted": False, "applied": False, "reason": "executor_unavailable"},
+            },
+        }
+        final_prompt = (
+            "Complex analytics sandbox is currently unavailable. "
+            "Please retry with narrower scope or ask for deterministic SQL aggregate/profile."
+        )
+        rag_debug["clarification_prompt"] = final_prompt
+        rag_debug["short_circuit_response"] = True
+        rag_debug["short_circuit_response_text"] = final_prompt
+        return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
+
     if planner_decision.route == ROUTE_DETERMINISTIC_ANALYTICS:
         tabular_sql_result = await execute_tabular_sql_path(query=query, files=files)
         if isinstance(tabular_sql_result, dict):
@@ -254,6 +367,11 @@ async def build_rag_prompt(
                 rag_debug["rag_mode"] = rag_mode or "auto"
                 rag_debug["rag_mode_effective"] = "tabular_sql_error"
                 rag_debug["requires_clarification"] = True
+                rag_debug["execution_route"] = "tabular_sql"
+                rag_debug["executor_attempted"] = False
+                rag_debug["executor_status"] = "not_attempted"
+                rag_debug["executor_error_code"] = None
+                rag_debug["artifacts_count"] = 0
                 clarification_prompt = str(tabular_sql_result.get("clarification_prompt") or "").strip()
                 if not clarification_prompt:
                     clarification_prompt = (
@@ -283,6 +401,11 @@ async def build_rag_prompt(
             rag_debug["file_ids"] = [str(file_obj.id) for file_obj in files]
             rag_debug["rag_mode"] = rag_mode or "auto"
             rag_debug["rag_mode_effective"] = "tabular_sql"
+            rag_debug["execution_route"] = "tabular_sql"
+            rag_debug["executor_attempted"] = False
+            rag_debug["executor_status"] = "not_attempted"
+            rag_debug["executor_error_code"] = None
+            rag_debug["artifacts_count"] = 0
             rag_debug["retrieval_policy"] = {
                 "mode": "tabular_sql",
                 "query_profile": planner_decision.intent,
@@ -499,6 +622,11 @@ async def build_rag_prompt(
         rag_debug["embedding_mode"] = embedding_mode
         rag_debug["embedding_model"] = embedding_model
         rag_debug["planner_decision"] = planner_decision_payload
+        rag_debug["execution_route"] = "narrative"
+        rag_debug["executor_attempted"] = False
+        rag_debug["executor_status"] = "not_attempted"
+        rag_debug["executor_error_code"] = None
+        rag_debug["artifacts_count"] = 0
         rag_debug["file_ids"] = rag_file_ids
         rag_debug["rag_mode"] = rag_mode or "auto"
         rag_debug["rag_mode_effective"] = selected_rag_mode or rag_mode or "auto"

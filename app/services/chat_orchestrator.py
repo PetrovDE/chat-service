@@ -75,6 +75,83 @@ class ChatOrchestrator:
         return bool(isinstance(planner_decision, dict) and planner_decision.get("requires_clarification", False))
 
     @staticmethod
+    def _executor_short_circuit_text(ctx: Dict[str, Any]) -> Optional[str]:
+        rag_debug = ctx.get("rag_debug")
+        if not isinstance(rag_debug, dict):
+            return None
+        if not bool(rag_debug.get("short_circuit_response", False)):
+            return None
+        value = str(rag_debug.get("short_circuit_response_text") or "").strip()
+        return value or None
+
+    @staticmethod
+    def _execution_telemetry(ctx: Dict[str, Any]) -> Dict[str, Any]:
+        rag_debug = ctx.get("rag_debug")
+        execution_route = "narrative"
+        executor_attempted = False
+        executor_status = "not_attempted"
+        executor_error_code = None
+        artifacts_count = 0
+
+        if isinstance(rag_debug, dict):
+            route_value = str(rag_debug.get("execution_route") or "").strip().lower()
+            if route_value in {"tabular_sql", "complex_analytics", "narrative", "clarification"}:
+                execution_route = route_value
+            else:
+                retrieval_mode = str(rag_debug.get("retrieval_mode") or "").strip().lower()
+                if retrieval_mode.startswith("tabular_sql"):
+                    execution_route = "tabular_sql"
+                elif retrieval_mode.startswith("complex_analytics"):
+                    execution_route = "complex_analytics"
+                elif bool(rag_debug.get("requires_clarification", False)):
+                    execution_route = "clarification"
+            executor_attempted = bool(rag_debug.get("executor_attempted", False))
+            executor_status_raw = str(rag_debug.get("executor_status") or "").strip().lower()
+            if executor_status_raw in {"success", "error", "timeout", "blocked", "not_attempted"}:
+                executor_status = executor_status_raw
+            elif executor_attempted:
+                executor_status = "success" if execution_route == "complex_analytics" else "not_attempted"
+            executor_error_code = rag_debug.get("executor_error_code")
+            artifacts_raw = rag_debug.get("artifacts_count")
+            if artifacts_raw is None:
+                artifacts_raw = len(rag_debug.get("artifacts") or [])
+            try:
+                artifacts_count = max(0, int(artifacts_raw or 0))
+            except Exception:
+                artifacts_count = 0
+
+        return {
+            "execution_route": execution_route,
+            "executor_attempted": executor_attempted,
+            "executor_status": executor_status,
+            "executor_error_code": executor_error_code,
+            "artifacts_count": artifacts_count,
+        }
+
+    @staticmethod
+    def _extract_artifacts(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rag_debug = ctx.get("rag_debug")
+        if not isinstance(rag_debug, dict):
+            return []
+        raw_artifacts = rag_debug.get("artifacts")
+        if not isinstance(raw_artifacts, list):
+            return []
+
+        artifacts: List[Dict[str, Any]] = []
+        for raw_item in raw_artifacts[:32]:
+            if not isinstance(raw_item, dict):
+                continue
+            item: Dict[str, Any] = {}
+            for key in ("name", "path", "url", "kind", "content_type", "column"):
+                value = raw_item.get(key)
+                if value is None:
+                    continue
+                item[key] = str(value)
+            if item:
+                artifacts.append(item)
+        return artifacts
+
+    @staticmethod
     def _clarification_text(ctx: Dict[str, Any]) -> str:
         rag_debug = ctx.get("rag_debug")
         if isinstance(rag_debug, dict):
@@ -237,11 +314,12 @@ class ChatOrchestrator:
     def _log_route_event(
         *,
         route_telemetry: Dict[str, Any],
+        execution_telemetry: Dict[str, Any],
         conversation_id: uuid.UUID,
         stream: bool,
     ) -> None:
         logger.info(
-            "chat_route_decision conversation_id=%s stream=%s route_mode=%s provider_selected=%s provider_effective=%s model_route=%s fallback_attempted=%s fallback_reason=%s aihub_attempted=%s",
+            "chat_route_decision conversation_id=%s stream=%s route_mode=%s provider_selected=%s provider_effective=%s model_route=%s fallback_attempted=%s fallback_reason=%s aihub_attempted=%s execution_route=%s executor_attempted=%s executor_status=%s executor_error_code=%s artifacts_count=%s",
             str(conversation_id),
             str(bool(stream)).lower(),
             route_telemetry.get("route_mode"),
@@ -251,6 +329,11 @@ class ChatOrchestrator:
             route_telemetry.get("fallback_attempted"),
             route_telemetry.get("fallback_reason"),
             route_telemetry.get("aihub_attempted"),
+            execution_telemetry.get("execution_route"),
+            execution_telemetry.get("executor_attempted"),
+            execution_telemetry.get("executor_status"),
+            execution_telemetry.get("executor_error_code"),
+            execution_telemetry.get("artifacts_count"),
         )
 
     @staticmethod
@@ -299,6 +382,7 @@ class ChatOrchestrator:
             top_k=8,
             file_ids=chat_data.file_ids,
             model_source=provider_selection["provider_source_selected_raw"],
+            provider_mode=provider_selection["provider_mode"],
             model_name=provider_selection["provider_model_effective"],
             rag_mode=chat_data.rag_mode,
             prompt_max_chars=chat_data.prompt_max_chars,
@@ -346,6 +430,8 @@ class ChatOrchestrator:
                 provider_effective=ctx["provider_source_effective"],
                 aihub_attempted=False,
             )
+            execution_telemetry = self._execution_telemetry(ctx)
+            artifacts_payload = self._extract_artifacts(ctx)
 
             try:
                 if self._planner_requires_clarification(ctx):
@@ -358,6 +444,7 @@ class ChatOrchestrator:
                         "rag_enabled": ctx["rag_used"],
                         "rag_debug": ctx["rag_debug"],
                         **route_telemetry,
+                        **execution_telemetry,
                     }
                     if chat_data.rag_debug:
                         start_payload["rag_debug"] = self._build_rag_debug_payload(
@@ -392,7 +479,12 @@ class ChatOrchestrator:
                         max_tokens=chat_data.max_tokens,
                         generation_time=generation_time,
                     )
-                    self._log_route_event(route_telemetry=route_telemetry, conversation_id=conversation_id, stream=True)
+                    self._log_route_event(
+                        route_telemetry=route_telemetry,
+                        execution_telemetry=execution_telemetry,
+                        conversation_id=conversation_id,
+                        stream=True,
+                    )
                     yield (
                         "data: "
                         + json.dumps(
@@ -403,7 +495,68 @@ class ChatOrchestrator:
                                 "summary_available": False,
                                 "caveats": ctx["rag_caveats"],
                                 "sources": ctx["rag_sources"],
+                                "artifacts": artifacts_payload,
                                 **route_telemetry,
+                                **execution_telemetry,
+                            }
+                        )
+                        + "\n\n"
+                    )
+                    return
+
+                short_circuit_text = self._executor_short_circuit_text(ctx)
+                if short_circuit_text:
+                    full_response = short_circuit_text
+                    start_payload = {
+                        "type": "start",
+                        "conversation_id": str(conversation_id),
+                        "message_id": str(assistant_message_id),
+                        "rag_enabled": ctx["rag_used"],
+                        "rag_debug": ctx["rag_debug"],
+                        **route_telemetry,
+                        **execution_telemetry,
+                    }
+                    if chat_data.rag_debug:
+                        start_payload["rag_debug"] = self._build_rag_debug_payload(
+                            rag_debug=ctx["rag_debug"],
+                            context_docs=ctx["context_docs"],
+                            rag_sources=ctx["rag_sources"],
+                            llm_tokens_used=None,
+                            provider_debug=None,
+                        )
+                    yield f"data: {json.dumps(start_payload)}\n\n"
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': short_circuit_text})}\n\n"
+
+                    generation_time = (datetime.utcnow() - start_time).total_seconds()
+                    await crud_message.create_message(
+                        db=db,
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=short_circuit_text,
+                        model_name="complex_analytics_executor",
+                        temperature=chat_data.temperature,
+                        max_tokens=chat_data.max_tokens,
+                        generation_time=generation_time,
+                    )
+                    self._log_route_event(
+                        route_telemetry=route_telemetry,
+                        execution_telemetry=execution_telemetry,
+                        conversation_id=conversation_id,
+                        stream=True,
+                    )
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "done",
+                                "generation_time": generation_time,
+                                "rag_used": ctx["rag_used"],
+                                "summary_available": False,
+                                "caveats": ctx["rag_caveats"],
+                                "sources": ctx["rag_sources"],
+                                "artifacts": artifacts_payload,
+                                **route_telemetry,
+                                **execution_telemetry,
                             }
                         )
                         + "\n\n"
@@ -413,7 +566,12 @@ class ChatOrchestrator:
                 generation_kwargs = self._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
                 routed_stream = await llm_manager.create_routed_stream(**generation_kwargs)
                 route_telemetry = dict(routed_stream.telemetry.as_dict())
-                self._log_route_event(route_telemetry=route_telemetry, conversation_id=conversation_id, stream=True)
+                self._log_route_event(
+                    route_telemetry=route_telemetry,
+                    execution_telemetry=execution_telemetry,
+                    conversation_id=conversation_id,
+                    stream=True,
+                )
 
                 start_payload = {
                     "type": "start",
@@ -422,6 +580,7 @@ class ChatOrchestrator:
                     "rag_enabled": ctx["rag_used"],
                     "rag_debug": ctx["rag_debug"],
                     **route_telemetry,
+                    **execution_telemetry,
                 }
                 if chat_data.rag_debug:
                     start_payload["rag_debug"] = self._build_rag_debug_payload(
@@ -478,7 +637,9 @@ class ChatOrchestrator:
                             "summary_available": bool(summary_text),
                             "caveats": ctx["rag_caveats"],
                             "sources": ctx["rag_sources"],
+                            "artifacts": artifacts_payload,
                             **route_telemetry,
+                            **execution_telemetry,
                         }
                     )
                     + "\n\n"
@@ -491,6 +652,7 @@ class ChatOrchestrator:
                     "message": str(exc),
                     "error_type": type(exc).__name__,
                     **route_telemetry,
+                    **execution_telemetry,
                 }
                 yield f"data: {json.dumps(error_payload)}\n\n"
 
@@ -515,6 +677,8 @@ class ChatOrchestrator:
         conversation_id = ctx["conversation_id"]
 
         start_time = datetime.utcnow()
+        execution_telemetry = self._execution_telemetry(ctx)
+        artifacts_payload = self._extract_artifacts(ctx)
         if self._planner_requires_clarification(ctx):
             response_text = self._clarification_text(ctx)
             generation_time = (datetime.utcnow() - start_time).total_seconds()
@@ -544,7 +708,12 @@ class ChatOrchestrator:
                 provider_effective=ctx["provider_source_effective"],
                 aihub_attempted=False,
             )
-            self._log_route_event(route_telemetry=route_telemetry, conversation_id=conversation_id, stream=False)
+            self._log_route_event(
+                route_telemetry=route_telemetry,
+                execution_telemetry=execution_telemetry,
+                conversation_id=conversation_id,
+                stream=False,
+            )
             return ChatResponse(
                 response=response_text,
                 conversation_id=conversation_id,
@@ -561,17 +730,92 @@ class ChatOrchestrator:
                     route_telemetry.get("fallback_policy_version", settings.LLM_FALLBACK_POLICY_VERSION)
                 ),
                 aihub_attempted=bool(route_telemetry.get("aihub_attempted", False)),
+                execution_route=str(execution_telemetry.get("execution_route", "clarification")),
+                executor_attempted=bool(execution_telemetry.get("executor_attempted", False)),
+                executor_status=str(execution_telemetry.get("executor_status", "not_attempted")),
+                executor_error_code=execution_telemetry.get("executor_error_code"),
+                artifacts_count=int(execution_telemetry.get("artifacts_count", 0) or 0),
                 tokens_used=None,
                 generation_time=generation_time,
                 summary=None,
                 caveats=ctx["rag_caveats"],
                 sources=ctx["rag_sources"],
+                artifacts=artifacts_payload or None,
+                rag_debug=rag_debug_payload,
+            )
+
+        short_circuit_text = self._executor_short_circuit_text(ctx)
+        if short_circuit_text:
+            generation_time = (datetime.utcnow() - start_time).total_seconds()
+            assistant_message = await crud_message.create_message(
+                db=db,
+                conversation_id=conversation_id,
+                role="assistant",
+                content=short_circuit_text,
+                model_name="complex_analytics_executor",
+                temperature=chat_data.temperature,
+                max_tokens=chat_data.max_tokens,
+                generation_time=generation_time,
+            )
+            rag_debug_payload = None
+            if chat_data.rag_debug:
+                rag_debug_payload = self._build_rag_debug_payload(
+                    rag_debug=ctx["rag_debug"],
+                    context_docs=ctx["context_docs"],
+                    rag_sources=ctx["rag_sources"],
+                    llm_tokens_used=None,
+                    provider_debug=None,
+                )
+            route_telemetry = self._default_route_telemetry(
+                route_mode=ctx["provider_mode"],
+                provider_selected=ctx["provider_source_selected_raw"],
+                provider_effective=ctx["provider_source_effective"],
+                aihub_attempted=False,
+            )
+            self._log_route_event(
+                route_telemetry=route_telemetry,
+                execution_telemetry=execution_telemetry,
+                conversation_id=conversation_id,
+                stream=False,
+            )
+            return ChatResponse(
+                response=short_circuit_text,
+                conversation_id=conversation_id,
+                message_id=assistant_message.id,
+                model_used="complex_analytics_executor",
+                model_route=str(route_telemetry.get("model_route", "aihub")),
+                route_mode=str(route_telemetry.get("route_mode", "policy")),
+                provider_selected=route_telemetry.get("provider_selected"),
+                provider_effective=str(route_telemetry.get("provider_effective", "aihub")),
+                fallback_reason=route_telemetry.get("fallback_reason"),
+                fallback_allowed=bool(route_telemetry.get("fallback_allowed", False)),
+                fallback_attempted=bool(route_telemetry.get("fallback_attempted", False)),
+                fallback_policy_version=str(
+                    route_telemetry.get("fallback_policy_version", settings.LLM_FALLBACK_POLICY_VERSION)
+                ),
+                aihub_attempted=bool(route_telemetry.get("aihub_attempted", False)),
+                execution_route=str(execution_telemetry.get("execution_route", "complex_analytics")),
+                executor_attempted=bool(execution_telemetry.get("executor_attempted", False)),
+                executor_status=str(execution_telemetry.get("executor_status", "success")),
+                executor_error_code=execution_telemetry.get("executor_error_code"),
+                artifacts_count=int(execution_telemetry.get("artifacts_count", 0) or 0),
+                tokens_used=None,
+                generation_time=generation_time,
+                summary=None,
+                caveats=ctx["rag_caveats"],
+                sources=ctx["rag_sources"],
+                artifacts=artifacts_payload or None,
                 rag_debug=rag_debug_payload,
             )
 
         generation_kwargs = self._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
         result = await llm_manager.generate_response(**generation_kwargs)
-        self._log_route_event(route_telemetry=result, conversation_id=conversation_id, stream=False)
+        self._log_route_event(
+            route_telemetry=result,
+            execution_telemetry=execution_telemetry,
+            conversation_id=conversation_id,
+            stream=False,
+        )
 
         postprocess = await self._postprocess_generated_answer(
             chat_data=chat_data,
@@ -622,11 +866,17 @@ class ChatOrchestrator:
             fallback_attempted=bool(result.get("fallback_attempted", False)),
             fallback_policy_version=str(result.get("fallback_policy_version", settings.LLM_FALLBACK_POLICY_VERSION)),
             aihub_attempted=bool(result.get("aihub_attempted", False)),
+            execution_route=str(execution_telemetry.get("execution_route", "narrative")),
+            executor_attempted=bool(execution_telemetry.get("executor_attempted", False)),
+            executor_status=str(execution_telemetry.get("executor_status", "not_attempted")),
+            executor_error_code=execution_telemetry.get("executor_error_code"),
+            artifacts_count=int(execution_telemetry.get("artifacts_count", 0) or 0),
             tokens_used=result.get("tokens_used"),
             generation_time=generation_time,
             summary=summary_text,
             caveats=ctx["rag_caveats"],
             sources=ctx["rag_sources"],
+            artifacts=artifacts_payload or None,
             rag_debug=rag_debug_payload,
         )
 

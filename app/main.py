@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +16,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.error_handlers import register_error_handlers
 from app.core.logging import setup_logging
+from app.observability.context import request_id_ctx
 from app.observability.metrics import inc_counter, observe_ms, render_prometheus_metrics
 from app.services.file import recover_pending_file_jobs, shutdown_file_processing_worker
 
@@ -51,18 +54,36 @@ if RequestIdMiddleware is not None:
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     started = time.perf_counter()
+    request_rid_hint = request.headers.get("x-request-id")
     try:
         response = await call_next(request)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         inc_counter("http_requests_total", method=request.method, path=request.url.path, status=response.status_code)
         observe_ms("http_request_duration_ms", elapsed_ms, method=request.method, path=request.url.path)
-        logger.info("%s %s -> %s", request.method, request.url.path, response.status_code)
+        rid_effective = (
+            response.headers.get("x-request-id")
+            or request_id_ctx.get()
+            or request_rid_hint
+            or str(uuid.uuid4())
+        )
+        if not response.headers.get("x-request-id"):
+            response.headers["x-request-id"] = rid_effective
+        token = request_id_ctx.set(rid_effective)
+        try:
+            logger.info("%s %s -> %s", request.method, request.url.path, response.status_code)
+        finally:
+            request_id_ctx.reset(token)
         return response
     except Exception:
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         inc_counter("http_requests_total", method=request.method, path=request.url.path, status="error")
         observe_ms("http_request_duration_ms", elapsed_ms, method=request.method, path=request.url.path)
-        logger.exception("%s %s -> ERROR", request.method, request.url.path)
+        rid_effective = request_id_ctx.get() or request_rid_hint or str(uuid.uuid4())
+        token = request_id_ctx.set(rid_effective)
+        try:
+            logger.exception("%s %s -> ERROR", request.method, request.url.path)
+        finally:
+            request_id_ctx.reset(token)
         raise
 
 
@@ -94,6 +115,8 @@ async def prometheus_metrics():
 app.include_router(api_router, prefix="/api/v1")
 
 # Static files (as in your original project)
+Path("uploads").mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
 

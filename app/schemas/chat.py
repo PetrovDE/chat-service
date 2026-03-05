@@ -36,11 +36,20 @@ class ChatResponse(BaseModel):
     fallback_attempted: bool = False
     fallback_policy_version: str = "p1-aihub-first-v1"
     aihub_attempted: bool = False
+    execution_route: str = Field(
+        default="narrative",
+        pattern=r"^(tabular_sql|complex_analytics|narrative|clarification|unknown)$",
+    )
+    executor_attempted: bool = False
+    executor_status: str = Field(default="not_attempted", pattern=r"^(not_attempted|success|error|timeout|blocked)$")
+    executor_error_code: Optional[str] = None
+    artifacts_count: int = Field(default=0, ge=0, le=1024)
     tokens_used: Optional[int] = None
     generation_time: Optional[float] = None
     summary: Optional[str] = None
     caveats: Optional[List[str]] = None
     sources: Optional[List[str]] = None
+    artifacts: Optional[List[dict]] = None
     rag_debug: Optional[dict] = None
 
 

@@ -133,6 +133,7 @@ class ChatManager {
         const showRagDebug = Boolean(payload?.rag_debug);
         let ragDebugPayload = null;
         let ragSources = [];
+        let artifacts = [];
 
         while (true) {
             const { done, value } = await reader.read();
@@ -185,9 +186,13 @@ class ChatManager {
                     if (Array.isArray(chunk.sources)) {
                         ragSources = chunk.sources;
                     }
+                    if (Array.isArray(chunk.artifacts)) {
+                        artifacts = chunk.artifacts;
+                    }
                     assistantBubble.innerHTML = formatMessage(rawResponseText);
                     this.renderAssistantMeta(assistantMessageDiv, {
                         sources: ragSources,
+                        artifacts,
                         ragDebug: showRagDebug ? ragDebugPayload : null,
                     });
                     this.scrollToBottom();
@@ -206,6 +211,7 @@ class ChatManager {
         assistantBubble.innerHTML = formatMessage(rawResponseText);
         this.renderAssistantMeta(assistantMessageDiv, {
             sources: ragSources,
+            artifacts,
             ragDebug: showRagDebug ? ragDebugPayload : null,
         });
 
@@ -260,11 +266,38 @@ class ChatManager {
         this.scrollToBottom();
     }
 
-    renderAssistantMeta(messageDiv, { sources = [], ragDebug = null } = {}) {
+    renderAssistantMeta(messageDiv, { sources = [], artifacts = [], ragDebug = null } = {}) {
         const metaContainer = messageDiv?.querySelector('.message-meta');
         if (!metaContainer) return;
 
         const blocks = [];
+        if (Array.isArray(artifacts) && artifacts.length > 0) {
+            const cards = artifacts.slice(0, 8).map((artifact) => {
+                const name = this.escapeText(String(artifact?.name || artifact?.kind || 'artifact'));
+                const kind = this.escapeText(String(artifact?.kind || 'chart'));
+                const url = String(artifact?.url || '').trim();
+                if (!url) {
+                    return '';
+                }
+                const safeUrl = this.escapeText(url);
+                return `
+                    <a class="artifact-card" href="${safeUrl}" target="_blank" rel="noopener noreferrer">
+                        <img src="${safeUrl}" alt="${name}" loading="lazy" />
+                        <span>${kind}: ${name}</span>
+                    </a>
+                `;
+            }).filter(Boolean).join('');
+
+            if (cards) {
+                blocks.push(`
+                    <details class="assistant-meta-block" open>
+                        <summary>Charts (${artifacts.length})</summary>
+                        <div class="artifact-gallery">${cards}</div>
+                    </details>
+                `);
+            }
+        }
+
         if (Array.isArray(sources) && sources.length > 0) {
             const list = sources.slice(0, 12).map((src) => `<li>${this.escapeText(src)}</li>`).join('');
             blocks.push(`

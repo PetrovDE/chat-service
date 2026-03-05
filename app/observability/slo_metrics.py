@@ -32,6 +32,8 @@ def _planner_route_class(route: str) -> str:
     normalized = str(route or "").strip().lower()
     if normalized == "deterministic_analytics":
         return "deterministic"
+    if normalized == "complex_analytics":
+        return "complex_analytics"
     if normalized == "narrative_retrieval":
         return "narrative"
     return "unknown"

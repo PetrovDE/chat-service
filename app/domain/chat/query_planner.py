@@ -6,13 +6,16 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from app.observability.metrics import inc_counter
 from app.observability.slo_metrics import observe_planner_decision
+from app.services.chat.complex_analytics import is_complex_analytics_query
 from app.services.tabular.sql_execution import resolve_tabular_dataset
 
 ROUTE_DETERMINISTIC_ANALYTICS = "deterministic_analytics"
+ROUTE_COMPLEX_ANALYTICS = "complex_analytics"
 ROUTE_NARRATIVE_RETRIEVAL = "narrative_retrieval"
 
 INTENT_TABULAR_AGGREGATE = "tabular_aggregate"
 INTENT_TABULAR_PROFILE = "tabular_profile"
+INTENT_COMPLEX_ANALYTICS = "complex_analytics"
 INTENT_NARRATIVE_RETRIEVAL = "narrative_retrieval"
 INTENT_METRIC_CLARIFICATION = "metric_clarification"
 
@@ -236,6 +239,19 @@ def plan_query(
         return decision
 
     reason_codes.extend(["tabular_dataset_available"])
+    if is_complex_analytics_query(trimmed_query):
+        reason_codes.append("complex_analytics_intent")
+        decision = QueryPlanDecision(
+            route=ROUTE_COMPLEX_ANALYTICS,
+            intent=INTENT_COMPLEX_ANALYTICS,
+            confidence=0.93,
+            requires_clarification=False,
+            reason_codes=reason_codes,
+            metric_critical=metric_critical,
+        )
+        _observe_decision(decision)
+        return decision
+
     column_matches = _collect_column_matches(trimmed_query, tabular_ready)
     operation = _detect_operation(trimmed_query)
     missing_scope_for_count = operation == "count" and not column_matches and not any(

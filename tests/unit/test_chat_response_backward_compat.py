@@ -27,3 +27,8 @@ def test_chat_response_backward_compatible_defaults_for_route_telemetry():
     assert parsed.fallback_attempted is False
     assert parsed.aihub_attempted is False
     assert parsed.fallback_policy_version == "p1-aihub-first-v1"
+    assert parsed.execution_route == "narrative"
+    assert parsed.executor_attempted is False
+    assert parsed.executor_status == "not_attempted"
+    assert parsed.executor_error_code is None
+    assert parsed.artifacts_count == 0

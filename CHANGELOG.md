@@ -140,6 +140,44 @@
 - Added observability artifact:
   - `docs/14_observability_slo_offline.md` (metric contract, SLOs, alert rules, rollout checklist).
 
+### Backend Eval Framework (P7, 2026-03-05)
+- Added offline golden datasets for AI HUB-first eval pipeline:
+  - `tests/evals/datasets/tabular_aggregate_golden.jsonl`,
+  - `tests/evals/datasets/tabular_profile_golden.jsonl`,
+  - `tests/evals/datasets/narrative_rag_golden.jsonl`,
+  - `tests/evals/datasets/fallback_route_golden.jsonl`.
+- Added eval runner stack:
+  - `scripts/evals/runner.py`,
+  - `scripts/evals/offline.py`,
+  - `scripts/evals/online.py`,
+  - `scripts/evals/datasets.py`.
+- Added CI gate engine and CLI entrypoints:
+  - `scripts/evals/ci_gates.py`,
+  - `scripts/evals/run_eval_suite.py`,
+  - `scripts/evals/run_ci_gates.py`.
+- Added threshold baseline config:
+  - `tests/evals/gates.json`.
+- Added eval tests:
+  - `tests/evals/test_eval_datasets_contract.py`,
+  - `tests/evals/test_eval_runner_offline.py`,
+  - `tests/evals/test_ci_gates.py`.
+- Added P7 artifact:
+  - `docs/15_eval_framework_offline.md`.
+
+### Pre-prod Hardening (P8, 2026-03-05)
+- Added end-to-end pre-prod outage/recovery drill test:
+  - `tests/e2e/test_preprod_aihub_fallback_recovery.py`
+  - validates `AI HUB outage -> controlled fallback -> AI HUB recovery -> fallback mode closed`.
+- Added pre-prod operational runbooks:
+  - `docs/runbooks/aihub_incident.md`,
+  - `docs/runbooks/fallback_surge.md`,
+  - `docs/runbooks/queue_backlog.md`,
+  - `docs/runbooks/degraded_mode.md`.
+- Added readiness artifact:
+  - `docs/16_preprod_readiness_report.md` (DoD check, blockers/non-blockers, final gate recommendations).
+- Added ADR for local verification strategy without direct AI HUB access:
+  - `docs/adr/ADR-010-preprod-hardening-verification-strategy.md`.
+
 ### Ð˜Ð·Ð¼ÐµÐ½ÐµÐ½Ð¾
 - Frontend composer: Ð¿Ð¾Ð»Ðµ Ð²Ð²Ð¾Ð´Ð° Ð¾ÑÑ‚Ð°Ð²Ð»ÐµÐ½Ð¾ Ð¾Ñ‚Ð´ÐµÐ»ÑŒÐ½Ð¾Ð¹ Ð²ÐµÑ€Ñ…Ð½ÐµÐ¹ ÑÑ‚Ñ€Ð¾ÐºÐ¾Ð¹; Ð½Ð¸Ð¶Ð½ÑÑ ÑÑ‚Ñ€Ð¾ÐºÐ° ÐºÐ¾Ð½Ñ‚Ñ€Ð¾Ð»Ð¾Ð² Ð¿Ñ€Ð¸Ð²ÐµÐ´ÐµÐ½Ð° Ðº Ñ„Ð¾Ñ€Ð¼Ð°Ñ‚Ñƒ `File + provider + model + RAG mode + Send`.
 - ÐŸÐ¾Ð´ ÑÐµÐ»ÐµÐºÑ‚Ð°Ð¼Ð¸ provider/model/rag mode Ð´Ð¾Ð±Ð°Ð²Ð»ÐµÐ½Ñ‹ inline-Ð¿Ð¾Ð´ÑÐºÐ°Ð·ÐºÐ¸ (`ÐŸÑ€Ð¾Ð²Ð°Ð¹Ð´ÐµÑ€ AI`, `Ð’Ñ‹Ð±Ð¾Ñ€ Ð¼Ð¾Ð´ÐµÐ»Ð¸`, `Ð ÐµÐ¶Ð¸Ð¼ Ñ€Ð°Ð±Ð¾Ñ‚Ñ‹ Ñ Ð´Ð¾ÐºÑƒÐ¼ÐµÐ½Ñ‚Ð°Ð¼Ð¸`).

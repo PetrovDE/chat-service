@@ -1,0 +1,12 @@
+{
+  "numeric_exact_match_min": 1.0,
+  "citation_faithfulness_min": 1.0,
+  "route_correctness_min": 1.0,
+  "max_latency_violations": 0,
+  "p95_latency_ms": {
+    "tabular_aggregate_golden": 2500.0,
+    "tabular_profile_golden": 3000.0,
+    "narrative_rag_golden": 500.0,
+    "fallback_route_golden": 1500.0
+  }
+}

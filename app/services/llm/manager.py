@@ -53,6 +53,20 @@ class LLMManager:
     def _normalize_source(source: Optional[str]) -> str:
         return ProviderRegistry.normalize_source(source)
 
+    def _resolve_provider_mode(
+        self,
+        *,
+        model_source: Optional[str],
+        provider_mode: Optional[str],
+    ) -> str:
+        normalized_source = self._normalize_source(model_source or self.default_source)
+        normalized_mode = str(provider_mode or "").strip().lower()
+        if normalized_source != "aihub":
+            return "explicit"
+        if normalized_mode == "explicit":
+            return "explicit"
+        return "policy"
+
     def _get_provider(self, source: str) -> BaseLLMProvider:
         return self.provider_registry.get(source)
 
@@ -71,6 +85,7 @@ class LLMManager:
         self,
         prompt: str,
         model_source: Optional[str] = None,
+        provider_mode: Optional[str] = None,
         model_name: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2000,
@@ -81,11 +96,13 @@ class LLMManager:
         policy_class: Optional[str] = None,
     ) -> Dict[str, Any]:
         requested_source = self._normalize_source(model_source or self.default_source)
+        effective_provider_mode = self._resolve_provider_mode(model_source=model_source, provider_mode=provider_mode)
         if requested_source == "openai":
             logger.warning("OpenAI source requested, but routing policy remains AI HUB-first")
         logger.info(
-            "Generating response via ModelRouter: requested_source=%s model=%s cannot_wait=%s sla_critical=%s policy_class=%s",
+            "Generating response via ModelRouter: requested_source=%s route_mode=%s model=%s cannot_wait=%s sla_critical=%s policy_class=%s",
             requested_source,
+            effective_provider_mode,
             model_name,
             bool(cannot_wait),
             bool(sla_critical),
@@ -94,6 +111,8 @@ class LLMManager:
         return await self.model_router.generate_response(
             prompt=prompt,
             requested_source=requested_source,
+            route_mode=effective_provider_mode,
+            provider_selected=model_source,
             model_name=model_name,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -110,6 +129,7 @@ class LLMManager:
         self,
         prompt: str,
         model_source: Optional[str] = None,
+        provider_mode: Optional[str] = None,
         model_name: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2000,
@@ -120,9 +140,12 @@ class LLMManager:
         policy_class: Optional[str] = None,
     ) -> RoutedStream:
         requested_source = self._normalize_source(model_source or self.default_source)
+        effective_provider_mode = self._resolve_provider_mode(model_source=model_source, provider_mode=provider_mode)
         return await self.model_router.create_stream(
             prompt=prompt,
             requested_source=requested_source,
+            route_mode=effective_provider_mode,
+            provider_selected=model_source,
             model_name=model_name,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -139,6 +162,7 @@ class LLMManager:
         self,
         prompt: str,
         model_source: Optional[str] = None,
+        provider_mode: Optional[str] = None,
         model_name: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2000,
@@ -151,6 +175,7 @@ class LLMManager:
         routed_stream = await self.create_routed_stream(
             prompt=prompt,
             model_source=model_source,
+            provider_mode=provider_mode,
             model_name=model_name,
             temperature=temperature,
             max_tokens=max_tokens,

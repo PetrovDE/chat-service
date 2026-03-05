@@ -43,15 +43,25 @@ def observe_llm_route_decision(
     fallback_reason: str,
     fallback_allowed: bool,
     fallback_policy_version: str,
+    route_mode: str = "policy",
+    provider_effective: str = "unknown",
+    aihub_attempted: bool = False,
+    fallback_attempted: bool = False,
 ) -> None:
     route_value = str(route or "unknown")
     reason_value = str(fallback_reason or "none")
     policy_version = str(fallback_policy_version or "unknown")
     allowed_label = _to_bool_label(fallback_allowed)
+    route_mode_value = str(route_mode or "unknown")
+    provider_effective_value = str(provider_effective or "unknown")
 
     inc_counter(
         "llama_service_llm_route_decisions_total",
         route=route_value,
+        route_mode=route_mode_value,
+        provider_effective=provider_effective_value,
+        aihub_attempted=_to_bool_label(aihub_attempted),
+        fallback_attempted=_to_bool_label(fallback_attempted),
         fallback_reason=reason_value,
         fallback_allowed=allowed_label,
         fallback_policy_version=policy_version,

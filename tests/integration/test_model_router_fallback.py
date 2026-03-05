@@ -59,6 +59,9 @@ class _FailingAIHubProvider(BaseLLMProvider):
 
 
 class _OllamaProvider(BaseLLMProvider):
+    def __init__(self):
+        self.calls = 0
+
     async def get_available_models(self) -> List[str]:
         return ["llama3.2"]
 
@@ -72,6 +75,7 @@ class _OllamaProvider(BaseLLMProvider):
         prompt_max_chars: Optional[int] = None,
     ) -> Dict[str, Any]:
         _ = (prompt, temperature, max_tokens, conversation_history, prompt_max_chars)
+        self.calls += 1
         return {"response": "fallback-ok", "model": model, "tokens_used": 11}
 
     async def generate_response_stream(
@@ -106,6 +110,96 @@ def _build_router(aihub_provider: BaseLLMProvider) -> ModelRouter:
     return ModelRouter(provider_registry=registry, fallback_policy=policy, circuit_breaker=breaker)
 
 
+def _build_router_with_providers(aihub_provider: BaseLLMProvider, ollama_provider: BaseLLMProvider) -> ModelRouter:
+    registry = ProviderRegistry({"aihub": aihub_provider, "ollama": ollama_provider})
+    policy = FallbackPolicy(policy_version="test-v1", restricted_classes={"restricted"}, enabled=True)
+    breaker = CircuitBreaker(
+        CircuitBreakerConfig(
+            window_seconds=60,
+            min_requests=1,
+            failure_ratio_threshold=1.0,
+            open_duration_seconds=3600,
+            half_open_max_requests=1,
+        )
+    )
+    return ModelRouter(provider_registry=registry, fallback_policy=policy, circuit_breaker=breaker)
+
+
+def test_explicit_ollama_route_skips_aihub_and_returns_success():
+    aihub = _FailingAIHubProvider(failure_mode="timeout")
+    ollama = _OllamaProvider()
+    router = _build_router_with_providers(aihub, ollama)
+
+    result = asyncio.run(
+        router.generate_response(
+            prompt="hello",
+            requested_source="ollama",
+            route_mode="explicit",
+            provider_selected="local",
+            model_name="llama3.2",
+            temperature=0.1,
+            max_tokens=64,
+            conversation_history=None,
+            prompt_max_chars=None,
+            policy_context=RoutingPolicyContext(cannot_wait=False, sla_critical=False, policy_class="standard"),
+        )
+    )
+
+    assert result["response"] == "fallback-ok"
+    assert result["model_route"] == "ollama"
+    assert result["route_mode"] == "explicit"
+    assert result["provider_selected"] == "local"
+    assert result["provider_effective"] == "ollama"
+    assert result["aihub_attempted"] is False
+    assert result["fallback_attempted"] is False
+    assert aihub.calls == 0
+    assert ollama.calls == 1
+
+
+def test_explicit_aihub_route_uses_aihub_only():
+    class _HealthyAIHubProvider(_FailingAIHubProvider):
+        async def generate_response(
+            self,
+            prompt: str,
+            model: str,
+            temperature: float = 0.7,
+            max_tokens: int = 2000,
+            conversation_history: Optional[List[Dict[str, str]]] = None,
+            prompt_max_chars: Optional[int] = None,
+        ) -> Dict[str, Any]:
+            _ = (prompt, temperature, max_tokens, conversation_history, prompt_max_chars)
+            self.calls += 1
+            return {"response": "aihub-ok", "model": model, "tokens_used": 7}
+
+    aihub = _HealthyAIHubProvider(failure_mode="timeout")
+    ollama = _OllamaProvider()
+    router = _build_router_with_providers(aihub, ollama)
+
+    result = asyncio.run(
+        router.generate_response(
+            prompt="hello",
+            requested_source="aihub",
+            route_mode="explicit",
+            provider_selected="aihub",
+            model_name="vikhr",
+            temperature=0.1,
+            max_tokens=64,
+            conversation_history=None,
+            prompt_max_chars=None,
+            policy_context=RoutingPolicyContext(cannot_wait=False, sla_critical=False, policy_class="standard"),
+        )
+    )
+
+    assert result["response"] == "aihub-ok"
+    assert result["model_route"] == "aihub"
+    assert result["route_mode"] == "explicit"
+    assert result["provider_effective"] == "aihub"
+    assert result["aihub_attempted"] is True
+    assert result["fallback_attempted"] is False
+    assert aihub.calls == 1
+    assert ollama.calls == 0
+
+
 def test_aihub_timeout_triggers_controlled_fallback_when_allowed():
     reset_metrics()
     router = _build_router(_FailingAIHubProvider(failure_mode="timeout"))
@@ -114,6 +208,8 @@ def test_aihub_timeout_triggers_controlled_fallback_when_allowed():
         router.generate_response(
             prompt="hello",
             requested_source="aihub",
+            route_mode="policy",
+            provider_selected="aihub",
             model_name=None,
             temperature=0.1,
             max_tokens=64,
@@ -125,8 +221,12 @@ def test_aihub_timeout_triggers_controlled_fallback_when_allowed():
 
     assert result["response"] == "fallback-ok"
     assert result["model_route"] == "ollama_fallback"
+    assert result["route_mode"] == "policy"
     assert result["fallback_reason"] == "timeout"
     assert result["fallback_allowed"] is True
+    assert result["fallback_attempted"] is True
+    assert result["provider_effective"] == "ollama"
+    assert result["aihub_attempted"] is True
     assert result["fallback_policy_version"] == "test-v1"
     counters = snapshot_metrics()["counters"]
     assert any(
@@ -145,6 +245,8 @@ def test_aihub_outage_denies_fallback_for_restricted_policy_class():
             router.generate_response(
                 prompt="hello",
                 requested_source="aihub",
+                route_mode="policy",
+                provider_selected="aihub",
                 model_name=None,
                 temperature=0.1,
                 max_tokens=64,
@@ -166,6 +268,8 @@ def test_circuit_open_path_uses_fallback_without_aihub_call():
         router.generate_response(
             prompt="hello",
             requested_source="aihub",
+            route_mode="policy",
+            provider_selected="aihub",
             model_name=None,
             temperature=0.1,
             max_tokens=64,
@@ -177,5 +281,9 @@ def test_circuit_open_path_uses_fallback_without_aihub_call():
 
     assert failing_aihub.calls == 0
     assert result["model_route"] == "ollama_fallback"
+    assert result["route_mode"] == "policy"
     assert result["fallback_reason"] == "circuit_open"
     assert result["fallback_allowed"] is True
+    assert result["fallback_attempted"] is True
+    assert result["provider_effective"] == "ollama"
+    assert result["aihub_attempted"] is False

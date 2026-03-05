@@ -2,6 +2,68 @@
 
 ## [Unreleased] - 2026-03-03
 
+### Documentation Reconciliation (2026-03-05)
+- Performed full architecture audit and documentation reconciliation against current codebase.
+- Added canonical architecture docs:
+  - `docs/00_system_overview.md`
+  - `docs/01_architecture_overview.md`
+  - `docs/02_service_structure.md`
+  - `docs/03_rag_pipeline.md`
+  - `docs/04_ingestion_pipeline.md`
+  - `docs/05_query_planner.md`
+  - `docs/06_tabular_runtime.md`
+  - `docs/07_llm_routing.md`
+  - `docs/08_sql_guardrails.md`
+  - `docs/09_observability.md`
+  - `docs/10_eval_framework.md`
+  - `docs/12_architecture_decisions.md`
+  - `docs/rag_debugging.md`
+- Added runbooks:
+  - `docs/runbooks/aihub_outage.md`
+  - `docs/runbooks/rag_degradation.md`
+- Updated runbooks:
+  - `docs/runbooks/fallback_surge.md`
+  - `docs/runbooks/queue_backlog.md`
+- Added ADRs (Context/Decision/Consequences format):
+  - `docs/adr/ADR-011-architecture-doc-reconciliation.md`
+  - `docs/adr/ADR-012-rag-debug-observability-contract.md`
+- Marked legacy architecture/planning docs as deprecated and linked them to canonical replacements.
+
+### Backend LLM Routing Fix: Explicit Provider Precedence (2026-03-05)
+- Fixed bug where chat requests with UI-selected `local/ollama` still attempted AI HUB route first.
+- Added explicit routing mode support:
+  - `provider_mode=explicit` -> selected provider only, no cross-provider fallback.
+  - `provider_mode=policy` -> AI HUB primary with policy-gated Ollama fallback.
+- Implemented precedence chain for provider resolution in chat path:
+  - request payload -> conversation state -> server default.
+- Enforced local selection behavior:
+  - `model_source=local|ollama` always resolves to explicit mode.
+  - no AI HUB attempt in this branch (`aihub_attempted=false`).
+- Added route observability fields in chat response/SSE telemetry:
+  - `route_mode`,
+  - `provider_selected`,
+  - `provider_effective`,
+  - `fallback_attempted`,
+  - `aihub_attempted`.
+- Added structured chat route decision log event (`chat_route_decision`) with effective route metadata.
+- Updated docs:
+  - `docs/07_llm_routing.md`,
+  - `docs/11_llm_file_chat_best_practices_architecture.md`,
+  - `docs/12_architecture_decisions.md`,
+  - `docs/adr/ADR-013-provider-selection-precedence-explicit-mode.md`,
+  - `docs/02_api_contracts.md`,
+  - `docs/examples/chat.request*.json`,
+  - `docs/examples/chat.response.json`.
+- Added/updated regression tests:
+  - `tests/unit/test_model_router_explicit_modes.py`,
+  - `tests/integration/test_model_router_fallback.py`,
+  - `tests/e2e/test_preprod_aihub_fallback_recovery.py`.
+
+Migration note:
+- `ChatMessage.provider_mode` added as optional request field (`explicit|policy`).
+- `ChatResponse` and SSE route payload now include additional optional telemetry fields listed above.
+- Existing route fields (`model_route`, `fallback_reason`, `fallback_allowed`, `fallback_policy_version`) remain present for compatibility.
+
 ### Documentation
 - Added architecture study baseline for production LLM chat + file analytics: 
   - `docs/11_llm_file_chat_best_practices_architecture.md`

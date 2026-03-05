@@ -83,6 +83,9 @@ class ChatManager {
                 message: normalizedMessage,
                 conversation_id: conversationId || null,
                 model_source: settings.mode || 'local',
+                provider_mode: (settings.mode === 'local' || settings.mode === 'ollama' || settings.mode === 'openai')
+                    ? 'explicit'
+                    : 'policy',
                 model_name: settings.model || 'llama3',
                 temperature: settings.temperature || 0.7,
                 max_tokens: settings.max_tokens || 2048,

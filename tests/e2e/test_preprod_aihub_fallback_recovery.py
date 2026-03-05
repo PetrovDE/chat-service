@@ -127,6 +127,8 @@ def test_preprod_e2e_outage_fallback_then_recovery_closes_fallback(monkeypatch):
         router.generate_response(
             prompt="hello",
             requested_source="aihub",
+            route_mode="policy",
+            provider_selected="aihub",
             model_name=None,
             temperature=0.1,
             max_tokens=64,
@@ -147,6 +149,8 @@ def test_preprod_e2e_outage_fallback_then_recovery_closes_fallback(monkeypatch):
         router.generate_response(
             prompt="hello-again",
             requested_source="aihub",
+            route_mode="policy",
+            provider_selected="aihub",
             model_name=None,
             temperature=0.1,
             max_tokens=64,
@@ -167,6 +171,8 @@ def test_preprod_e2e_outage_fallback_then_recovery_closes_fallback(monkeypatch):
         router.generate_response(
             prompt="hello-recovered",
             requested_source="aihub",
+            route_mode="policy",
+            provider_selected="aihub",
             model_name=None,
             temperature=0.1,
             max_tokens=64,

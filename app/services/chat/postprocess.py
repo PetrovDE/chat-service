@@ -15,6 +15,7 @@ async def enforce_answer_language(
     answer: str,
     preferred_lang: str,
     model_source: Optional[str],
+    provider_mode: Optional[str],
     model_name: Optional[str],
     prompt_max_chars: Optional[int],
 ) -> Tuple[str, Dict[str, Any]]:
@@ -36,6 +37,7 @@ async def enforce_answer_language(
         rewritten = await llm_manager.generate_response(
             prompt=rewrite_prompt,
             model_source=model_source,
+            provider_mode=provider_mode,
             model_name=model_name,
             temperature=0.0,
             max_tokens=2200,
@@ -194,6 +196,7 @@ async def run_answer_critic(
     answer: str,
     context_documents: List[Dict[str, Any]],
     model_source: Optional[str],
+    provider_mode: Optional[str],
     model_name: Optional[str],
 ) -> Tuple[str, Dict[str, Any]]:
     context_text = build_critic_context(context_documents, max_chars=12000)
@@ -220,6 +223,7 @@ async def run_answer_critic(
         critic = await llm_manager.generate_response(
             prompt=critic_prompt,
             model_source=model_source,
+            provider_mode=provider_mode,
             model_name=model_name,
             temperature=0.0,
             max_tokens=1200,

@@ -523,6 +523,8 @@ def run_fallback_route_eval(cases: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
                 router.generate_response(
                     prompt="eval route",
                     requested_source="aihub",
+                    route_mode="policy",
+                    provider_selected="aihub",
                     model_name=None,
                     temperature=0.1,
                     max_tokens=64,

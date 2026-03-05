@@ -19,7 +19,11 @@ def test_chat_response_backward_compatible_defaults_for_route_telemetry():
 
     parsed = ChatResponse.model_validate(payload)
     assert parsed.model_route == "aihub_primary"
+    assert parsed.route_mode == "policy"
+    assert parsed.provider_selected is None
+    assert parsed.provider_effective == "aihub"
     assert parsed.fallback_reason == "none"
     assert parsed.fallback_allowed is False
+    assert parsed.fallback_attempted is False
+    assert parsed.aihub_attempted is False
     assert parsed.fallback_policy_version == "p1-aihub-first-v1"
-

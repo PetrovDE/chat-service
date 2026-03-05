@@ -30,6 +30,7 @@ from app.services.chat.rag_prompt_builder import build_rag_prompt
 from app.services.chat.sources_debug import (
     build_standard_rag_debug_payload as _build_standard_rag_debug_payload,
 )
+from app.services.llm.provider_clients import ProviderRegistry
 from app.services.llm.manager import llm_manager
 
 logger = logging.getLogger(__name__)
@@ -37,12 +38,30 @@ logger = logging.getLogger(__name__)
 
 class ChatOrchestrator:
     @staticmethod
-    def _default_route_telemetry() -> Dict[str, Any]:
+    def _default_route_telemetry(
+        *,
+        route_mode: str = "policy",
+        provider_selected: Optional[str] = None,
+        provider_effective: str = "aihub",
+        aihub_attempted: bool = False,
+    ) -> Dict[str, Any]:
+        route = "aihub_primary"
+        if provider_effective == "ollama":
+            route = "ollama"
+        elif provider_effective == "aihub":
+            route = "aihub"
+        elif provider_effective == "openai":
+            route = "openai"
         return {
-            "model_route": "aihub_primary",
-            "fallback_reason": "none",
+            "model_route": route,
+            "route_mode": route_mode,
+            "provider_selected": provider_selected,
+            "provider_effective": provider_effective,
+            "fallback_reason": None,
             "fallback_allowed": False,
+            "fallback_attempted": False,
             "fallback_policy_version": settings.LLM_FALLBACK_POLICY_VERSION,
+            "aihub_attempted": bool(aihub_attempted),
         }
 
     @staticmethod
@@ -74,8 +93,9 @@ class ChatOrchestrator:
         sla_tier = str(chat_data.sla_tier or "").strip().lower()
         return {
             "prompt": ctx["final_prompt"],
-            "model_source": chat_data.model_source,
-            "model_name": chat_data.model_name,
+            "model_source": ctx["provider_source_selected_raw"],
+            "provider_mode": ctx["provider_mode"],
+            "model_name": ctx["provider_model_effective"],
             "temperature": chat_data.temperature or 0.7,
             "max_tokens": chat_data.max_tokens or 2000,
             "conversation_history": ctx["history_for_generation"],
@@ -105,8 +125,9 @@ class ChatOrchestrator:
         answer_text, lang_meta = await _enforce_answer_language(
             answer=raw_answer,
             preferred_lang=ctx["preferred_lang"],
-            model_source=chat_data.model_source,
-            model_name=chat_data.model_name,
+            model_source=ctx["provider_source_selected_raw"],
+            provider_mode=ctx["provider_mode"],
+            model_name=ctx["provider_model_effective"],
             prompt_max_chars=chat_data.prompt_max_chars,
         )
         refined_answer = answer_text
@@ -132,8 +153,9 @@ class ChatOrchestrator:
                 query=chat_data.message,
                 answer=answer_text,
                 context_documents=ctx["context_docs"],
-                model_source=chat_data.model_source,
-                model_name=chat_data.model_name,
+                model_source=ctx["provider_source_selected_raw"],
+                provider_mode=ctx["provider_mode"],
+                model_name=ctx["provider_model_effective"],
             )
             if summarized_answer and summarized_answer != answer_text:
                 summary_text = summarized_answer
@@ -169,12 +191,67 @@ class ChatOrchestrator:
 
         from app.schemas.conversation import ConversationCreate
 
+        default_source = (settings.DEFAULT_MODEL_SOURCE or "aihub").strip().lower() or "aihub"
+        selected_source = (chat_data.model_source or default_source).strip().lower()
+        effective_source = ProviderRegistry.normalize_source(selected_source)
+        effective_model = chat_data.model_name or llm_manager.provider_registry.resolve_chat_model(effective_source, None)
+
         conv_data = ConversationCreate(
             title=chat_data.message[:100] if len(chat_data.message) <= 100 else chat_data.message[:97] + "...",
-            model_source=chat_data.model_source or "aihub",
-            model_name=chat_data.model_name or llm_manager.aihub_model,
+            model_source=selected_source,
+            model_name=effective_model,
         )
         return await crud_conversation.create_for_user(db=db, obj_in=conv_data, user_id=user_id)
+
+    @staticmethod
+    def _resolve_provider_selection(*, chat_data: ChatMessage, conversation: Any) -> Dict[str, Any]:
+        default_source = (settings.DEFAULT_MODEL_SOURCE or "aihub").strip().lower() or "aihub"
+        request_source_raw = str(chat_data.model_source or "").strip().lower() or None
+        conversation_source_raw = str(getattr(conversation, "model_source", "") or "").strip().lower() or None
+        selected_source_raw = request_source_raw or conversation_source_raw or default_source
+        normalized_source = ProviderRegistry.normalize_source(selected_source_raw)
+
+        request_model = str(chat_data.model_name or "").strip() or None
+        conversation_model = str(getattr(conversation, "model_name", "") or "").strip() or None
+        selected_model = request_model or conversation_model or llm_manager.provider_registry.resolve_chat_model(
+            normalized_source,
+            None,
+        )
+
+        request_mode_raw = str(chat_data.provider_mode or "").strip().lower() or None
+        if normalized_source != "aihub":
+            effective_mode = "explicit"
+        elif request_mode_raw == "explicit":
+            effective_mode = "explicit"
+        else:
+            effective_mode = "policy"
+
+        return {
+            "provider_source_selected_raw": selected_source_raw,
+            "provider_source_effective": normalized_source,
+            "provider_model_effective": selected_model,
+            "provider_mode": effective_mode,
+        }
+
+    @staticmethod
+    def _log_route_event(
+        *,
+        route_telemetry: Dict[str, Any],
+        conversation_id: uuid.UUID,
+        stream: bool,
+    ) -> None:
+        logger.info(
+            "chat_route_decision conversation_id=%s stream=%s route_mode=%s provider_selected=%s provider_effective=%s model_route=%s fallback_attempted=%s fallback_reason=%s aihub_attempted=%s",
+            str(conversation_id),
+            str(bool(stream)).lower(),
+            route_telemetry.get("route_mode"),
+            route_telemetry.get("provider_selected"),
+            route_telemetry.get("provider_effective"),
+            route_telemetry.get("model_route"),
+            route_telemetry.get("fallback_attempted"),
+            route_telemetry.get("fallback_reason"),
+            route_telemetry.get("aihub_attempted"),
+        )
 
     @staticmethod
     def _build_rag_debug_payload(
@@ -204,6 +281,7 @@ class ChatOrchestrator:
     ) -> Dict[str, Any]:
         conversation = await self._get_or_create_conversation(db=db, chat_data=chat_data, user_id=user_id)
         conversation_id = conversation.id
+        provider_selection = self._resolve_provider_selection(chat_data=chat_data, conversation=conversation)
 
         await crud_message.create_message(db=db, conversation_id=conversation_id, role="user", content=chat_data.message)
         messages = await crud_message.get_last_messages(
@@ -220,8 +298,8 @@ class ChatOrchestrator:
             query=chat_data.message,
             top_k=8,
             file_ids=chat_data.file_ids,
-            model_source=chat_data.model_source,
-            model_name=chat_data.model_name,
+            model_source=provider_selection["provider_source_selected_raw"],
+            model_name=provider_selection["provider_model_effective"],
             rag_mode=chat_data.rag_mode,
             prompt_max_chars=chat_data.prompt_max_chars,
         )
@@ -232,6 +310,7 @@ class ChatOrchestrator:
 
         return {
             "conversation_id": conversation_id,
+            **provider_selection,
             "final_prompt": final_prompt,
             "rag_used": rag_used,
             "rag_debug": rag_debug,
@@ -261,7 +340,12 @@ class ChatOrchestrator:
             full_response = ""
             start_time = datetime.utcnow()
             summary_text: Optional[str] = None
-            route_telemetry: Dict[str, Any] = self._default_route_telemetry()
+            route_telemetry: Dict[str, Any] = self._default_route_telemetry(
+                route_mode=ctx["provider_mode"],
+                provider_selected=ctx["provider_source_selected_raw"],
+                provider_effective=ctx["provider_source_effective"],
+                aihub_attempted=False,
+            )
 
             try:
                 if self._planner_requires_clarification(ctx):
@@ -308,6 +392,7 @@ class ChatOrchestrator:
                         max_tokens=chat_data.max_tokens,
                         generation_time=generation_time,
                     )
+                    self._log_route_event(route_telemetry=route_telemetry, conversation_id=conversation_id, stream=True)
                     yield (
                         "data: "
                         + json.dumps(
@@ -328,6 +413,7 @@ class ChatOrchestrator:
                 generation_kwargs = self._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
                 routed_stream = await llm_manager.create_routed_stream(**generation_kwargs)
                 route_telemetry = dict(routed_stream.telemetry.as_dict())
+                self._log_route_event(route_telemetry=route_telemetry, conversation_id=conversation_id, stream=True)
 
                 start_payload = {
                     "type": "start",
@@ -376,7 +462,7 @@ class ChatOrchestrator:
                     conversation_id=conversation_id,
                     role="assistant",
                     content=full_response,
-                    model_name=chat_data.model_name or llm_manager.ollama_model,
+                    model_name=ctx["provider_model_effective"],
                     temperature=chat_data.temperature,
                     max_tokens=chat_data.max_tokens,
                     generation_time=generation_time,
@@ -437,7 +523,7 @@ class ChatOrchestrator:
                 conversation_id=conversation_id,
                 role="assistant",
                 content=response_text,
-                model_name=chat_data.model_name or "planner_clarification",
+                model_name=ctx["provider_model_effective"] or "planner_clarification",
                 temperature=chat_data.temperature,
                 max_tokens=chat_data.max_tokens,
                 generation_time=generation_time,
@@ -452,18 +538,29 @@ class ChatOrchestrator:
                     provider_debug=None,
                 )
 
-            route_telemetry = self._default_route_telemetry()
+            route_telemetry = self._default_route_telemetry(
+                route_mode=ctx["provider_mode"],
+                provider_selected=ctx["provider_source_selected_raw"],
+                provider_effective=ctx["provider_source_effective"],
+                aihub_attempted=False,
+            )
+            self._log_route_event(route_telemetry=route_telemetry, conversation_id=conversation_id, stream=False)
             return ChatResponse(
                 response=response_text,
                 conversation_id=conversation_id,
                 message_id=assistant_message.id,
-                model_used=chat_data.model_name or "planner_clarification",
-                model_route=str(route_telemetry.get("model_route", "aihub_primary")),
-                fallback_reason=str(route_telemetry.get("fallback_reason", "none")),
+                model_used=ctx["provider_model_effective"] or "planner_clarification",
+                model_route=str(route_telemetry.get("model_route", "aihub")),
+                route_mode=str(route_telemetry.get("route_mode", "policy")),
+                provider_selected=route_telemetry.get("provider_selected"),
+                provider_effective=str(route_telemetry.get("provider_effective", "aihub")),
+                fallback_reason=route_telemetry.get("fallback_reason"),
                 fallback_allowed=bool(route_telemetry.get("fallback_allowed", False)),
+                fallback_attempted=bool(route_telemetry.get("fallback_attempted", False)),
                 fallback_policy_version=str(
                     route_telemetry.get("fallback_policy_version", settings.LLM_FALLBACK_POLICY_VERSION)
                 ),
+                aihub_attempted=bool(route_telemetry.get("aihub_attempted", False)),
                 tokens_used=None,
                 generation_time=generation_time,
                 summary=None,
@@ -474,6 +571,7 @@ class ChatOrchestrator:
 
         generation_kwargs = self._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
         result = await llm_manager.generate_response(**generation_kwargs)
+        self._log_route_event(route_telemetry=result, conversation_id=conversation_id, stream=False)
 
         postprocess = await self._postprocess_generated_answer(
             chat_data=chat_data,
@@ -516,9 +614,14 @@ class ChatOrchestrator:
             message_id=assistant_message.id,
             model_used=result["model"],
             model_route=str(result.get("model_route", "aihub_primary")),
-            fallback_reason=str(result.get("fallback_reason", "none")),
+            route_mode=str(result.get("route_mode", "policy")),
+            provider_selected=result.get("provider_selected"),
+            provider_effective=str(result.get("provider_effective", "aihub")),
+            fallback_reason=result.get("fallback_reason"),
             fallback_allowed=bool(result.get("fallback_allowed", False)),
+            fallback_attempted=bool(result.get("fallback_attempted", False)),
             fallback_policy_version=str(result.get("fallback_policy_version", settings.LLM_FALLBACK_POLICY_VERSION)),
+            aihub_attempted=bool(result.get("aihub_attempted", False)),
             tokens_used=result.get("tokens_used"),
             generation_time=generation_time,
             summary=summary_text,

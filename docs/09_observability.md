@@ -113,4 +113,11 @@ Codegen controls:
   - `rag_embed_duration_ms`,
   - `rag_candidates_duration_ms`,
   - `rag_rerank_duration_ms`.
+- Full-file analysis refactor (`full_file_analysis.py` -> runtime/helpers split) keeps map-reduce observability payload keys unchanged.
+- Durable ingestion queue refactor (`sqlite_queue.py` -> `sqlite_queue_runtime.py`) keeps worker/queue stats shape and ingestion metric keys unchanged.
+- Complex analytics executor compose-stage split keeps structured event keys unchanged:
+  - `complex_analytics.codegen_plan`,
+  - `complex_analytics.codegen_execute`,
+  - `complex_analytics.compose`,
+  - `chat_route_decision` executor fields.
 

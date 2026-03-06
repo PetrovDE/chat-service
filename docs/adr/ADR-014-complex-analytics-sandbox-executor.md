@@ -98,4 +98,8 @@ Trade-offs:
   - `app/services/chat/rag_retrieval_helpers.py`
   - `app/services/chat/rag_prompt_narrative.py`
   (no external API contract changes).
+- Additional internal split for executor maintainability:
+  - compose-stage runtime moved to `app/services/chat/complex_analytics/executor_compose.py`,
+  - `_apply_compose_stage` in `executor.py` remains compatibility wrapper.
+  (no external API contract changes).
 

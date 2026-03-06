@@ -183,6 +183,52 @@ Migration note:
 - External HTTP/SSE API contract unchanged.
 - Internal refactor only; no client migration required.
 
+### Large File Refactor Phase 8: Full-File Analysis Prompt Split (2026-03-07)
+- Decomposed oversized full-file prompt module while preserving RAG behavior:
+  - added `app/services/chat/full_file_analysis_runtime.py` (map-reduce runtime),
+  - added `app/services/chat/full_file_analysis_helpers.py` (batch/range/structured merge helpers),
+  - kept `app/services/chat/full_file_analysis.py` as stable facade.
+- Reduced oversized prompt module:
+  - `app/services/chat/full_file_analysis.py`: 554 -> 48 LOC.
+- Preserved compatibility:
+  - no route behavior changes,
+  - no prompt/result contract changes,
+  - monkeypatch points for `settings` and `llm_manager` preserved via facade.
+
+Migration note:
+- External HTTP/SSE API contract unchanged.
+- Internal refactor only; no client migration required.
+
+### Large File Refactor Phase 9: Durable SQLite Queue Split (2026-03-07)
+- Decomposed oversized ingestion queue adapter:
+  - added `app/services/ingestion/sqlite_queue_runtime.py` for sync SQL operations,
+  - refactored `app/services/ingestion/sqlite_queue.py` into async facade.
+- Reduced oversized queue adapter module:
+  - `app/services/ingestion/sqlite_queue.py`: 547 -> 183 LOC.
+- Preserved compatibility:
+  - `SqliteIngestionQueueAdapter` method contracts unchanged,
+  - queue stats payload shape unchanged.
+- Stability adjustment:
+  - lease acquisition now uses exact requested `lease_seconds` lower bound `0.0` for deterministic expiry behavior in short-lease replay scenarios.
+
+Migration note:
+- External HTTP/SSE API contract unchanged.
+- Internal refactor only; no client migration required.
+
+### Large File Refactor Phase 10: Complex Executor Compose Split (2026-03-07)
+- Decomposed oversized complex analytics executor:
+  - added `app/services/chat/complex_analytics/executor_compose.py` for compose-stage runtime,
+  - kept `_apply_compose_stage` wrapper in `executor.py` for callback monkeypatch compatibility.
+- Reduced oversized executor module:
+  - `app/services/chat/complex_analytics/executor.py`: 507 -> 480 LOC.
+- Preserved compatibility:
+  - `execute_complex_analytics_path(...)` contract unchanged,
+  - debug/telemetry fields unchanged.
+
+Migration note:
+- External HTTP/SSE API contract unchanged.
+- Internal refactor only; no client migration required.
+
 ### Complex Analytics Two-Pass Pipeline Hardening (2026-03-06, superseded defaults)
 - Completed backend two-stage generation flow for `complex_analytics`:
   - stage 1: `complex_analytics_plan` (strict JSON plan),

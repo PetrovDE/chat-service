@@ -314,3 +314,76 @@ Verification:
 - `tests/integration/test_rag_integration.py`
 - `tests/integration/test_rag_dynamic_budget.py`
 - `tests/smoke/test_app_smoke.py`
+
+## Phase 8 (2026-03-07): Full-File Analysis Prompt Split
+
+Motivation:
+- `app/services/chat/full_file_analysis.py` mixed helper utilities and large map-reduce orchestration in one oversized file.
+
+Changes:
+- added `app/services/chat/full_file_analysis_helpers.py` for range/batch/json-merge helpers.
+- added `app/services/chat/full_file_analysis_runtime.py` for map-reduce orchestration runtime.
+- kept `app/services/chat/full_file_analysis.py` as stable facade used by RAG builder.
+- preserved monkeypatch compatibility used by tests:
+  - `full_file_analysis.settings`,
+  - `full_file_analysis.llm_manager`.
+
+Before/after:
+- `full_file_analysis.py`: 554 -> 48 LOC
+- `full_file_analysis_runtime.py`: 258 LOC
+- `full_file_analysis_helpers.py`: 311 LOC
+
+Compatibility:
+- no route/contract changes.
+- no prompt-builder response schema changes.
+
+Verification:
+- `tests/integration/test_rag_integration.py`
+- `tests/integration/test_rag_dynamic_budget.py`
+
+## Phase 9 (2026-03-07): Durable SQLite Queue Split
+
+Motivation:
+- `app/services/ingestion/sqlite_queue.py` mixed async adapter facade and heavy sync SQL operations.
+
+Changes:
+- added `app/services/ingestion/sqlite_queue_runtime.py` with sync DB operations.
+- refactored `sqlite_queue.py` into async facade delegating to runtime module.
+- preserved adapter class and method contracts:
+  - `enqueue`, `acquire`, `mark_*`, `requeue_expired_leases`, `heartbeat`, `get_stats`.
+
+Before/after:
+- `sqlite_queue.py`: 547 -> 183 LOC
+- `sqlite_queue_runtime.py`: 467 LOC
+
+Compatibility:
+- no queue adapter API changes.
+- no queue stats payload changes.
+
+Verification:
+- `tests/integration/test_ingestion_durable_queue.py`
+- `tests/smoke/test_ingestion_durable_smoke.py`
+- `tests/integration/test_ingestion_and_response_contract.py`
+- `tests/integration/test_ingestion_chunking_strategy.py`
+
+## Phase 10 (2026-03-07): Complex Executor Compose Split
+
+Motivation:
+- `app/services/chat/complex_analytics/executor.py` exceeded 500 LOC and contained compose-stage runtime logic.
+
+Changes:
+- added `app/services/chat/complex_analytics/executor_compose.py` with compose-stage runtime.
+- kept `_apply_compose_stage` wrapper in `executor.py` to preserve test monkeypatch compatibility for compose callbacks.
+
+Before/after:
+- `executor.py`: 507 -> 480 LOC
+- `executor_compose.py`: 63 LOC
+
+Compatibility:
+- `execute_complex_analytics_path(...)` unchanged.
+- executor debug/telemetry fields unchanged.
+
+Verification:
+- `tests/unit/test_complex_analytics_executor.py`
+- `tests/integration/test_complex_analytics_path.py`
+- `tests/smoke/test_complex_analytics_smoke.py`

@@ -243,6 +243,19 @@ This change is internal and does not modify HTTP/SSE contracts listed above.
   - `app/rag/retriever_helpers.py` (intent/filter/scoring/rerank/prompt helpers),
   - `app/rag/retriever.py` (stable retriever class and route-facing entrypoints).
   External contract remains unchanged.
+- Additional internal split in full-file analysis prompt builder:
+  - `app/services/chat/full_file_analysis_runtime.py` (map-reduce runtime),
+  - `app/services/chat/full_file_analysis_helpers.py` (range/merge helpers),
+  - `app/services/chat/full_file_analysis.py` (stable facade used by RAG builder).
+  External contract remains unchanged.
+- Additional internal split in durable ingestion queue:
+  - `app/services/ingestion/sqlite_queue_runtime.py` (sync SQL operations),
+  - `app/services/ingestion/sqlite_queue.py` (async adapter facade).
+  External contract remains unchanged.
+- Additional internal split in complex analytics execution path:
+  - `app/services/chat/complex_analytics/executor_compose.py` (compose-stage runtime),
+  - `app/services/chat/complex_analytics/executor.py` (stable executor entrypoint/orchestration).
+  External contract remains unchanged.
 
 
 

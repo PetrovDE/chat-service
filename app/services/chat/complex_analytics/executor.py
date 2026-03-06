@@ -49,6 +49,7 @@ from .errors import (
     ComplexAnalyticsValidationError,
     SandboxResult,
 )
+from .executor_compose import apply_compose_stage_runtime
 from .executor_support import (
     build_error_payload as _support_build_error_payload,
     build_executor_error_payload as _support_build_executor_error_payload,
@@ -128,49 +129,21 @@ async def _apply_compose_stage(
     provider_mode: Optional[str],
     model_name: Optional[str],
 ) -> None:
-    fallback_response = str(payload.get("final_response") or "").strip()
-    prefer_local_for_broad = bool(getattr(settings, "COMPLEX_ANALYTICS_PREFER_LOCAL_COMPOSER_FOR_BROAD_QUERY", True))
-    if prefer_local_for_broad and is_broad_full_analysis_query(query):
-        apply_response_meta(
-            payload.get("debug", {}),
-            build_local_formatter_meta("broad_query_local_formatter"),
-        )
-        if not isinstance(payload.get("final_response"), str) or not payload["final_response"].strip():
-            payload["final_response"] = fallback_response
-        return
-
-    execution_metrics = payload.get("debug", {}).get("complex_analytics", {}).get("metrics", {})
-    execution_notes = payload.get("debug", {}).get("complex_analytics", {}).get("notes", [])
-    execution_stdout = payload.get("debug", {}).get("complex_analytics", {}).get("stdout", "")
-    execution_code = payload.get("debug", {}).get("complex_analytics", {}).get("code_preview") or ""
-    if isinstance(execution_metrics, dict) and execution_stdout:
-        execution_metrics = dict(execution_metrics)
-        execution_metrics["stdout"] = execution_stdout
-    generated_response, response_meta = await _compose_complex_analytics_response(
+    await apply_compose_stage_runtime(
+        payload=payload,
         query=query,
-        table_name=primary_table_name,
-        metrics=execution_metrics if isinstance(execution_metrics, dict) else {},
-        notes=execution_notes if isinstance(execution_notes, list) else [],
-        artifacts=payload.get("artifacts") or [],
-        executed_code=execution_code if isinstance(execution_code, str) else "",
+        primary_table_name=primary_table_name,
         model_source=model_source,
         provider_mode=provider_mode,
         model_name=model_name,
+        prefer_local_for_broad=bool(getattr(settings, "COMPLEX_ANALYTICS_PREFER_LOCAL_COMPOSER_FOR_BROAD_QUERY", True)),
+        is_broad_full_analysis_query_fn=is_broad_full_analysis_query,
+        apply_response_meta_fn=apply_response_meta,
+        build_local_formatter_meta_fn=build_local_formatter_meta,
+        compose_response_fn=_compose_complex_analytics_response,
+        format_answer_fn=_format_complex_analytics_answer,
+        wants_python_code_fn=_wants_python_code,
     )
-    if generated_response:
-        payload["final_response"] = generated_response
-    apply_response_meta(payload.get("debug", {}), response_meta)
-    if not isinstance(payload.get("final_response"), str) or not payload["final_response"].strip():
-        payload["final_response"] = fallback_response or _format_complex_analytics_answer(
-            query=query,
-            table_name=primary_table_name,
-            metrics=payload.get("debug", {}).get("complex_analytics", {}).get("metrics", {}),
-            notes=payload.get("debug", {}).get("complex_analytics", {}).get("notes", []),
-            artifacts=payload.get("artifacts") or [],
-            executed_code=payload.get("debug", {}).get("complex_analytics", {}).get("code_preview") or "",
-            include_code=_wants_python_code(query),
-            insights=payload.get("debug", {}).get("complex_analytics", {}).get("metrics", {}).get("insights", []),
-        )
 
 
 def _build_executor_error_payload(

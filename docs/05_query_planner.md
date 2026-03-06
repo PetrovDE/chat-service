@@ -63,3 +63,4 @@ For metric-critical ambiguous queries against tabular datasets:
 - Narrative retrieval execution branch is isolated in `app/services/chat/rag_prompt_narrative.py`; planner contract remains unchanged.
 - Deterministic SQL executor internals are extracted to `app/services/chat/tabular_sql_pipeline.py`; planner intent contract and `execute_tabular_sql_path` behavior are unchanged.
 - Retrieval internals are extracted to `app/rag/retriever_helpers.py`; planner route contract and retrieval-mode behavior are unchanged.
+- Full-file map-reduce prompt builder internals are extracted to `full_file_analysis_runtime.py`/`full_file_analysis_helpers.py`; planner route contract remains unchanged.

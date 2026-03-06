@@ -123,4 +123,13 @@ Execution-plane telemetry fields (non-breaking extension):
 - Retrieval-layer internal split (no behavior change):
   - `app/rag/retriever_helpers.py` now hosts intent/filter/scoring/rerank/prompt helper logic,
   - `app/rag/retriever.py` keeps stable `RAGRetriever` public API used by chat flow.
+- Full-file analysis internal split (no behavior change):
+  - `app/services/chat/full_file_analysis_runtime.py` + `full_file_analysis_helpers.py` host map-reduce prompt internals,
+  - `app/services/chat/full_file_analysis.py` remains stable facade used by RAG builder.
+- Durable ingestion queue internal split (no behavior change):
+  - `app/services/ingestion/sqlite_queue_runtime.py` hosts sync SQL operations,
+  - `app/services/ingestion/sqlite_queue.py` remains async adapter facade.
+- Complex analytics compose-stage split (no behavior change):
+  - compose runtime moved to `app/services/chat/complex_analytics/executor_compose.py`,
+  - executor entrypoint/orchestration remains in `executor.py`.
 

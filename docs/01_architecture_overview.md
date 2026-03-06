@@ -48,8 +48,13 @@ flowchart LR
 - `app/services/chat/rag_prompt_builder.py`
 - `app/services/chat/tabular_sql.py`
 - `app/services/chat/tabular_sql_pipeline.py`
+- `app/services/chat/full_file_analysis.py`
+- `app/services/chat/full_file_analysis_runtime.py`
+- `app/services/chat/full_file_analysis_helpers.py`
 - `app/rag/retriever.py`
 - `app/rag/retriever_helpers.py`
+- `app/services/ingestion/sqlite_queue.py`
+- `app/services/ingestion/sqlite_queue_runtime.py`
 - `app/services/llm/manager.py`
 
 ### Cross-module coupling
@@ -153,4 +158,12 @@ Not fully aligned with target clean boundaries:
 - RAG retriever helper logic extracted from `app/rag/retriever.py` to `app/rag/retriever_helpers.py`.
   - `RAGRetriever` public methods (`retrieve`, `retrieve_full_file`, `query_rag`, `build_context_prompt`) remain unchanged.
   - Hybrid/full-file retrieval behavior and debug payload schema are unchanged.
+- Full-file map-reduce prompt builder extracted into:
+  - `app/services/chat/full_file_analysis_runtime.py` (orchestration),
+  - `app/services/chat/full_file_analysis_helpers.py` (batch/range/structured-merge helpers),
+  - `app/services/chat/full_file_analysis.py` kept as compatibility facade.
+- Durable ingestion SQLite queue internals extracted from `app/services/ingestion/sqlite_queue.py` to `app/services/ingestion/sqlite_queue_runtime.py`.
+  - `SqliteIngestionQueueAdapter` async contract is unchanged.
+- Complex analytics compose-stage runtime extracted from `executor.py` to `executor_compose.py`.
+  - `execute_complex_analytics_path(...)` contract and debug shape are unchanged.
 - Behavior and API contracts unchanged; extraction is internal-only.

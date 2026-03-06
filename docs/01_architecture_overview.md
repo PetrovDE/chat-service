@@ -46,6 +46,8 @@ flowchart LR
 - `app/services/file_pipeline.py`
 - `app/services/chat_orchestrator.py`
 - `app/services/chat/rag_prompt_builder.py`
+- `app/services/chat/tabular_sql.py`
+- `app/services/chat/tabular_sql_pipeline.py`
 - `app/services/llm/manager.py`
 
 ### Cross-module coupling
@@ -143,4 +145,7 @@ Not fully aligned with target clean boundaries:
 - File ingestion orchestration extracted from `app/services/file.py` to `app/services/file_pipeline.py` via dependency injection.
   - `file.py` now acts as compatibility and runtime wiring layer for ingestion worker and service API.
   - `_process_file(...)` and `_finalize_ingestion(...)` signatures are unchanged.
+- Deterministic SQL execution internals extracted from `app/services/chat/tabular_sql.py` to `app/services/chat/tabular_sql_pipeline.py`.
+  - `execute_tabular_sql_path(...)` and intent helpers are unchanged.
+  - Existing monkeypatch hooks used in tests (`_build_sql`, `_execute_aggregate_sync`) are preserved in `tabular_sql.py`.
 - Behavior and API contracts unchanged; extraction is internal-only.

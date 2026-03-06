@@ -117,4 +117,7 @@ Execution-plane telemetry fields (non-breaking extension):
   - `app/services/chat/rag_retrieval_helpers.py` for grouped retrieval and context/debug merge utilities.
 - Narrative retrieval branch extraction (no behavior change):
   - `app/services/chat/rag_prompt_narrative.py`.
+- Deterministic tabular SQL internal split (no behavior change):
+  - `app/services/chat/tabular_sql_pipeline.py` now hosts aggregate/profile/error assembly internals,
+  - `app/services/chat/tabular_sql.py` keeps stable route entrypoint and compatibility hooks.
 

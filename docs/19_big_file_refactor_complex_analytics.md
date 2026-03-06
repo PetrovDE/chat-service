@@ -251,3 +251,36 @@ Verification:
 - `tests/integration/test_ingestion_and_response_contract.py`
 - `tests/integration/test_ingestion_chunking_strategy.py`
 - `tests/smoke/test_app_smoke.py`
+
+## Phase 6 (2026-03-06): Deterministic SQL Pipeline Extraction
+
+Motivation:
+- `app/services/chat/tabular_sql.py` remained oversized and mixed intent/sql planning wrappers with aggregate/profile/error execution internals.
+
+Changes:
+- added `app/services/chat/tabular_sql_pipeline.py`:
+  - `execute_aggregate_sync_pipeline(...)`,
+  - `build_profile_payload_pipeline(...)`,
+  - `execute_profile_sync_pipeline(...)`,
+  - `build_tabular_error_result_pipeline(...)`.
+- refactored `app/services/chat/tabular_sql.py` into coordinator/compatibility layer:
+  - `_execute_aggregate_sync(...)`, `_build_profile_payload(...)`, `_execute_profile_sync(...)`, `_build_tabular_error_result(...)` now delegate to pipeline module.
+  - `execute_tabular_sql_path(...)`, `detect_tabular_intent(...)`, `is_tabular_aggregate_intent(...)` unchanged.
+- kept test monkeypatch compatibility:
+  - `_build_sql` and `_execute_aggregate_sync` remain in `tabular_sql.py` and are still used by runtime path.
+
+Before/after:
+- `tabular_sql.py`: 685 -> 417 LOC
+- `tabular_sql_pipeline.py`: 385 LOC
+
+Compatibility:
+- no HTTP/SSE contract changes.
+- no planner route decision changes.
+- no deterministic SQL debug field schema changes.
+- no metric key changes.
+
+Verification:
+- `tests/integration/test_tabular_sql_intent.py`
+- `tests/integration/test_tabular_sql_guardrails.py`
+- `tests/integration/test_tabular_runtime_migration.py`
+- `tests/integration/test_rag_integration.py`

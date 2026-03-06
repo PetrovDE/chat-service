@@ -61,3 +61,4 @@ For metric-critical ambiguous queries against tabular datasets:
 - Route execution branches in RAG builder are now isolated in `app/services/chat/rag_prompt_routes.py` (internal refactor, planner semantics unchanged).
 - Retrieval helper logic for narrative path is extracted to `app/services/chat/rag_retrieval_helpers.py` (no route decision changes).
 - Narrative retrieval execution branch is isolated in `app/services/chat/rag_prompt_narrative.py`; planner contract remains unchanged.
+- Deterministic SQL executor internals are extracted to `app/services/chat/tabular_sql_pipeline.py`; planner intent contract and `execute_tabular_sql_path` behavior are unchanged.

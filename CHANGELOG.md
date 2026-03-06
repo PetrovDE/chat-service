@@ -152,6 +152,22 @@ Migration note:
 - External HTTP/SSE API contract unchanged.
 - Internal refactor only; no client migration required.
 
+### Large File Refactor Phase 6: Deterministic SQL Pipeline Extraction (2026-03-06)
+- Decomposed oversized deterministic SQL module while preserving route behavior and debug contracts:
+  - added `app/services/chat/tabular_sql_pipeline.py` for aggregate/profile/error pipeline internals.
+  - refactored `app/services/chat/tabular_sql.py` into coordinator + compatibility wrappers.
+- Reduced oversized deterministic SQL module:
+  - `app/services/chat/tabular_sql.py`: 685 -> 417 LOC.
+- Preserved compatibility and safety:
+  - no planner route semantic changes,
+  - no deterministic SQL payload/schema changes,
+  - no metric key changes,
+  - existing monkeypatch test hooks (`_build_sql`, `_execute_aggregate_sync`) preserved.
+
+Migration note:
+- External HTTP/SSE API contract unchanged.
+- Internal refactor only; no client migration required.
+
 ### Complex Analytics Two-Pass Pipeline Hardening (2026-03-06, superseded defaults)
 - Completed backend two-stage generation flow for `complex_analytics`:
   - stage 1: `complex_analytics_plan` (strict JSON plan),

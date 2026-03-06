@@ -235,6 +235,10 @@ This change is internal and does not modify HTTP/SSE contracts listed above.
   - `app/services/file_pipeline.py` (processing/finalization pipeline),
   - `app/services/file.py` (runtime wiring + stable service entrypoints).
   External contract remains unchanged.
+- Additional internal split in deterministic SQL execution layer:
+  - `app/services/chat/tabular_sql_pipeline.py` (aggregate/profile/error internals),
+  - `app/services/chat/tabular_sql.py` (stable route entrypoint and compatibility wrappers).
+  External contract remains unchanged.
 
 
 

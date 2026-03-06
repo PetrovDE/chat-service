@@ -102,4 +102,8 @@ Codegen controls:
   - `ingestion_chunks_total`, `ingestion_chunks_ok`, `ingestion_chunks_bad`,
   - `ingestion_upserts_ok`, `ingestion_upserts_fail`,
   - `ingestion_finalize_total`.
+- Deterministic SQL refactor (`tabular_sql.py` -> `tabular_sql_pipeline.py`) keeps existing metric names unchanged:
+  - `tabular_sql_execution_ms`, `tabular_sql_path_ms`,
+  - `tabular_sql_path_total`, `tabular_sql_path_timeout_total`,
+  - `tabular_sql_path_error_total`, `tabular_sql_guardrail_violation_total`.
 

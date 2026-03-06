@@ -48,6 +48,8 @@ flowchart LR
 - `app/services/chat/rag_prompt_builder.py`
 - `app/services/chat/tabular_sql.py`
 - `app/services/chat/tabular_sql_pipeline.py`
+- `app/rag/retriever.py`
+- `app/rag/retriever_helpers.py`
 - `app/services/llm/manager.py`
 
 ### Cross-module coupling
@@ -148,4 +150,7 @@ Not fully aligned with target clean boundaries:
 - Deterministic SQL execution internals extracted from `app/services/chat/tabular_sql.py` to `app/services/chat/tabular_sql_pipeline.py`.
   - `execute_tabular_sql_path(...)` and intent helpers are unchanged.
   - Existing monkeypatch hooks used in tests (`_build_sql`, `_execute_aggregate_sync`) are preserved in `tabular_sql.py`.
+- RAG retriever helper logic extracted from `app/rag/retriever.py` to `app/rag/retriever_helpers.py`.
+  - `RAGRetriever` public methods (`retrieve`, `retrieve_full_file`, `query_rag`, `build_context_prompt`) remain unchanged.
+  - Hybrid/full-file retrieval behavior and debug payload schema are unchanged.
 - Behavior and API contracts unchanged; extraction is internal-only.

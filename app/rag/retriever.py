@@ -1,33 +1,30 @@
-# app/rag/retriever.py
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import re
 import time
-from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from langchain_core.documents import Document
-from langchain_core.retrievers import BaseRetriever
-from pydantic import Field
 
 from app.core.config import settings
-try:
-    from langchain_community.retrievers import BM25Retriever
-except Exception:  # pragma: no cover
-    BM25Retriever = None
-
-try:
-    from langchain_classic.retrievers.ensemble import EnsembleRetriever
-except Exception:  # pragma: no cover
-    EnsembleRetriever = None
-
-from app.rag.embeddings import EmbeddingsManager
-from app.rag.vector_store import VectorStoreManager
 from app.observability.metrics import inc_counter, observe_ms
+from app.rag.embeddings import EmbeddingsManager
+from app.rag.retriever_helpers import (
+    build_context_prompt as build_context_prompt_helper,
+    build_where as build_where_helper,
+    detect_intent as detect_intent_helper,
+    lexical_scores as lexical_scores_helper,
+    merge_hybrid as merge_hybrid_helper,
+    rerank_with_langchain as rerank_with_langchain_helper,
+    resolve_intent as resolve_intent_helper,
+    rows_to_documents as rows_to_documents_helper,
+    select_with_coverage as select_with_coverage_helper,
+    tokenize as tokenize_helper,
+)
+from app.rag.vector_store import VectorStoreManager
 
 logger = logging.getLogger(__name__)
 
@@ -71,38 +68,19 @@ class RetrievalDebug:
     returned_count: int
 
 
-class StaticDenseRetriever(BaseRetriever):
-    """
-    LangChain-compatible retriever that returns pre-ranked dense documents.
-    Used together with BM25 in EnsembleRetriever.
-    """
-
-    docs: List[Document] = Field(default_factory=list)
-    k: int = 20
-
-    def _get_relevant_documents(self, query: str) -> List[Document]:  # noqa: ARG002
-        return list(self.docs[: self.k])
-
-
 class RAGRetriever:
     def __init__(self) -> None:
         self.vectorstore = VectorStoreManager()
 
     def _tokenize(self, text: str) -> List[str]:
-        return [t.lower() for t in TOKEN_RE.findall((text or "").lower()) if len(t) >= 2]
+        return tokenize_helper(text, TOKEN_RE)
 
     def _detect_intent(self, query: str) -> str:
-        q = (query or "").strip().lower()
-        if not q:
-            return "fact_lookup"
-
-        if any(p in q for p in FULL_FILE_PATTERNS):
-            return "analyze_full_file"
-        if any(p in q for p in COMPARE_PATTERNS):
-            return "compare_files"
-        if any(x in q for x in ["почему", "как связ", "why", "how does", "reason"]):
-            return "multi_hop"
-        return "fact_lookup"
+        return detect_intent_helper(
+            query,
+            full_file_patterns=FULL_FILE_PATTERNS,
+            compare_patterns=COMPARE_PATTERNS,
+        )
 
     def _resolve_intent(
         self,
@@ -112,27 +90,13 @@ class RAGRetriever:
         rag_mode: Optional[str],
         file_ids: Optional[List[str]],
     ) -> str:
-        """
-        Resolve final retrieval intent with explicit mode override and pragmatic fallback.
-        """
-        mode = (rag_mode or "").strip().lower()
-        if mode == "full_file":
-            return "analyze_full_file"
-        if mode == "hybrid":
-            return "fact_lookup"
-
-        detected = query_intent or self._detect_intent(query)
-
-        # Fallback: if user asks a broad analysis and files are explicitly attached,
-        # force full-file pass even when phrase is not in strict pattern list.
-        q = (query or "").strip().lower()
-        broad_terms = ["анализ", "разбери", "разбор", "свод", "итог", "обзор", "analyze", "summary", "overview"]
-        file_terms = ["файл", "документ", "sheet", "таблиц", "строк"]
-        if file_ids and detected == "fact_lookup":
-            if any(t in q for t in broad_terms) and any(t in q for t in file_terms):
-                return "analyze_full_file"
-
-        return detected
+        return resolve_intent_helper(
+            query=query,
+            query_intent=query_intent,
+            rag_mode=rag_mode,
+            file_ids=file_ids,
+            detect_intent_fn=self._detect_intent,
+        )
 
     def _build_where(
         self,
@@ -141,61 +105,14 @@ class RAGRetriever:
         user_id: Optional[str],
         file_ids: Optional[List[str]],
     ) -> Optional[Dict[str, Any]]:
-        where: Dict[str, Any] = {}
-        if file_ids:
-            where["file_id"] = {"$in": [str(x) for x in file_ids]}
-        elif conversation_id:
-            where["conversation_id"] = conversation_id
-
-        if user_id:
-            where["user_id"] = user_id
-
-        return where if where else None
+        return build_where_helper(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            file_ids=file_ids,
+        )
 
     def _lexical_scores(self, query: str, rows: List[Dict[str, Any]]) -> Dict[str, float]:
-        q_tokens = self._tokenize(query)
-        if not q_tokens:
-            return {}
-
-        q_counter = Counter(q_tokens)
-        n_docs = max(len(rows), 1)
-
-        df = defaultdict(int)
-        doc_tokens_cache: Dict[str, Counter] = {}
-        for r in rows:
-            doc_id = str(r.get("id") or "")
-            tokens = self._tokenize(r.get("content") or "")
-            c = Counter(tokens)
-            doc_tokens_cache[doc_id] = c
-            for t in c.keys():
-                df[t] += 1
-
-        scores: Dict[str, float] = {}
-        for r in rows:
-            doc_id = str(r.get("id") or "")
-            d_counter = doc_tokens_cache.get(doc_id) or Counter()
-            if not d_counter:
-                continue
-
-            d_len = sum(d_counter.values())
-            denom = max(d_len, 1)
-            score = 0.0
-
-            for token, q_tf in q_counter.items():
-                tf = d_counter.get(token, 0)
-                if tf <= 0:
-                    continue
-                idf = math.log(1.0 + (n_docs - df[token] + 0.5) / (df[token] + 0.5))
-                score += (tf / denom) * idf * (1.0 + 0.2 * q_tf)
-
-            if score > 0:
-                scores[doc_id] = score
-
-        if not scores:
-            return {}
-
-        max_score = max(scores.values()) or 1.0
-        return {k: float(v / max_score) for k, v in scores.items()}
+        return lexical_scores_helper(query, rows, tokenize_fn=self._tokenize)
 
     def _merge_hybrid(
         self,
@@ -206,74 +123,16 @@ class RAGRetriever:
         dense_weight: float = 0.75,
         lexical_weight: float = 0.25,
     ) -> List[Dict[str, Any]]:
-        merged: Dict[str, Dict[str, Any]] = {}
-
-        for r in dense_rows:
-            doc_id = str(r.get("id") or "")
-            dist = float(r.get("distance", 1e9))
-            dense_sim = 1.0 / (1.0 + dist)
-            meta = dict(r.get("metadata") or {})
-            merged[doc_id] = {
-                "id": doc_id,
-                "content": (r.get("content") or "").strip(),
-                "metadata": meta,
-                "distance": dist,
-                "dense_score": dense_sim,
-                "lexical_score": 0.0,
-            }
-
-        for r in lexical_rows:
-            doc_id = str(r.get("id") or "")
-            if not doc_id:
-                continue
-            lex_score = float(lexical_scores.get(doc_id, 0.0))
-            if lex_score <= 0:
-                continue
-
-            row = merged.get(doc_id)
-            if row is None:
-                row = {
-                    "id": doc_id,
-                    "content": (r.get("content") or "").strip(),
-                    "metadata": dict(r.get("metadata") or {}),
-                    "distance": 1e9,
-                    "dense_score": 0.0,
-                    "lexical_score": 0.0,
-                }
-                merged[doc_id] = row
-
-            row["lexical_score"] = max(float(row.get("lexical_score", 0.0)), lex_score)
-
-        out: List[Dict[str, Any]] = []
-        for row in merged.values():
-            if not row.get("content"):
-                continue
-            hybrid = dense_weight * float(row.get("dense_score", 0.0)) + lexical_weight * float(row.get("lexical_score", 0.0))
-            row["hybrid_score"] = hybrid
-            out.append(row)
-
-        out.sort(key=lambda x: float(x.get("hybrid_score", 0.0)), reverse=True)
-        return out
+        return merge_hybrid_helper(
+            dense_rows=dense_rows,
+            lexical_rows=lexical_rows,
+            lexical_scores_map=lexical_scores,
+            dense_weight=dense_weight,
+            lexical_weight=lexical_weight,
+        )
 
     def _rows_to_documents(self, rows: List[Dict[str, Any]], *, score_key: str, default_score: float = 0.0) -> List[Document]:
-        docs: List[Document] = []
-        for r in rows:
-            content = (r.get("content") or "").strip()
-            if not content:
-                continue
-            row_id = str(r.get("id") or "").strip()
-            meta = dict(r.get("metadata") or {})
-            file_id = str(meta.get("file_id") or "").strip()
-            if row_id and not str(meta.get("chunk_id") or "").strip():
-                meta["chunk_id"] = row_id
-            if file_id and not str(meta.get("doc_id") or "").strip():
-                meta["doc_id"] = file_id
-            meta["distance"] = float(r.get("distance", 1e9))
-            meta["dense_score"] = float(r.get("dense_score", 0.0))
-            meta["lexical_score"] = float(r.get("lexical_score", 0.0))
-            meta["similarity_score"] = float(r.get(score_key, default_score))
-            docs.append(Document(page_content=content, metadata=meta))
-        return docs
+        return rows_to_documents_helper(rows, score_key=score_key, default_score=default_score)
 
     def _rerank_with_langchain(
         self,
@@ -283,109 +142,15 @@ class RAGRetriever:
         lexical_rows: List[Dict[str, Any]],
         top_k: int,
     ) -> Optional[List[Document]]:
-        """
-        Hybrid rerank via LangChain retrievers:
-          1) Dense candidates -> StaticDenseRetriever
-          2) Lexical candidates -> BM25Retriever
-          3) EnsembleRetriever (RRF)
-        Returns None if LangChain hybrid components are unavailable.
-        """
-        if BM25Retriever is None or EnsembleRetriever is None:
-            return None
-
-        dense_docs: List[Document] = []
-        for r in dense_rows:
-            row_id = str(r.get("id") or "")
-            content = (r.get("content") or "").strip()
-            if not content:
-                continue
-            meta = dict(r.get("metadata") or {})
-            dist = float(r.get("distance", 1e9))
-            dense_sim = 1.0 / (1.0 + dist)
-            file_id = str(meta.get("file_id") or "").strip()
-            if row_id and not str(meta.get("chunk_id") or "").strip():
-                meta["chunk_id"] = row_id
-            if file_id and not str(meta.get("doc_id") or "").strip():
-                meta["doc_id"] = file_id
-            meta["distance"] = dist
-            meta["dense_score"] = dense_sim
-            meta["similarity_score"] = dense_sim
-            dense_docs.append(Document(page_content=content, metadata=meta))
-
-        lexical_docs: List[Document] = []
-        for r in lexical_rows:
-            row_id = str(r.get("id") or "")
-            content = (r.get("content") or "").strip()
-            if not content:
-                continue
-            meta = dict(r.get("metadata") or {})
-            file_id = str(meta.get("file_id") or "").strip()
-            if row_id and not str(meta.get("chunk_id") or "").strip():
-                meta["chunk_id"] = row_id
-            if file_id and not str(meta.get("doc_id") or "").strip():
-                meta["doc_id"] = file_id
-            lexical_docs.append(Document(page_content=content, metadata=meta))
-
-        if not dense_docs and not lexical_docs:
-            return []
-
-        retrievers: List[BaseRetriever] = []
-        weights: List[float] = []
-
-        if dense_docs:
-            retrievers.append(StaticDenseRetriever(docs=dense_docs, k=max(top_k * 5, 30)))
-            weights.append(0.75)
-        if lexical_docs:
-            bm25 = BM25Retriever.from_documents(lexical_docs)
-            bm25.k = max(top_k * 6, 40)
-            retrievers.append(bm25)
-            weights.append(0.25)
-
-        if not retrievers:
-            return []
-        if len(retrievers) == 1:
-            return retrievers[0].invoke(query)[:top_k]
-
-        ensemble = EnsembleRetriever(retrievers=retrievers, weights=weights)
-        docs = ensemble.invoke(query)
-        return docs[: max(top_k * 3, 20)]
+        return rerank_with_langchain_helper(
+            query=query,
+            dense_rows=dense_rows,
+            lexical_rows=lexical_rows,
+            top_k=top_k,
+        )
 
     def _select_with_coverage(self, rows: List[Dict[str, Any]], top_k: int, per_file_min: int = 1) -> List[Dict[str, Any]]:
-        if not rows:
-            return []
-
-        selected: List[Dict[str, Any]] = []
-        used_ids = set()
-
-        by_file: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-        for r in rows:
-            file_id = str((r.get("metadata") or {}).get("file_id") or "")
-            if file_id:
-                by_file[file_id].append(r)
-
-        if by_file and top_k >= len(by_file):
-            for _, file_rows in by_file.items():
-                take = 0
-                for r in file_rows:
-                    doc_id = str(r.get("id") or "")
-                    if doc_id in used_ids:
-                        continue
-                    selected.append(r)
-                    used_ids.add(doc_id)
-                    take += 1
-                    if take >= per_file_min:
-                        break
-
-        for r in rows:
-            if len(selected) >= top_k:
-                break
-            doc_id = str(r.get("id") or "")
-            if doc_id in used_ids:
-                continue
-            selected.append(r)
-            used_ids.add(doc_id)
-
-        return selected[:top_k]
+        return select_with_coverage_helper(rows, top_k=top_k, per_file_min=per_file_min)
 
     async def retrieve(
         self,
@@ -487,7 +252,6 @@ class RAGRetriever:
         observe_ms("rag_rerank_duration_ms", (time.perf_counter() - t_rerank) * 1000.0, backend="langchain")
 
         if lc_docs is not None:
-            # Coverage-aware selection by file for LangChain-ranked docs
             ranked_rows: List[Dict[str, Any]] = []
             for d in lc_docs:
                 sim = float(d.metadata.get("similarity_score", 0.0))
@@ -508,7 +272,6 @@ class RAGRetriever:
             docs = self._rows_to_documents(selected, score_key="hybrid_score")
             merged_count = len(ranked_rows)
         else:
-            # Fallback: internal hybrid scoring if LangChain retrievers are unavailable
             lexical_scores = self._lexical_scores(query, lexical_pool)
             merged = self._merge_hybrid(
                 dense_rows=dense_rows,
@@ -689,31 +452,7 @@ class RAGRetriever:
         }
 
     def build_context_prompt(self, *, query: str, context_documents: List[Dict[str, Any]]) -> str:
-        parts: List[str] = []
-        for i, d in enumerate(context_documents, start=1):
-            meta = d.get("metadata") or {}
-            filename = meta.get("filename") or meta.get("source") or "unknown"
-            chunk_index = meta.get("chunk_index", "?")
-            score = d.get("similarity_score", meta.get("similarity_score", 0.0))
-            content = (d.get("content") or "").strip()
-            if not content:
-                continue
-            parts.append(f"[{i}] file={filename} chunk={chunk_index} score={score:.4f}\n{content}")
-
-        context_block = "\n\n---\n\n".join(parts)
-        if context_block:
-            return (
-                "You are an assistant. Build a detailed answer from the provided file context.\n"
-                "Return three sections in this exact order:\n"
-                "1) Ответ\n"
-                "2) Ограничения/нехватка данных\n"
-                "3) Источники (кратко)\n"
-                "If details are missing in context, explicitly list what is missing.\n\n"
-                f"Question:\n{query}\n\n"
-                f"Context:\n{context_block}\n\n"
-                "Answer:"
-            )
-        return query
+        return build_context_prompt_helper(query=query, context_documents=context_documents)
 
 
 rag_retriever = RAGRetriever()

@@ -168,6 +168,21 @@ Migration note:
 - External HTTP/SSE API contract unchanged.
 - Internal refactor only; no client migration required.
 
+### Large File Refactor Phase 7: RAG Retriever Helper Split (2026-03-06)
+- Decomposed oversized retrieval module while preserving class API and retrieval behavior:
+  - added `app/rag/retriever_helpers.py` for intent/filter/scoring/rerank/prompt helper logic.
+  - refactored `app/rag/retriever.py` into stable class/wiring layer with delegated internals.
+- Reduced oversized retrieval module:
+  - `app/rag/retriever.py`: 719 -> 458 LOC.
+- Preserved compatibility and safety:
+  - no route semantic changes (`hybrid`/`full_file` behavior unchanged),
+  - no RAG debug payload schema changes,
+  - no metric key changes.
+
+Migration note:
+- External HTTP/SSE API contract unchanged.
+- Internal refactor only; no client migration required.
+
 ### Complex Analytics Two-Pass Pipeline Hardening (2026-03-06, superseded defaults)
 - Completed backend two-stage generation flow for `complex_analytics`:
   - stage 1: `complex_analytics_plan` (strict JSON plan),

@@ -106,4 +106,11 @@ Codegen controls:
   - `tabular_sql_execution_ms`, `tabular_sql_path_ms`,
   - `tabular_sql_path_total`, `tabular_sql_path_timeout_total`,
   - `tabular_sql_path_error_total`, `tabular_sql_guardrail_violation_total`.
+- Retrieval refactor (`retriever.py` -> `retriever_helpers.py`) keeps existing metric names unchanged:
+  - `rag_retrieve_total`,
+  - `rag_retrieve_duration_ms`,
+  - `rag_retrieve_full_file_duration_ms`,
+  - `rag_embed_duration_ms`,
+  - `rag_candidates_duration_ms`,
+  - `rag_rerank_duration_ms`.
 

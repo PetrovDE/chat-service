@@ -284,3 +284,33 @@ Verification:
 - `tests/integration/test_tabular_sql_guardrails.py`
 - `tests/integration/test_tabular_runtime_migration.py`
 - `tests/integration/test_rag_integration.py`
+
+## Phase 7 (2026-03-06): RAG Retriever Helper Split
+
+Motivation:
+- `app/rag/retriever.py` remained oversized and combined class API, intent/filter logic, hybrid scoring, LangChain rerank glue, and context prompt formatting.
+
+Changes:
+- added `app/rag/retriever_helpers.py`:
+  - intent/filter helpers: `detect_intent`, `resolve_intent`, `build_where`,
+  - scoring/rerank helpers: `lexical_scores`, `merge_hybrid`, `rerank_with_langchain`, `select_with_coverage`,
+  - formatting helpers: `rows_to_documents`, `build_context_prompt`,
+  - LangChain adapter: `StaticDenseRetriever`.
+- refactored `app/rag/retriever.py` into class-level API/wiring layer:
+  - kept public class/method contract unchanged (`RAGRetriever.retrieve`, `retrieve_full_file`, `query_rag`, `build_context_prompt`),
+  - internal methods now delegate to helper module while preserving behavior.
+
+Before/after:
+- `retriever.py`: 719 -> 458 LOC
+- `retriever_helpers.py`: 354 LOC
+
+Compatibility:
+- no HTTP/SSE contract changes.
+- no RAG debug payload shape changes.
+- no planner/route semantic changes.
+- no observability metric key changes.
+
+Verification:
+- `tests/integration/test_rag_integration.py`
+- `tests/integration/test_rag_dynamic_budget.py`
+- `tests/smoke/test_app_smoke.py`

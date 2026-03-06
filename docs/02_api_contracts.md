@@ -239,6 +239,10 @@ This change is internal and does not modify HTTP/SSE contracts listed above.
   - `app/services/chat/tabular_sql_pipeline.py` (aggregate/profile/error internals),
   - `app/services/chat/tabular_sql.py` (stable route entrypoint and compatibility wrappers).
   External contract remains unchanged.
+- Additional internal split in retrieval execution layer:
+  - `app/rag/retriever_helpers.py` (intent/filter/scoring/rerank/prompt helpers),
+  - `app/rag/retriever.py` (stable retriever class and route-facing entrypoints).
+  External contract remains unchanged.
 
 
 

@@ -120,4 +120,7 @@ Execution-plane telemetry fields (non-breaking extension):
 - Deterministic tabular SQL internal split (no behavior change):
   - `app/services/chat/tabular_sql_pipeline.py` now hosts aggregate/profile/error assembly internals,
   - `app/services/chat/tabular_sql.py` keeps stable route entrypoint and compatibility hooks.
+- Retrieval-layer internal split (no behavior change):
+  - `app/rag/retriever_helpers.py` now hosts intent/filter/scoring/rerank/prompt helper logic,
+  - `app/rag/retriever.py` keeps stable `RAGRetriever` public API used by chat flow.
 

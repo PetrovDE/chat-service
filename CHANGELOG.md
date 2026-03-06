@@ -132,6 +132,26 @@ Migration note:
 - External HTTP/SSE API contract unchanged.
 - Internal refactor only; no client migration required.
 
+### Large File Refactor Phase 5: Ingestion Pipeline Extraction (2026-03-06)
+- Decomposed oversized file ingestion module while preserving service/API behavior:
+  - added `app/services/file_pipeline.py` for ingestion execution pipeline internals:
+    - `process_file_pipeline(...)`
+    - `finalize_ingestion_pipeline(...)`
+  - refactored `app/services/file.py` into runtime wiring + compatibility layer:
+    - `_process_file(...)` delegates to `process_file_pipeline(...)`
+    - `_finalize_ingestion(...)` delegates to `finalize_ingestion_pipeline(...)`
+- Reduced oversized ingestion module:
+  - `app/services/file.py`: 678 -> 408 LOC.
+- Preserved compatibility and safety:
+  - no external API contract changes,
+  - no ingestion status/stage contract changes,
+  - no metric key changes,
+  - no sandbox/security policy relaxations.
+
+Migration note:
+- External HTTP/SSE API contract unchanged.
+- Internal refactor only; no client migration required.
+
 ### Complex Analytics Two-Pass Pipeline Hardening (2026-03-06, superseded defaults)
 - Completed backend two-stage generation flow for `complex_analytics`:
   - stage 1: `complex_analytics_plan` (strict JSON plan),

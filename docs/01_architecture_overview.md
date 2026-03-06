@@ -43,6 +43,7 @@ flowchart LR
 
 ### Service modules (high fan-out)
 - `app/services/file.py`
+- `app/services/file_pipeline.py`
 - `app/services/chat_orchestrator.py`
 - `app/services/chat/rag_prompt_builder.py`
 - `app/services/llm/manager.py`
@@ -60,7 +61,7 @@ No static circular deps, but probable unused modules:
 Validation method: no import references found via `rg` across `app/` and `tests/`.
 
 ## Risks
-- `chat_orchestrator` and `file.py` remain orchestration-heavy (high change surface).
+- `file` ingestion flow still has high integration surface (DB, embeddings, vector store, tabular metadata), even after modular split.
 - Routing policy and deterministic SQL safety are spread across multiple modules and require contract-level tests to stay safe.
 
 ## Chat Lifecycle
@@ -139,4 +140,7 @@ Not fully aligned with target clean boundaries:
   - stream/non-stream chat runtime moved to `app/services/chat/orchestrator_runtime.py`,
   - grouped retrieval/context helpers moved to `app/services/chat/rag_retrieval_helpers.py`.
 - Narrative retrieval orchestration branch moved to `app/services/chat/rag_prompt_narrative.py`.
+- File ingestion orchestration extracted from `app/services/file.py` to `app/services/file_pipeline.py` via dependency injection.
+  - `file.py` now acts as compatibility and runtime wiring layer for ingestion worker and service API.
+  - `_process_file(...)` and `_finalize_ingestion(...)` signatures are unchanged.
 - Behavior and API contracts unchanged; extraction is internal-only.

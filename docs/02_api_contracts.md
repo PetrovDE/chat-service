@@ -231,6 +231,10 @@ This change is internal and does not modify HTTP/SSE contracts listed above.
   - `app/services/chat/rag_retrieval_helpers.py`
   - `app/services/chat/rag_prompt_narrative.py`
   External contract remains unchanged.
+- Additional internal split in ingestion execution layer:
+  - `app/services/file_pipeline.py` (processing/finalization pipeline),
+  - `app/services/file.py` (runtime wiring + stable service entrypoints).
+  External contract remains unchanged.
 
 
 

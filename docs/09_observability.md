@@ -97,4 +97,9 @@ Codegen controls:
 - Additional refactor in chat-plane orchestration (`orchestrator_helpers.py`, `rag_prompt_routes.py`) does not change metric or structured-log key names.
 - Runtime/refactoring split (`orchestrator_runtime.py`, `rag_retrieval_helpers.py`) also keeps metric names and structured log event keys unchanged.
 - Narrative branch extraction (`rag_prompt_narrative.py`) keeps existing observability keys unchanged.
+- Ingestion refactor (`file.py` -> `file_pipeline.py`) keeps ingestion metric names unchanged:
+  - `ingestion_stage_ms`, `ingestion_total_ms`,
+  - `ingestion_chunks_total`, `ingestion_chunks_ok`, `ingestion_chunks_bad`,
+  - `ingestion_upserts_ok`, `ingestion_upserts_fail`,
+  - `ingestion_finalize_total`.
 

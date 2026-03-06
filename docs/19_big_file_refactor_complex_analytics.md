@@ -222,3 +222,32 @@ Verification:
 - `tests/integration/test_rag_dynamic_budget.py`
 - `tests/integration/test_complex_analytics_path.py`
 - `tests/smoke/test_app_smoke.py`
+
+## Phase 5 (2026-03-06): File Ingestion Pipeline Extraction
+
+Motivation:
+- `app/services/file.py` remained oversized and mixed worker/runtime wiring with heavy ingestion execution stages.
+
+Changes:
+- added `app/services/file_pipeline.py`:
+  - `process_file_pipeline(...)` for extract/chunk/embed/upsert/finalize stages,
+  - `finalize_ingestion_pipeline(...)` for status normalization and metrics updates.
+- refactored `app/services/file.py` into compatibility/wiring layer:
+  - `_process_file(...)` now delegates to `process_file_pipeline(...)`,
+  - `_finalize_ingestion(...)` now delegates to `finalize_ingestion_pipeline(...)`,
+  - public service entrypoints unchanged (`process_file_async`, `process_file_background`, worker lifecycle helpers).
+- dependency injection preserved monkeypatch compatibility for existing integration tests.
+
+Before/after:
+- `file.py`: 678 -> 408 LOC
+- `file_pipeline.py`: 354 LOC
+
+Compatibility:
+- no HTTP API changes.
+- no ingestion status/stage enum changes.
+- no ingestion metric key changes.
+
+Verification:
+- `tests/integration/test_ingestion_and_response_contract.py`
+- `tests/integration/test_ingestion_chunking_strategy.py`
+- `tests/smoke/test_app_smoke.py`

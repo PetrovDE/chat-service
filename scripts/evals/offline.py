@@ -11,6 +11,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import httpx
 
+from app.core.config import settings
+from app.services.chat.complex_analytics import executor as complex_executor
 from app.services.chat.tabular_sql import execute_tabular_sql_path
 from app.services.llm.exceptions import AIHubUnavailableError
 from app.services.llm.provider_clients import ProviderRegistry
@@ -380,6 +382,203 @@ def run_narrative_rag_eval(cases: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "score": (passed_cases / len(case_results)) if case_results else 0.0,
         "supported_claims": supported_claims,
         "total_claims": total_claims,
+        "latency_ms": latencies_ms,
+        "latency_p95_ms": _percentile(latencies_ms, 0.95),
+        "latency_violations": violations,
+        "cases": case_results,
+    }
+
+
+def _default_complex_quality_codegen() -> str:
+    return """
+import pandas as pd
+import matplotlib.pyplot as plt
+
+table_name = list(datasets.keys())[0]
+df = datasets[table_name].copy()
+numeric_df = df.apply(pd.to_numeric, errors="coerce")
+numeric_cols = [str(c) for c in numeric_df.columns if int(numeric_df[c].notna().sum()) > 0]
+if len(numeric_cols) > 0:
+    col = numeric_cols[0]
+    clean = numeric_df[col].dropna()
+else:
+    col = str(df.columns[0])
+    clean = pd.to_numeric(df[col], errors="coerce").dropna()
+
+artifacts = []
+if len(clean) > 0:
+    fig, ax = plt.subplots(figsize=(7, 4))
+    clean.astype(float).plot(kind="hist", bins=10, ax=ax, title=f"Distribution of {col}")
+    path = save_plot(fig=fig, name="eval_quality_distribution.png")
+    plt.close(fig)
+    artifacts.append({"kind": "histogram", "path": path, "column": col})
+
+result = {
+    "status": "ok",
+    "table_name": table_name,
+    "metrics": {
+        "rows_total": int(len(df)),
+        "columns_total": int(len(df.columns)),
+        "columns": [str(c) for c in df.columns],
+        "potential_process": "Likely an operational process dataset with records, dimensions, and process indicators.",
+        "column_profile": [],
+        "numeric_summary": [{"column": col, "count": int(len(clean))}] if len(clean) > 0 else [],
+        "datetime_summary": [],
+        "categorical_summary": [],
+        "insights": ["Quality eval execution completed."]
+    },
+    "notes": [],
+    "artifacts": artifacts
+}
+""".strip()
+
+
+def run_complex_analytics_quality_eval(cases: Sequence[Dict[str, Any]], temp_dir: Path) -> Dict[str, Any]:
+    case_results = []
+    quality_checks_passed = 0
+    quality_checks_total = 0
+    latencies_ms: List[float] = []
+    violations = []
+
+    for case in cases:
+        started = perf_counter()
+        details: Dict[str, Any] = {}
+        passed = False
+        original_generate_response = complex_executor.llm_manager.generate_response
+        original_codegen_enabled = bool(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_ENABLED", True))
+        original_template_fallback = bool(getattr(settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK", True))
+        original_runtime_fallback = bool(getattr(settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK", True))
+        try:
+            settings.COMPLEX_ANALYTICS_CODEGEN_ENABLED = True
+            settings.COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK = True
+            settings.COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK = True
+
+            compose_response = str(case.get("compose_response") or "Done.")
+            codegen_response = str(case.get("codegen_response") or _default_complex_quality_codegen())
+
+            async def fake_generate_response(**kwargs):  # noqa: ANN003
+                policy_class = str(kwargs.get("policy_class") or "")
+                if policy_class == "complex_analytics_plan":
+                    plan_payload = {
+                        "analysis_goal": "broad analytics report",
+                        "required_artifacts": ["plots", "metrics"],
+                        "required_outputs": ["summary", "metrics", "insights", "artifacts"],
+                        "data_contract": {"required_inputs": ["datasets"], "required_outputs": ["result"]},
+                        "required_contract": {
+                            "expects_visualization": True,
+                            "expects_dependency": False,
+                            "expects_nlp": False,
+                        },
+                        "python_generation_prompt": "Generate robust broad analytics and at least one chart.",
+                        "should_generate_code": True,
+                    }
+                    return {
+                        "response": json.dumps(plan_payload, ensure_ascii=False),
+                        "model_route": "ollama",
+                        "provider_effective": "ollama",
+                    }
+                if policy_class == "complex_analytics_codegen":
+                    return {
+                        "response": codegen_response,
+                        "model_route": "ollama",
+                        "provider_effective": "ollama",
+                    }
+                if policy_class == "complex_analytics_response":
+                    return {
+                        "response": compose_response,
+                        "model_route": "ollama",
+                        "provider_effective": "ollama",
+                    }
+                return {"response": "ok", "model_route": "ollama", "provider_effective": "ollama"}
+
+            complex_executor.llm_manager.generate_response = fake_generate_response
+            file_obj = _create_sidecar_file(case, temp_dir=temp_dir)
+            query = str(case.get("query") or "")
+            result = asyncio.run(
+                complex_executor.execute_complex_analytics_path(
+                    query=query,
+                    files=[file_obj],
+                    model_source="local",
+                    provider_mode="explicit",
+                    model_name="llama3.2",
+                )
+            )
+
+            expected = case.get("expected") if isinstance(case.get("expected"), dict) else {}
+            min_artifacts = int(expected.get("min_artifacts", 1) or 0)
+            expected_status = str(expected.get("response_status") or "")
+            expected_error = str(expected.get("response_error_code") or "")
+            required_substrings = expected.get("required_substrings") if isinstance(expected.get("required_substrings"), list) else []
+
+            result_payload = result if isinstance(result, dict) else {}
+            final_response = str(result_payload.get("final_response") or "")
+            artifacts = result_payload.get("artifacts") if isinstance(result_payload.get("artifacts"), list) else []
+            debug_payload = result_payload.get("debug") if isinstance(result_payload.get("debug"), dict) else {}
+            complex_debug = debug_payload.get("complex_analytics") if isinstance(debug_payload.get("complex_analytics"), dict) else {}
+            observed_status = str(complex_debug.get("response_status") or "")
+            observed_error = str(complex_debug.get("response_error_code") or "")
+
+            status_ok = str(result_payload.get("status") or "") == "ok"
+            artifacts_ok = len(artifacts) >= min_artifacts
+            response_text_lower = final_response.lower()
+            required_ok = all(str(item).lower() in response_text_lower for item in required_substrings)
+            status_meta_ok = (not expected_status) or (observed_status == expected_status)
+            error_meta_ok = (not expected_error) or (observed_error == expected_error)
+
+            passed = status_ok and artifacts_ok and required_ok and status_meta_ok and error_meta_ok
+            quality_checks_total += 1
+            if passed:
+                quality_checks_passed += 1
+
+            details = {
+                "status": result_payload.get("status"),
+                "artifacts_count": len(artifacts),
+                "observed_response_status": observed_status,
+                "observed_response_error_code": observed_error,
+                "required_substrings_missing": [
+                    str(item) for item in required_substrings if str(item).lower() not in response_text_lower
+                ],
+            }
+        except Exception as exc:  # pragma: no cover - defensive branch
+            quality_checks_total += 1
+            details = {"error": str(exc), "error_type": type(exc).__name__}
+            passed = False
+        finally:
+            complex_executor.llm_manager.generate_response = original_generate_response
+            settings.COMPLEX_ANALYTICS_CODEGEN_ENABLED = original_codegen_enabled
+            settings.COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK = original_template_fallback
+            settings.COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK = original_runtime_fallback
+
+        latency_ms = (perf_counter() - started) * 1000.0
+        latencies_ms.append(latency_ms)
+        latency_limit_ms = float(case.get("max_latency_ms") or 0.0)
+        if latency_limit_ms > 0.0 and latency_ms > latency_limit_ms:
+            violations.append(
+                {
+                    "dataset": "complex_analytics_quality_golden",
+                    "case_id": case.get("id"),
+                    "latency_ms": round(latency_ms, 3),
+                    "max_latency_ms": latency_limit_ms,
+                }
+            )
+
+        case_results.append(
+            {
+                "id": case.get("id"),
+                "passed": passed,
+                "latency_ms": round(latency_ms, 3),
+                "details": details,
+            }
+        )
+
+    passed_cases = sum(1 for item in case_results if item["passed"])
+    return {
+        "dataset": "complex_analytics_quality_golden",
+        "total_cases": len(case_results),
+        "passed_cases": passed_cases,
+        "score": (passed_cases / len(case_results)) if case_results else 0.0,
+        "quality_checks_passed": quality_checks_passed,
+        "quality_checks_total": quality_checks_total,
         "latency_ms": latencies_ms,
         "latency_p95_ms": _percentile(latencies_ms, 0.95),
         "latency_violations": violations,

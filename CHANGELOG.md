@@ -2,16 +2,145 @@
 
 ## [Unreleased] - 2026-03-03
 
-### Complex Analytics Two-Pass Pipeline Hardening (2026-03-06)
+### Complex Analytics Modular Refactor (2026-03-06)
+- Refactored `complex_analytics` implementation from monolithic module to modular package:
+  - `app/services/chat/complex_analytics/{planner,codegen,sandbox,executor,composer,artifacts,errors,telemetry}.py`
+- Continued modular split in the same package to reduce oversized modules and isolate responsibilities:
+  - `dataset_context.py` (dataset/table resolution and loading),
+  - `template_codegen.py` (safe template analytics code builder),
+  - `report_quality.py` (compose quality policy and broad-query detection),
+  - `localization.py` (RU localization mappings/helpers),
+  - `auto_visual_patch.py` (codegen visualization contract auto-repair),
+  - `executor_support.py` (error/context helpers for executor path).
+- Reduced large file footprint in complex analytics package:
+  - `codegen.py` -> 428 LOC,
+  - `executor.py` -> 499 LOC,
+  - `composer.py` -> 479 LOC.
+- Preserved public import contract and route behavior:
+  - `execute_complex_analytics_path(...)`
+  - `is_complex_analytics_query(...)`
+- Preserved execution semantics:
+  - planner routing behavior and no silent downgrade to deterministic SQL,
+  - telemetry/debug fields (`execution_route`, `executor_*`, `complex_analytics_*`),
+  - provider precedence (`explicit local/provider > default policy`),
+  - sandbox/offline security boundaries.
+- Added focused module unit tests:
+  - `test_complex_analytics_planner_module.py`
+  - `test_complex_analytics_codegen_module.py`
+  - `test_complex_analytics_sandbox_module.py`
+  - `test_complex_analytics_composer_module.py`
+  - `test_complex_analytics_import_compat.py`
+- Added architecture note:
+  - `docs/19_big_file_refactor_complex_analytics.md`
+- Adjusted fallback defaults for better UX on broad analytics prompts:
+  - `COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK=true` (default),
+  - `COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK=true` (default),
+  - broad requests now degrade to safe template analytics instead of returning `codegen_failed` when LLM codegen contract is not satisfied.
+- Added codegen auto-repair for visualization contract:
+  - when LLM code misses `save_plot(...)`, backend injects a safe chart fallback block and re-validates contract before final fallback.
+- Added debug/telemetry flagging for this repair path:
+  - `complex_analytics.codegen_auto_visual_patch_applied`
+  - `complex_analytics.complex_analytics_codegen.auto_visual_patch_applied`
+- Added regression coverage for broad analytics prompt repair path and telemetry:
+  - `tests/integration/test_complex_analytics_path.py::test_complex_analytics_auto_visual_patch_prevents_codegen_failure`
+  - `tests/unit/test_complex_analytics_telemetry_module.py`
+- Added compose quality gate for final report generation:
+  - weak/generic compose responses now fallback to local structured formatter from executed metrics/artifacts,
+  - debug telemetry includes `response_status=fallback` and `response_error_code=low_content_quality`.
+- Added broad-query compose policy for full-file analysis prompts:
+  - when query intent is broad full analysis, executor keeps deterministic local formatter output and skips compose LLM stage by default,
+  - debug telemetry uses `response_status=fallback` and `response_error_code=broad_query_local_formatter`.
+- Added regression coverage for compose quality fallback:
+  - `tests/integration/test_complex_analytics_path.py::test_complex_analytics_compose_quality_gate_falls_back_to_local_formatter`
+  - `tests/unit/test_complex_analytics_composer_module.py::test_compose_quality_gate_rejects_too_short_llm_output`
+- Added offline eval dataset and runner metric for broad complex analytics response quality:
+  - dataset: `tests/evals/datasets/complex_analytics_quality_golden.jsonl`
+  - metric: `complex_analytics_report_quality`
+  - gate: `complex_analytics_report_quality_min`
+- Included latency gate for new eval dataset:
+  - `p95_latency_ms.complex_analytics_quality_golden`
+- Added online/hybrid preprod quality eval path for real `/api/v1/chat`:
+  - dataset: `tests/evals/datasets/complex_analytics_quality_online.jsonl`
+  - online metric: `online_report.metrics.complex_analytics_report_quality`
+  - preprod gate config: `tests/evals/gates.preprod.json`
+  - supports `${ENV_VAR}` placeholders in online requests (e.g. conversation id injection).
+- Extended CI gates for online preprod validation:
+  - `online_complex_analytics_report_quality_min`
+  - `online_max_latency_violations`
+  - `online_p95_latency_ms.<dataset>`
+- Fixed legacy mojibake sections in changelog and normalized them to English.
+
+Migration note:
+- External HTTP/SSE API contract is unchanged.
+- Refactor is internal-only; no client migration required.
+
+### Large File Refactor Phase 2: Orchestration/RAG Split (2026-03-06)
+- Reduced oversized orchestration files without changing API contracts:
+  - `app/services/chat_orchestrator.py`: 884 -> 705 LOC
+  - `app/services/chat/rag_prompt_builder.py`: 778 -> 586 LOC
+- Added `app/services/chat/orchestrator_helpers.py`:
+  - route/execution telemetry builders,
+  - artifact extraction and clarification text helpers,
+  - generation kwargs and postprocess helper.
+- Added `app/services/chat/rag_prompt_routes.py`:
+  - route-specific handlers for `clarification`, `complex_analytics`, and `deterministic_analytics` branches.
+- Preserved monkeypatch/backward-compat behavior used by tests:
+  - `rag_prompt_builder.execute_tabular_sql_path`
+  - `rag_prompt_builder.execute_complex_analytics_path`
+- Behavior lock preserved:
+  - planner route semantics unchanged,
+  - no silent fallback from `complex_analytics` to deterministic SQL,
+  - telemetry fields shape unchanged (`execution_route`, `executor_*`, `complex_analytics_*`).
+
+Migration note:
+- External HTTP/SSE API contract unchanged.
+- Internal refactor only; no client migration required.
+
+### Large File Refactor Phase 3: Runtime/Builder Decomposition (2026-03-06)
+- Continued split to remove remaining oversized methods and keep modules under 500 LOC:
+  - `app/services/chat_orchestrator.py`: 705 -> 281 LOC
+  - `app/services/chat/rag_prompt_builder.py`: 590 -> 475 LOC
+  - `app/services/chat/orchestrator_runtime.py`: 494 LOC
+- Added `app/services/chat/orchestrator_runtime.py`:
+  - extracted stream/non-stream execution runtime (`stream_chat_events`, `run_nonstream_chat`)
+  - centralized chat response assembly helper for non-stream path.
+- Added `app/services/chat/rag_retrieval_helpers.py`:
+  - grouped retrieval helper
+  - context/debug collection helper
+- Preserved backward compatibility and test monkeypatch contracts:
+  - no route semantic changes,
+  - no execution telemetry shape changes,
+  - no API response contract changes.
+
+Migration note:
+- External HTTP/SSE API contract unchanged.
+- Internal refactor only; no client migration required.
+
+### Large File Refactor Phase 4: Narrative Branch Extraction (2026-03-06)
+- Further decomposed RAG prompt orchestration to remove oversized function hotspots:
+  - added `app/services/chat/rag_prompt_narrative.py` for narrative retrieval/escalation path,
+  - moved grouped retrieval helpers into `app/services/chat/rag_retrieval_helpers.py`.
+- Refined `app/services/chat/rag_prompt_builder.py`:
+  - `build_rag_prompt` reduced to orchestrator-only flow (73 LOC function),
+  - route-specific and narrative-specific logic delegated to dedicated modules.
+- Preserved compatibility hooks expected by tests:
+  - `rag_prompt_builder.settings`,
+  - `rag_prompt_builder.execute_tabular_sql_path`,
+  - `rag_prompt_builder.execute_complex_analytics_path`.
+
+Migration note:
+- External HTTP/SSE API contract unchanged.
+- Internal refactor only; no client migration required.
+
+### Complex Analytics Two-Pass Pipeline Hardening (2026-03-06, superseded defaults)
 - Completed backend two-stage generation flow for `complex_analytics`:
   - stage 1: `complex_analytics_plan` (strict JSON plan),
   - stage 2: `complex_analytics_codegen` (Python-only code),
   - stage 3: sandbox execution with artifact validation,
   - stage 4: `complex_analytics_response` composition from execution output.
-- Enforced safer degradation policy:
-  - template fallback is now opt-in (`COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK=false` by default),
-  - runtime template fallback is also opt-in (`COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK=false`),
-  - failed codegen/validation returns reason-specific clarification (`codegen_failed`, `missing_required_artifacts`, `validation_failed`).
+- Enforced safer degradation policy (later adjusted in same release cycle):
+  - template fallback/runtime fallback remain configurable and now default-on for broad analytics UX,
+  - failed codegen/validation still returns reason-specific clarification when fallback path is disabled or cannot execute (`codegen_failed`, `missing_required_artifacts`, `validation_failed`).
 - Sandbox runtime hardening:
   - expanded blocked import roots (`sys`, `importlib`),
   - added stable Agg backend initialization for matplotlib in sandbox,
@@ -32,7 +161,7 @@
 
 Migration note:
 - `ChatResponse.executor_status` now allows additional value: `fallback`.
-- `complex_analytics` template fallback behavior changed from default-on to opt-in via settings above.
+- External HTTP/SSE contract unchanged; fallback policy remains internal behavior control via settings.
 
 ### Complex Analytics Dynamic Codegen (2026-03-05)
 - Added LLM-assisted Python code generation stage for `complex_analytics`:
@@ -397,14 +526,14 @@ Migration note:
 - Added ADR for local verification strategy without direct AI HUB access:
   - `docs/adr/ADR-010-preprod-hardening-verification-strategy.md`.
 
-### Ð˜Ð·Ð¼ÐµÐ½ÐµÐ½Ð¾
-- Frontend composer: Ð¿Ð¾Ð»Ðµ Ð²Ð²Ð¾Ð´Ð° Ð¾ÑÑ‚Ð°Ð²Ð»ÐµÐ½Ð¾ Ð¾Ñ‚Ð´ÐµÐ»ÑŒÐ½Ð¾Ð¹ Ð²ÐµÑ€Ñ…Ð½ÐµÐ¹ ÑÑ‚Ñ€Ð¾ÐºÐ¾Ð¹; Ð½Ð¸Ð¶Ð½ÑÑ ÑÑ‚Ñ€Ð¾ÐºÐ° ÐºÐ¾Ð½Ñ‚Ñ€Ð¾Ð»Ð¾Ð² Ð¿Ñ€Ð¸Ð²ÐµÐ´ÐµÐ½Ð° Ðº Ñ„Ð¾Ñ€Ð¼Ð°Ñ‚Ñƒ `File + provider + model + RAG mode + Send`.
-- ÐŸÐ¾Ð´ ÑÐµÐ»ÐµÐºÑ‚Ð°Ð¼Ð¸ provider/model/rag mode Ð´Ð¾Ð±Ð°Ð²Ð»ÐµÐ½Ñ‹ inline-Ð¿Ð¾Ð´ÑÐºÐ°Ð·ÐºÐ¸ (`ÐŸÑ€Ð¾Ð²Ð°Ð¹Ð´ÐµÑ€ AI`, `Ð’Ñ‹Ð±Ð¾Ñ€ Ð¼Ð¾Ð´ÐµÐ»Ð¸`, `Ð ÐµÐ¶Ð¸Ð¼ Ñ€Ð°Ð±Ð¾Ñ‚Ñ‹ Ñ Ð´Ð¾ÐºÑƒÐ¼ÐµÐ½Ñ‚Ð°Ð¼Ð¸`).
-- `Logout` Ð² `Settings` Ð¿ÐµÑ€ÐµÐ½ÐµÑÑ‘Ð½ Ð² Ñ„ÑƒÑ‚ÐµÑ€ Ð¸ Ð¾Ñ„Ð¾Ñ€Ð¼Ð»ÐµÐ½ ÐºÐ°Ðº danger-ÐºÐ½Ð¾Ð¿ÐºÐ° Ñ€ÑÐ´Ð¾Ð¼ Ñ `Save`.
+### Changed
+- Frontend composer layout: input kept on a dedicated top row, control row normalized to `File + provider + model + RAG mode + Send`.
+- Added inline helper labels under provider/model/RAG selectors (`AI provider`, `Model selection`, `Document mode`).
+- Moved `Logout` inside `Settings` footer and styled it as a danger action next to `Save`.
 
-### Ð˜ÑÐ¿Ñ€Ð°Ð²Ð»ÐµÐ½Ð¾
-- Ð’ sidebar Ñ‡Ð°Ñ‚Ð¾Ð² `Del` Ð·Ð°Ð¼ÐµÐ½Ñ‘Ð½ Ð½Ð° Ð¾Ñ‚Ð´ÐµÐ»ÑŒÐ½ÑƒÑŽ Ð·Ð°Ð¼ÐµÑ‚Ð½ÑƒÑŽ ÐºÐ½Ð¾Ð¿ÐºÑƒ ÑƒÐ´Ð°Ð»ÐµÐ½Ð¸Ñ Ñ Ð¸ÐºÐ¾Ð½ÐºÐ¾Ð¹ ÐºÐ¾Ñ€Ð·Ð¸Ð½Ñ‹ ÑÐ¿Ñ€Ð°Ð²Ð° Ð¾Ñ‚ ÑÑ‚Ñ€Ð¾ÐºÐ¸ Ñ‡Ð°Ñ‚Ð°.
-- Ð‘Ð»Ð¾Ðº `RAG debug` Ð¿Ð¾Ð´ ÑÐ¾Ð¾Ð±Ñ‰ÐµÐ½Ð¸ÐµÐ¼ Ð±Ð¾Ð»ÑŒÑˆÐµ Ð½Ðµ Ð¾Ñ‚Ð¾Ð±Ñ€Ð°Ð¶Ð°ÐµÑ‚ÑÑ Ð¿Ñ€Ð¸ Ð²Ñ‹ÐºÐ»ÑŽÑ‡ÐµÐ½Ð½Ð¾Ð¼ Ñ„Ð»Ð°Ð³Ðµ: debug-Ð¼ÐµÑ‚Ð° Ð¿Ð¾ÐºÐ°Ð·Ñ‹Ð²Ð°ÐµÑ‚ÑÑ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ ÐµÑÐ»Ð¸ Ð·Ð°Ð¿Ñ€Ð¾Ñ Ð¾Ñ‚Ð¿Ñ€Ð°Ð²Ð»ÐµÐ½ Ñ `rag_debug=true`.
+### Fixed
+- Replaced compact `Del` in chat sidebar with a visible dedicated delete button (trash icon) on each chat row.
+- `RAG debug` block is now hidden unless request explicitly sets `rag_debug=true`.
 
 ### Backend RAG (2026-03-03)
 - Stage 0 diagnostics:
@@ -424,7 +553,7 @@ Migration note:
 - Stage 4 deterministic tabular path:
   - ingestion creates sidecar SQLite dataset for `xlsx/xls/csv` (`custom_metadata.tabular_sidecar`);
   - aggregate intents route to `retrieval_mode=tabular_sql` (LangChain SQL tool execution), LLM used only for presentation;
-  - added `tabular_profile` intent path for broad analytical prompts (`per-column stats/metrics`, `Ð¾Ð±Ñ‰Ð¸Ð¹ Ð°Ð½Ð°Ð»Ð¸Ð· Ñ„Ð°Ð¹Ð»Ð°`);
+  - added `tabular_profile` intent path for broad analytical prompts (`per-column stats/metrics`, `full-file analytical summary`);
   - file delete now cleans sidecar path best effort.
 - Embedding robustness:
   - replaced lossy truncation of long local/Ollama embedding inputs with segmentation + overlap + mean pooling (`OLLAMA_EMBED_MAX_INPUT_CHARS`, `OLLAMA_EMBED_SEGMENT_OVERLAP_CHARS`);
@@ -471,25 +600,25 @@ Migration note:
 
 ## [1.0.0] - 2025-10-16
 
-### Ð”Ð¾Ð±Ð°Ð²Ð»ÐµÐ½Ð¾
-- âœ… Ð¡Ð¸ÑÑ‚ÐµÐ¼Ð° Ð°ÑƒÑ‚ÐµÐ½Ñ‚Ð¸Ñ„Ð¸ÐºÐ°Ñ†Ð¸Ð¸ (JWT)
-- âœ… Ð£Ð¿Ñ€Ð°Ð²Ð»ÐµÐ½Ð¸Ðµ Ð±ÐµÑÐµÐ´Ð°Ð¼Ð¸
-- âœ… Ð˜ÑÑ‚Ð¾Ñ€Ð¸Ñ Ñ‡Ð°Ñ‚Ð¾Ð²
-- âœ… Ð˜Ð½Ñ‚ÐµÐ³Ñ€Ð°Ñ†Ð¸Ñ Ñ Ollama
-- âœ… Ð˜Ð½Ñ‚ÐµÐ³Ñ€Ð°Ñ†Ð¸Ñ Ñ OpenAI
-- âœ… PostgreSQL Ð±Ð°Ð·Ð° Ð´Ð°Ð½Ð½Ñ‹Ñ…
-- âœ… ÐœÐ¸Ð³Ñ€Ð°Ñ†Ð¸Ð¸ Alembic
-- âœ… API Ð´Ð¾ÐºÑƒÐ¼ÐµÐ½Ñ‚Ð°Ñ†Ð¸Ñ
-- âœ… ÐÐ´Ð°Ð¿Ñ‚Ð¸Ð²Ð½Ñ‹Ð¹ UI
-- âœ… Ð›Ð¾Ð³Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð¸Ðµ Ð·Ð°Ð¿Ñ€Ð¾ÑÐ¾Ð²
+### Added
+- Authentication system (JWT)
+- Conversation management
+- Chat history
+- Ollama integration
+- OpenAI integration
+- PostgreSQL database
+- Alembic migrations
+- API documentation
+- Responsive UI
+- Request logging
 
-### Ð˜Ð·Ð¼ÐµÐ½ÐµÐ½Ð¾
-- ÐœÐ¾Ð´ÑƒÐ»ÑŒÐ½Ð°Ñ ÑÑ‚Ñ€ÑƒÐºÑ‚ÑƒÑ€Ð° frontend
-- ÐžÐ¿Ñ‚Ð¸Ð¼Ð¸Ð·Ð°Ñ†Ð¸Ñ SQL Ð·Ð°Ð¿Ñ€Ð¾ÑÐ¾Ð²
+### Changed
+- Modular frontend structure
+- SQL query performance optimizations
 
-### Ð˜ÑÐ¿Ñ€Ð°Ð²Ð»ÐµÐ½Ð¾
-- Ð˜Ð·Ð¾Ð»ÑÑ†Ð¸Ñ Ð´Ð°Ð½Ð½Ñ‹Ñ… Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»ÐµÐ¹
-- Ð¡Ñ‡Ñ‘Ñ‚Ñ‡Ð¸Ðº ÑÐ¾Ð¾Ð±Ñ‰ÐµÐ½Ð¸Ð¹ Ð² Ð±ÐµÑÐµÐ´Ð°Ñ…
+### Fixed
+- User data isolation
+- Message counters in conversations
 
 
 

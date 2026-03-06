@@ -10,7 +10,7 @@ import pytest
 
 from app.schemas.chat import ChatMessage
 from app.observability.metrics import reset_metrics, snapshot_metrics
-from app.services.chat import complex_analytics as ca
+from app.services.chat.complex_analytics import executor as ca
 from app.services.chat.complex_analytics import execute_complex_analytics_path
 from app.services.chat.tabular_sql import execute_tabular_sql_path
 from app.services.chat_orchestrator import ChatOrchestrator
@@ -546,8 +546,222 @@ result = {
     assert result["status"] == "ok"
     assert any(str(a.get("kind") or "") == "heatmap" for a in (result.get("artifacts") or []))
     assert result["debug"]["complex_analytics"]["code_source"] == "llm"
+    assert result["debug"]["complex_analytics"]["codegen_auto_visual_patch_applied"] is False
+    assert result["debug"]["complex_analytics"]["complex_analytics_codegen"]["auto_visual_patch_applied"] is False
     assert captured_kwargs.get("model_source") == "ollama"
     assert captured_kwargs.get("provider_mode") == "explicit"
+
+
+def test_complex_analytics_auto_visual_patch_prevents_codegen_failure(tmp_path: Path, monkeypatch):
+    pytest.importorskip("duckdb")
+    pytest.importorskip("matplotlib")
+
+    async def fake_generate_response(**kwargs):  # noqa: ANN003
+        policy_class = str(kwargs.get("policy_class") or "")
+        if policy_class == "complex_analytics_plan":
+            return {
+                "response": """
+{
+  "analysis_goal": "full dataset analysis",
+  "required_artifacts": ["plots", "metrics"],
+  "required_outputs": ["summary", "metrics", "artifacts"],
+  "data_contract": {"required_inputs": ["datasets"], "required_outputs": ["result"]},
+  "required_contract": {"expects_visualization": true, "expects_dependency": false, "expects_nlp": false},
+  "python_generation_prompt": "Generate full analytics report with distribution plots.",
+  "should_generate_code": true
+}
+""",
+                "model_route": "ollama",
+                "provider_effective": "ollama",
+            }
+        if policy_class == "complex_analytics_codegen":
+            return {
+                "response": """
+table_name = list(datasets.keys())[0]
+df = datasets[table_name].copy()
+result = {
+    "status": "ok",
+    "table_name": table_name,
+    "metrics": {
+        "rows_total": int(len(df)),
+        "columns_total": int(len(df.columns)),
+        "columns": [str(c) for c in df.columns]
+    },
+    "notes": [],
+    "artifacts": []
+}
+""",
+                "model_route": "ollama",
+                "provider_effective": "ollama",
+            }
+        return {
+            "response": "Full report generated",
+            "model_route": "ollama",
+            "provider_effective": "ollama",
+        }
+
+    monkeypatch.setattr(ca.llm_manager, "generate_response", fake_generate_response)
+
+    adapter = SharedDuckDBParquetStorageAdapter(
+        dataset_root=tmp_path / "datasets",
+        catalog_path=tmp_path / "catalog.duckdb",
+    )
+    csv_path = tmp_path / "auto_visual.csv"
+    _write_csv(
+        csv_path,
+        [
+            "a,b,c",
+            "1,10,x",
+            "2,20,y",
+            "3,30,z",
+            "4,40,x",
+        ],
+    )
+    dataset = adapter.ingest(
+        file_id="auto-visual-1",
+        file_path=csv_path,
+        file_type="csv",
+        source_filename="auto_visual.csv",
+    )
+    assert dataset is not None
+    file_obj = SimpleNamespace(
+        id="auto-visual-1",
+        file_type="csv",
+        original_filename="auto_visual.csv",
+        custom_metadata={"tabular_dataset": dataset},
+    )
+
+    result = asyncio.run(
+        execute_complex_analytics_path(
+            query="Сделай полный анализ файла и построй красивые графики распределений",
+            files=[file_obj],
+            model_source="local",
+            provider_mode="explicit",
+            model_name="llama3.2",
+        )
+    )
+
+    assert result is not None
+    assert result["status"] == "ok"
+    assert int(result["debug"]["artifacts_count"]) >= 1
+    assert result["debug"]["complex_analytics"]["code_source"] == "llm"
+    assert result["debug"]["complex_analytics"]["codegen_auto_visual_patch_applied"] is True
+    assert result["debug"]["complex_analytics"]["complex_analytics_codegen"]["auto_visual_patch_applied"] is True
+
+
+def test_complex_analytics_compose_quality_gate_falls_back_to_local_formatter(tmp_path: Path, monkeypatch):
+    pytest.importorskip("duckdb")
+    pytest.importorskip("matplotlib")
+
+    async def fake_generate_response(**kwargs):  # noqa: ANN003
+        policy_class = str(kwargs.get("policy_class") or "")
+        if policy_class == "complex_analytics_plan":
+            return {
+                "response": """
+{
+  "analysis_goal": "full analysis",
+  "required_artifacts": ["plots", "metrics"],
+  "required_outputs": ["summary", "metrics", "artifacts"],
+  "data_contract": {"required_inputs": ["datasets"], "required_outputs": ["result"]},
+  "required_contract": {"expects_visualization": true, "expects_dependency": false, "expects_nlp": false},
+  "python_generation_prompt": "Generate full analytics with chart.",
+  "should_generate_code": true
+}
+""",
+                "model_route": "ollama",
+                "provider_effective": "ollama",
+            }
+        if policy_class == "complex_analytics_codegen":
+            return {
+                "response": """
+import pandas as pd
+import matplotlib.pyplot as plt
+table_name = list(datasets.keys())[0]
+df = datasets[table_name].copy()
+num = df.apply(pd.to_numeric, errors="coerce")
+col = str(num.columns[0])
+clean = num[col].dropna()
+fig, ax = plt.subplots(figsize=(6, 3))
+clean.plot(kind="hist", bins=10, ax=ax, title=f"Distribution of {col}")
+plot_path = save_plot(fig=fig, name="quality_gate_hist.png")
+plt.close(fig)
+result = {
+    "status": "ok",
+    "table_name": table_name,
+    "metrics": {
+        "rows_total": int(len(df)),
+        "columns_total": int(len(df.columns)),
+        "columns": [str(c) for c in df.columns],
+        "numeric_summary": [{"column": col, "count": int(len(clean))}],
+        "datetime_summary": [],
+        "categorical_summary": []
+    },
+    "notes": [],
+    "artifacts": [{"kind": "histogram", "path": plot_path, "column": col}]
+}
+""",
+                "model_route": "ollama",
+                "provider_effective": "ollama",
+            }
+        if policy_class == "complex_analytics_response":
+            return {
+                "response": "Done.",
+                "model_route": "ollama",
+                "provider_effective": "ollama",
+            }
+        return {"response": "ok", "model_route": "ollama", "provider_effective": "ollama"}
+
+    monkeypatch.setattr(ca.llm_manager, "generate_response", fake_generate_response)
+
+    adapter = SharedDuckDBParquetStorageAdapter(
+        dataset_root=tmp_path / "datasets",
+        catalog_path=tmp_path / "catalog.duckdb",
+    )
+    csv_path = tmp_path / "compose_quality.csv"
+    _write_csv(
+        csv_path,
+        [
+            "a,b,c",
+            "1,10,x",
+            "2,20,y",
+            "3,30,z",
+            "4,40,x",
+        ],
+    )
+    dataset = adapter.ingest(
+        file_id="compose-quality-1",
+        file_path=csv_path,
+        file_type="csv",
+        source_filename="compose_quality.csv",
+    )
+    assert dataset is not None
+    file_obj = SimpleNamespace(
+        id="compose-quality-1",
+        file_type="csv",
+        original_filename="compose_quality.csv",
+        custom_metadata={"tabular_dataset": dataset},
+    )
+
+    result = asyncio.run(
+        execute_complex_analytics_path(
+            query="Analyze this file fully, include stats and charts",
+            files=[file_obj],
+            model_source="local",
+            provider_mode="explicit",
+            model_name="llama3.2",
+        )
+    )
+
+    assert result is not None
+    assert result["status"] == "ok"
+    assert int(result["debug"]["artifacts_count"]) >= 1
+    assert result["debug"]["complex_analytics"]["response_status"] == "fallback"
+    assert result["debug"]["complex_analytics"]["response_error_code"] == "broad_query_local_formatter"
+    final_response = str(result.get("final_response") or "")
+    assert "## Full Analytics Report" in final_response
+    assert "### 4) Metrics and Statistics" in final_response
+    assert "### 7) Visualizations" in final_response
+    assert "Request was processed" not in final_response
 
 
 def test_explicit_local_with_complex_short_circuit_does_not_call_llm(monkeypatch):

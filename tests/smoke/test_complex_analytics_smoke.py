@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.chat import rag_prompt_builder as rag_builder
-from app.services.chat import complex_analytics as ca
+from app.services.chat.complex_analytics import executor as ca
 from app.services.tabular.storage_adapter import SharedDuckDBParquetStorageAdapter
 
 
@@ -156,6 +156,10 @@ def test_complex_analytics_request_routes_to_executor_with_artifacts(tmp_path: P
     assert rag_debug["execution_route"] == "complex_analytics"
     assert rag_debug["executor_status"] == "success"
     assert int(rag_debug["artifacts_count"]) >= 1
+    assert isinstance(
+        rag_debug.get("complex_analytics", {}).get("codegen_auto_visual_patch_applied"),
+        bool,
+    )
     assert any(str(a.get("url") or "").startswith("/uploads/") for a in (rag_debug.get("artifacts") or []))
     assert rag_debug["short_circuit_response"] is True
     assert rag_sources

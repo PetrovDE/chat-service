@@ -2,11 +2,18 @@
   "numeric_exact_match_min": 1.0,
   "citation_faithfulness_min": 1.0,
   "route_correctness_min": 1.0,
+  "complex_analytics_report_quality_min": 1.0,
+  "online_complex_analytics_report_quality_min": 0.0,
   "max_latency_violations": 0,
+  "online_max_latency_violations": 0,
   "p95_latency_ms": {
     "tabular_aggregate_golden": 2500.0,
     "tabular_profile_golden": 3000.0,
     "narrative_rag_golden": 500.0,
-    "fallback_route_golden": 1500.0
+    "fallback_route_golden": 1500.0,
+    "complex_analytics_quality_golden": 4000.0
+  },
+  "online_p95_latency_ms": {
+    "complex_analytics_quality_online": 12000.0
   }
 }

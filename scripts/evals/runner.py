@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from scripts.evals.datasets import load_named_datasets
 from scripts.evals.offline import (
+    run_complex_analytics_quality_eval,
     run_fallback_route_eval,
     run_narrative_rag_eval,
     run_tabular_aggregate_eval,
@@ -18,6 +19,11 @@ OFFLINE_DATASET_NAMES = (
     "tabular_profile_golden",
     "narrative_rag_golden",
     "fallback_route_golden",
+    "complex_analytics_quality_golden",
+)
+
+ONLINE_DATASET_NAMES = (
+    "complex_analytics_quality_online",
 )
 
 
@@ -47,6 +53,7 @@ def _build_metrics(offline_reports: Dict[str, Dict[str, Any]]) -> Dict[str, Any]
     profile = offline_reports["tabular_profile_golden"]
     narrative = offline_reports["narrative_rag_golden"]
     fallback = offline_reports["fallback_route_golden"]
+    complex_quality = offline_reports["complex_analytics_quality_golden"]
 
     numeric_passed = int(aggregate.get("numeric_checks_passed", 0)) + int(profile.get("numeric_checks_passed", 0))
     numeric_total = int(aggregate.get("numeric_checks_total", 0)) + int(profile.get("numeric_checks_total", 0))
@@ -56,6 +63,8 @@ def _build_metrics(offline_reports: Dict[str, Dict[str, Any]]) -> Dict[str, Any]
 
     route_checks_passed = int(fallback.get("route_checks_passed", 0))
     route_checks_total = int(fallback.get("route_checks_total", 0))
+    quality_checks_passed = int(complex_quality.get("quality_checks_passed", 0))
+    quality_checks_total = int(complex_quality.get("quality_checks_total", 0))
 
     return {
         "numeric_exact_match": {
@@ -73,6 +82,11 @@ def _build_metrics(offline_reports: Dict[str, Dict[str, Any]]) -> Dict[str, Any]
             "total": route_checks_total,
             "score": _safe_ratio(route_checks_passed, route_checks_total),
         },
+        "complex_analytics_report_quality": {
+            "passed": quality_checks_passed,
+            "total": quality_checks_total,
+            "score": _safe_ratio(quality_checks_passed, quality_checks_total),
+        },
     }
 
 
@@ -88,7 +102,16 @@ def run_eval_suite(
     if selected_mode not in {"offline", "online", "hybrid"}:
         raise ValueError("mode must be one of: offline, online, hybrid")
 
-    datasets = load_named_datasets(dataset_root=dataset_root, dataset_names=OFFLINE_DATASET_NAMES)
+    offline_datasets = (
+        load_named_datasets(dataset_root=dataset_root, dataset_names=OFFLINE_DATASET_NAMES)
+        if selected_mode in {"offline", "hybrid"}
+        else {}
+    )
+    online_datasets = (
+        load_named_datasets(dataset_root=dataset_root, dataset_names=ONLINE_DATASET_NAMES)
+        if selected_mode in {"online", "hybrid"}
+        else {}
+    )
     offline_reports: Dict[str, Dict[str, Any]] = {}
     online_report: Dict[str, Any] | None = None
 
@@ -96,21 +119,25 @@ def run_eval_suite(
         with tempfile.TemporaryDirectory(prefix="llama_eval_") as tmp_dir_raw:
             tmp_dir = Path(tmp_dir_raw)
             offline_reports["tabular_aggregate_golden"] = run_tabular_aggregate_eval(
-                datasets["tabular_aggregate_golden"],
+                offline_datasets["tabular_aggregate_golden"],
                 temp_dir=tmp_dir,
             )
             offline_reports["tabular_profile_golden"] = run_tabular_profile_eval(
-                datasets["tabular_profile_golden"],
+                offline_datasets["tabular_profile_golden"],
                 temp_dir=tmp_dir,
             )
-        offline_reports["narrative_rag_golden"] = run_narrative_rag_eval(datasets["narrative_rag_golden"])
-        offline_reports["fallback_route_golden"] = run_fallback_route_eval(datasets["fallback_route_golden"])
+            offline_reports["complex_analytics_quality_golden"] = run_complex_analytics_quality_eval(
+                offline_datasets["complex_analytics_quality_golden"],
+                temp_dir=tmp_dir,
+            )
+        offline_reports["narrative_rag_golden"] = run_narrative_rag_eval(offline_datasets["narrative_rag_golden"])
+        offline_reports["fallback_route_golden"] = run_fallback_route_eval(offline_datasets["fallback_route_golden"])
 
     if selected_mode in {"online", "hybrid"}:
         if not online_base_url:
             raise ValueError("online_base_url is required for online/hybrid mode")
         online_report = run_online_eval_sync(
-            datasets=datasets,
+            datasets=online_datasets,
             base_url=online_base_url,
             timeout_seconds=float(online_timeout_seconds),
             auth_bearer_token=online_auth_bearer_token,

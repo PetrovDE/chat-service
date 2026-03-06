@@ -29,3 +29,43 @@ def test_ci_gates_fail_when_metrics_drop_below_thresholds():
     assert any(
         check["name"] == "latency_regression_violations" and check["passed"] is False for check in result["checks"]
     )
+
+
+def test_ci_gates_fail_when_online_complex_quality_below_preprod_threshold():
+    summary = {
+        "metrics": {
+            "numeric_exact_match": {"score": 1.0},
+            "citation_faithfulness": {"score": 1.0},
+            "route_correctness": {"score": 1.0},
+            "complex_analytics_report_quality": {"score": 1.0},
+        },
+        "latency": {
+            "violations": [],
+            "p95_ms_by_dataset": {},
+        },
+        "online_report": {
+            "metrics": {
+                "complex_analytics_report_quality": {"score": 0.5},
+            },
+            "latency_violations": [],
+            "latency_p95_ms_by_dataset": {"complex_analytics_quality_online": 8000.0},
+        },
+    }
+    gate_config = {
+        "numeric_exact_match_min": 1.0,
+        "citation_faithfulness_min": 1.0,
+        "route_correctness_min": 1.0,
+        "complex_analytics_report_quality_min": 1.0,
+        "online_complex_analytics_report_quality_min": 1.0,
+        "max_latency_violations": 0,
+        "online_max_latency_violations": 0,
+        "p95_latency_ms": {},
+        "online_p95_latency_ms": {"complex_analytics_quality_online": 12000.0},
+    }
+
+    result = evaluate_ci_gates(summary, gate_config)
+    assert result["passed"] is False
+    assert any(
+        check["name"] == "online_complex_analytics_report_quality" and check["passed"] is False
+        for check in result["checks"]
+    )

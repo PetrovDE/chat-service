@@ -14,9 +14,11 @@ def test_offline_eval_runner_passes_all_quality_gates():
     numeric = summary["metrics"]["numeric_exact_match"]
     citation = summary["metrics"]["citation_faithfulness"]
     route = summary["metrics"]["route_correctness"]
+    complex_quality = summary["metrics"]["complex_analytics_report_quality"]
 
     assert numeric["score"] == 1.0
     assert citation["score"] == 1.0
     assert route["score"] == 1.0
+    assert complex_quality["score"] == 1.0
     assert gates["passed"] is True
     assert not summary["latency"]["violations"]

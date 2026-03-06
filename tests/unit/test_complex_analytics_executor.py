@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from app.services.chat import complex_analytics as ca
+from app.services.chat.complex_analytics import executor as ca
 from app.services.tabular.sql_execution import ResolvedTabularDataset, ResolvedTabularTable
 
 
@@ -367,3 +367,157 @@ def test_execute_path_returns_codegen_error_when_template_fallback_disabled(monk
     assert result is not None
     assert result["status"] == "error"
     assert result["debug"]["executor_error_code"] == ca.COMPLEX_ANALYTICS_ERROR_CODEGEN
+
+
+def test_execute_path_uses_template_fallback_when_enabled(monkeypatch):
+    dataset = ResolvedTabularDataset(
+        engine="duckdb_parquet",
+        dataset_id="ds-template",
+        dataset_version=1,
+        dataset_provenance_id="prov-template",
+        tables=[
+            ResolvedTabularTable(
+                table_name="sheet_1",
+                sheet_name="Sheet1",
+                row_count=3,
+                columns=["x"],
+                column_aliases={},
+                table_version=1,
+                provenance_id="tbl-prov",
+                parquet_path=None,
+            )
+        ],
+        catalog_path=None,
+        sqlite_path=None,
+    )
+
+    monkeypatch.setattr(
+        ca,
+        "_collect_datasets_for_file",
+        lambda file_obj: (dataset, {"sheet_1": pd.DataFrame({"x": [1, 2, 3]})}),
+    )
+
+    async def fake_codegen(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return "result = {'status': 'ok', 'metrics': {}, 'notes': [], 'artifacts': []}", {
+            "code_source": "template",
+            "codegen_status": "fallback",
+            "codegen_error": "missing_visualization_contract",
+        }
+
+    def fake_execute_sync(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return {
+            "status": "ok",
+            "final_response": "template result",
+            "sources": [],
+            "artifacts": [],
+            "debug": {
+                "complex_analytics": {
+                    "metrics": {},
+                    "notes": [],
+                    "stdout": "",
+                    "code_preview": "",
+                    "response_status": "not_attempted",
+                }
+            },
+        }
+
+    async def fake_compose(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return "", {"response_status": "fallback", "response_error_code": "empty_response"}
+
+    monkeypatch.setattr(ca, "_generate_complex_analysis_code", fake_codegen)
+    monkeypatch.setattr(ca, "_execute_complex_analytics_sync", fake_execute_sync)
+    monkeypatch.setattr(ca, "_compose_complex_analytics_response", fake_compose)
+    monkeypatch.setattr(ca.settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK", True)
+
+    result = asyncio.run(
+        ca.execute_complex_analytics_path(
+            query="run python analytics with charts",
+            files=[SimpleNamespace(id="f1", file_type="xlsx", original_filename="x.xlsx", custom_metadata={})],
+            model_source="local",
+            provider_mode="explicit",
+            model_name="llama3.2",
+        )
+    )
+    assert result is not None
+    assert result["status"] == "ok"
+    assert result["final_response"] == "template result"
+
+
+def test_broad_query_uses_local_formatter_without_compose_call(monkeypatch):
+    dataset = ResolvedTabularDataset(
+        engine="duckdb_parquet",
+        dataset_id="ds-broad",
+        dataset_version=1,
+        dataset_provenance_id="prov-broad",
+        tables=[
+            ResolvedTabularTable(
+                table_name="sheet_1",
+                sheet_name="Sheet1",
+                row_count=4,
+                columns=["amount", "segment"],
+                column_aliases={},
+                table_version=1,
+                provenance_id="tbl-prov",
+                parquet_path=None,
+            )
+        ],
+        catalog_path=None,
+        sqlite_path=None,
+    )
+
+    monkeypatch.setattr(
+        ca,
+        "_collect_datasets_for_file",
+        lambda file_obj: (dataset, {"sheet_1": pd.DataFrame({"amount": [1, 2, 3, 4], "segment": ["a", "b", "a", "c"]})}),
+    )
+
+    async def fake_codegen(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return "result = {'status': 'ok', 'metrics': {}, 'notes': [], 'artifacts': []}", {
+            "code_source": "template",
+            "codegen_status": "fallback",
+            "codegen_error": "missing_visualization_contract",
+        }
+
+    def fake_execute_sync(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return {
+            "status": "ok",
+            "final_response": "## Full Analytics Report\n### 1) Summary\n- Rows: 4",
+            "sources": [],
+            "artifacts": [],
+            "debug": {
+                "complex_analytics": {
+                    "metrics": {},
+                    "notes": [],
+                    "stdout": "",
+                    "code_preview": "",
+                    "response_status": "not_attempted",
+                }
+            },
+        }
+
+    async def fail_compose(**kwargs):  # noqa: ANN003
+        raise AssertionError(f"compose should not be called for broad query: {kwargs}")
+
+    monkeypatch.setattr(ca, "_generate_complex_analysis_code", fake_codegen)
+    monkeypatch.setattr(ca, "_execute_complex_analytics_sync", fake_execute_sync)
+    monkeypatch.setattr(ca, "_compose_complex_analytics_response", fail_compose)
+    monkeypatch.setattr(ca.settings, "COMPLEX_ANALYTICS_PREFER_LOCAL_COMPOSER_FOR_BROAD_QUERY", True)
+
+    result = asyncio.run(
+        ca.execute_complex_analytics_path(
+            query="Answer as senior analyst and analyze this file fully with feature relationships and charts",
+            files=[SimpleNamespace(id="f1", file_type="xlsx", original_filename="x.xlsx", custom_metadata={})],
+            model_source="local",
+            provider_mode="explicit",
+            model_name="llama3.2",
+        )
+    )
+    assert result is not None
+    assert result["status"] == "ok"
+    assert result["debug"]["complex_analytics"]["response_status"] == "fallback"
+    assert result["debug"]["complex_analytics"]["response_error_code"] == "broad_query_local_formatter"

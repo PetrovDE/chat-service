@@ -41,7 +41,7 @@ class ChatResponse(BaseModel):
         pattern=r"^(tabular_sql|complex_analytics|narrative|clarification|unknown)$",
     )
     executor_attempted: bool = False
-    executor_status: str = Field(default="not_attempted", pattern=r"^(not_attempted|success|error|timeout|blocked)$")
+    executor_status: str = Field(default="not_attempted", pattern=r"^(not_attempted|success|error|timeout|blocked|fallback)$")
     executor_error_code: Optional[str] = None
     artifacts_count: int = Field(default=0, ge=0, le=1024)
     tokens_used: Optional[int] = None

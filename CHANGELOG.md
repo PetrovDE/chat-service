@@ -2,6 +2,38 @@
 
 ## [Unreleased] - 2026-03-03
 
+### Complex Analytics Two-Pass Pipeline Hardening (2026-03-06)
+- Completed backend two-stage generation flow for `complex_analytics`:
+  - stage 1: `complex_analytics_plan` (strict JSON plan),
+  - stage 2: `complex_analytics_codegen` (Python-only code),
+  - stage 3: sandbox execution with artifact validation,
+  - stage 4: `complex_analytics_response` composition from execution output.
+- Enforced safer degradation policy:
+  - template fallback is now opt-in (`COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK=false` by default),
+  - runtime template fallback is also opt-in (`COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK=false`),
+  - failed codegen/validation returns reason-specific clarification (`codegen_failed`, `missing_required_artifacts`, `validation_failed`).
+- Sandbox runtime hardening:
+  - expanded blocked import roots (`sys`, `importlib`),
+  - added stable Agg backend initialization for matplotlib in sandbox,
+  - added validation guard for required visualization artifacts.
+- Extended debug/telemetry fields for complex analytics:
+  - `complex_analytics_code_generation_prompt_status`,
+  - `complex_analytics_code_generation_source`,
+  - `complex_analytics_codegen.provider`,
+  - `complex_analytics.sandbox.secure_eval`.
+- Added structured logs for pipeline stages:
+  - `complex_analytics.codegen_plan`,
+  - `complex_analytics.codegen_execute`,
+  - `complex_analytics.compose`.
+- Updated tests to reflect two-pass plan/code architecture and explicit fallback policy:
+  - `tests/unit/test_complex_analytics_executor.py`,
+  - `tests/integration/test_complex_analytics_path.py`,
+  - `tests/smoke/test_complex_analytics_smoke.py`.
+
+Migration note:
+- `ChatResponse.executor_status` now allows additional value: `fallback`.
+- `complex_analytics` template fallback behavior changed from default-on to opt-in via settings above.
+
 ### Complex Analytics Dynamic Codegen (2026-03-05)
 - Added LLM-assisted Python code generation stage for `complex_analytics`:
   - prompt includes user task + dataframe profile,

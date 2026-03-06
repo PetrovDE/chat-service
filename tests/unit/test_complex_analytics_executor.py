@@ -125,6 +125,11 @@ def test_complex_executor_timeout_returns_classified_error(monkeypatch):
         time.sleep(0.2)
         return {"status": "ok", "debug": {"executor_status": "success"}, "final_response": "ok", "sources": [], "artifacts": []}
 
+    async def fake_codegen(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return "result = {'status': 'ok', 'metrics': {}, 'notes': [], 'artifacts': []}", {"code_source": "llm"}
+
+    monkeypatch.setattr(ca, "_generate_complex_analysis_code", fake_codegen)
     monkeypatch.setattr(ca, "_execute_complex_analytics_sync", slow_execute)
     monkeypatch.setattr(ca.settings, "COMPLEX_ANALYTICS_TIMEOUT_SECONDS", 0.05)
 
@@ -204,9 +209,38 @@ def test_codegen_uses_llm_generated_code_when_contract_is_valid(monkeypatch):
 
     async def fake_generate_response(**kwargs):  # noqa: ANN003
         captured.update(kwargs)
+        policy_class = str(kwargs.get("policy_class") or "")
+        if policy_class == "complex_analytics_plan":
+            return {
+                "response": """
+{
+  "analysis_goal": "dependency analysis",
+  "required_artifacts": ["plots", "metrics"],
+  "required_outputs": ["summary", "metrics", "insights", "artifacts"],
+  "data_contract": {
+    "required_inputs": ["datasets", "dataset_name", "file_ids"],
+    "required_outputs": ["result", "artifacts", "insights", "metrics", "tables"]
+  },
+  "required_contract": {
+    "expects_visualization": false,
+    "expects_dependency": true,
+    "expects_nlp": false
+  },
+  "python_generation_prompt": "Generate dependency-focused analysis code using datasets input only.",
+  "should_generate_code": true
+}
+""",
+                "model_route": "ollama",
+                "provider_effective": "ollama",
+            }
         return {
             "response": """
+import matplotlib.pyplot as plt
 df = datasets["sheet_1"].copy()
+fig, ax = plt.subplots(figsize=(4, 3))
+ax.plot([1, 2], [1, 2])
+plot_path = save_plot(fig=fig, name="unit_chart.png")
+plt.close(fig)
 result = {
     "status": "ok",
     "table_name": "sheet_1",
@@ -217,7 +251,7 @@ result = {
         "insights": ["Custom dependency-focused analysis executed"]
     },
     "notes": [],
-    "artifacts": []
+    "artifacts": [{"kind": "line", "path": plot_path}]
 }
 """,
             "model_route": "ollama",
@@ -242,13 +276,27 @@ result = {
     assert "datasets[\"sheet_1\"]" in code
     assert meta.get("code_source") == "llm"
     assert meta.get("codegen_status") == "success"
-    assert captured.get("model_source") == "local"
+    assert captured.get("model_source") == "ollama"
     assert captured.get("provider_mode") == "explicit"
 
 
 def test_codegen_falls_back_to_template_when_generated_code_is_invalid(monkeypatch):
     async def fake_generate_response(**kwargs):  # noqa: ANN003
-        _ = kwargs
+        policy_class = str(kwargs.get("policy_class") or "")
+        if policy_class == "complex_analytics_plan":
+            return {
+                "response": """
+{
+  "analysis_goal": "simple analysis",
+  "required_artifacts": [],
+  "required_outputs": ["summary", "metrics"],
+  "data_contract": {"required_inputs": ["datasets"], "required_outputs": ["result"]},
+  "required_contract": {"expects_visualization": false, "expects_dependency": false, "expects_nlp": false},
+  "python_generation_prompt": "Generate analysis code",
+  "should_generate_code": true
+}
+"""
+            }
         return {"response": "print('hello')"}
 
     monkeypatch.setattr(ca.llm_manager, "generate_response", fake_generate_response)
@@ -269,3 +317,53 @@ def test_codegen_falls_back_to_template_when_generated_code_is_invalid(monkeypat
     assert meta.get("code_source") == "template"
     assert meta.get("codegen_status") == "fallback"
     assert str(meta.get("codegen_error") or "")
+
+
+def test_execute_path_returns_codegen_error_when_template_fallback_disabled(monkeypatch):
+    dataset = ResolvedTabularDataset(
+        engine="duckdb_parquet",
+        dataset_id="ds-codegen",
+        dataset_version=1,
+        dataset_provenance_id="prov-codegen",
+        tables=[
+            ResolvedTabularTable(
+                table_name="sheet_1",
+                sheet_name="Sheet1",
+                row_count=3,
+                columns=["x"],
+                column_aliases={},
+                table_version=1,
+                provenance_id="tbl-prov",
+                parquet_path=None,
+            )
+        ],
+        catalog_path=None,
+        sqlite_path=None,
+    )
+
+    monkeypatch.setattr(
+        ca,
+        "_collect_datasets_for_file",
+        lambda file_obj: (dataset, {"sheet_1": pd.DataFrame({"x": [1, 2, 3]})}),
+    )
+
+    async def fake_generate_response(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return {"response": "not-json-and-not-code"}
+
+    monkeypatch.setattr(ca.llm_manager, "generate_response", fake_generate_response)
+    monkeypatch.setattr(ca.settings, "COMPLEX_ANALYTICS_CODEGEN_ENABLED", True)
+    monkeypatch.setattr(ca.settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK", False)
+
+    result = asyncio.run(
+        ca.execute_complex_analytics_path(
+            query="run python dependency analytics",
+            files=[SimpleNamespace(id="f1", file_type="xlsx", original_filename="x.xlsx", custom_metadata={})],
+            model_source="local",
+            provider_mode="explicit",
+            model_name="llama3.2",
+        )
+    )
+    assert result is not None
+    assert result["status"] == "error"
+    assert result["debug"]["executor_error_code"] == ca.COMPLEX_ANALYTICS_ERROR_CODEGEN

@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.core.config import settings
 from app.observability.metrics import inc_counter, observe_ms
+from app.services.chat.language import apply_language_policy_to_prompt, detect_preferred_response_language
 from app.services.llm.manager import llm_manager
 from app.services.tabular.sql_execution import (
     ResolvedTabularDataset,
@@ -33,6 +34,10 @@ COMPLEX_ANALYTICS_ERROR_RUNTIME = "runtime_error"
 COMPLEX_ANALYTICS_ERROR_DATASET = "dataset_unavailable"
 COMPLEX_ANALYTICS_ERROR_DEPENDENCY = "dependency_missing"
 COMPLEX_ANALYTICS_ERROR_OUTPUT_LIMIT = "output_limit_exceeded"
+COMPLEX_ANALYTICS_RESPONSE_ERROR = "response_generation_error"
+COMPLEX_ANALYTICS_ERROR_CODEGEN = "codegen_failed"
+COMPLEX_ANALYTICS_ERROR_VALIDATION = "validation_failed"
+COMPLEX_ANALYTICS_ERROR_MISSING_ARTIFACTS = "missing_required_artifacts"
 
 _COMPLEX_ANALYTICS_HINTS = (
     "python",
@@ -42,6 +47,10 @@ _COMPLEX_ANALYTICS_HINTS = (
     "seaborn",
     "matplotlib",
     "heatmap",
+    "dependency",
+    "dependencies",
+    "correlation",
+    "relationship",
     "plot",
     "chart",
     "visualization",
@@ -61,6 +70,8 @@ _COMPLEX_ANALYTICS_HINTS = (
     "график",
     "хитмап",
     "теплов",
+    "зависим",
+    "коррел",
     "npl",
 )
 _ALLOWED_IMPORT_ROOTS = {
@@ -84,6 +95,8 @@ _BLOCKED_IMPORT_ROOTS = {
     "shutil",
     "ftplib",
     "paramiko",
+    "sys",
+    "importlib",
 }
 _BLOCKED_CALL_NAMES = {
     "open",
@@ -109,6 +122,8 @@ _BLOCKED_ATTRIBUTE_ROOTS = {
     "urllib",
     "pathlib",
     "shutil",
+    "sys",
+    "importlib",
 }
 _BLOCKED_ATTRIBUTE_CHAINS = {
     "os.system",
@@ -122,11 +137,47 @@ _BLOCKED_ATTRIBUTE_CHAINS = {
     "httpx.get",
     "httpx.post",
 }
+
+
+def _resolve_complex_analytics_routing(
+    *,
+    model_source: Optional[str],
+    provider_mode: Optional[str],
+) -> Dict[str, str]:
+    """Resolve provider + provider-mode for complex analytics LLM calls.
+
+    This is a strict execution helper; explicit provider selection (`local`/`ollama`,
+    `openai`, `corporate`) must not be downgraded by policy mode.
+    `aihub` keeps policy mode unless explicit mode is required by caller.
+    """
+    configured_default = str(getattr(settings, "DEFAULT_MODEL_SOURCE", "aihub")).strip().lower() or "aihub"
+    requested_source = str(model_source or configured_default).strip().lower() or "aihub"
+    normalized_source = requested_source
+    if normalized_source == "local":
+        normalized_source = "ollama"
+    elif normalized_source == "corporate":
+        normalized_source = "aihub"
+    elif normalized_source not in {"aihub", "ollama", "openai"}:
+        normalized_source = "aihub"
+
+    force_local = bool(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_FORCE_LOCAL", False))
+    if force_local:
+        normalized_source = "ollama"
+        resolved_mode = "explicit"
+    elif normalized_source == "aihub":
+        resolved_mode = str(provider_mode or "policy").strip().lower() or "policy"
+    else:
+        # Local/Ollama/OpenAI providers are explicit by nature in this architecture.
+        resolved_mode = "explicit"
+
+    return {"model_source": normalized_source, "provider_mode": resolved_mode}
 _NETWORK_LITERAL_PATTERN = re.compile(r"https?://|ftp://", flags=re.IGNORECASE)
 _CODE_BLOCK_PATTERN = re.compile(r"```(?:python|py)?\s*(.*?)```", flags=re.IGNORECASE | re.DOTALL)
 _MAX_CODE_LINES = 520
 _CODEGEN_TABLE_SAMPLE_ROWS = 6
 _CODEGEN_COLUMN_SAMPLE_VALUES = 4
+_CODEGEN_PLAN_ATTEMPTS = 2
+_CODEGEN_REPAIR_ATTEMPTS = 3
 
 
 class ComplexAnalyticsSecurityError(Exception):
@@ -135,6 +186,12 @@ class ComplexAnalyticsSecurityError(Exception):
 
 class ComplexAnalyticsOutputLimitError(Exception):
     pass
+
+
+class ComplexAnalyticsValidationError(Exception):
+    def __init__(self, error_code: str, message: str) -> None:
+        super().__init__(message)
+        self.error_code = str(error_code or COMPLEX_ANALYTICS_ERROR_VALIDATION)
 
 
 @dataclass
@@ -212,6 +269,133 @@ def _sanitize_artifact_for_response(raw_artifact: Dict[str, Any]) -> Dict[str, A
         if public_url:
             artifact["url"] = public_url
     return artifact
+
+
+def _intent_flags_from_query(query: str) -> Dict[str, bool]:
+    q = (query or "").lower()
+    return {
+        "requires_visualization": any(
+            token in q
+            for token in (
+                "visual",
+                "vis",
+                "chart",
+                "plot",
+                "heatmap",
+                "график",
+                "графики",
+                "диаграм",
+                "визуализа",
+                "хитмап",
+                "теплов",
+            )
+        ),
+        "requires_dependency": _is_dependency_query(q),
+        "requires_nlp": any(
+            token in q
+            for token in (
+                "nlp",
+                "comment_text",
+                "comment",
+                "коммент",
+                "текст",
+                "token",
+                "леммат",
+                "sentiment",
+            )
+        ),
+    }
+
+
+def _contract_from_plan(plan: Dict[str, Any]) -> Dict[str, bool]:
+    required_outputs = [str(item or "").lower() for item in plan.get("required_outputs", []) if str(item or "").strip()]
+    output_blob = " ".join(required_outputs)
+    return {
+        "expects_visualization": any(
+            token in output_blob
+            for token in ("chart", "plot", "hist", "histogram", "heatmap", "bar", "scatter", "visual", "dependency", "correlation")
+        ),
+        "expects_dependency": any(
+            token in output_blob for token in ("dependency", "correlation", "relationship", "heatmap", "cross-tab", "covariance")
+        ),
+        "expects_nlp": any(token in output_blob for token in ("nlp", "token", "keyword", "comment", "text")),
+    }
+
+
+def _normalize_text_block(text: str, *, max_length: int = 2000) -> str:
+    value = (text or "").strip()
+    if len(value) <= max_length:
+        return value
+    return value[: max_length - 3].rstrip() + "..."
+
+
+def _parse_truthy_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y"}
+    return False
+
+
+def _compute_plan_contract(
+    *,
+    plan: Dict[str, Any],
+    query: str,
+) -> Dict[str, Any]:
+    query_flags = _intent_flags_from_query(query)
+    plan_outputs = [str(item or "").strip().lower() for item in plan.get("required_outputs", []) if str(item or "").strip()]
+    plan_blob = " ".join(plan_outputs)
+    explicit_contract = plan.get("required_contract")
+    explicit_requires_visualization = bool(
+        explicit_contract
+        and isinstance(explicit_contract, dict)
+        and _parse_truthy_bool(explicit_contract.get("expects_visualization"))
+    )
+    explicit_requires_dependency = bool(
+        explicit_contract
+        and isinstance(explicit_contract, dict)
+        and _parse_truthy_bool(explicit_contract.get("expects_dependency"))
+    )
+    explicit_requires_nlp = bool(
+        explicit_contract
+        and isinstance(explicit_contract, dict)
+        and _parse_truthy_bool(explicit_contract.get("expects_nlp"))
+    )
+
+    contract = _contract_from_plan(plan)
+    if explicit_requires_visualization:
+        contract["expects_visualization"] = True
+    if explicit_requires_dependency:
+        contract["expects_dependency"] = True
+    if explicit_requires_nlp:
+        contract["expects_nlp"] = True
+
+    # keep safe fallback flags from query-level detection
+    if query_flags["requires_visualization"]:
+        contract["expects_visualization"] = True
+    if query_flags["requires_dependency"]:
+        contract["expects_dependency"] = True
+    if query_flags["requires_nlp"]:
+        contract["expects_nlp"] = True
+
+    if "depends" in plan_blob:
+        contract["expects_dependency"] = True
+    if "dependency" in plan_blob:
+        contract["expects_dependency"] = True
+    if "heatmap" in plan_blob:
+        contract["expects_visualization"] = True
+
+    required_outputs = plan_outputs
+    return {
+        "analysis_goal": str(plan.get("analysis_goal") or query),
+        "required_outputs": required_outputs,
+        "expects_visualization": bool(contract["expects_visualization"]),
+        "expects_dependency": bool(contract["expects_dependency"]),
+        "expects_nlp": bool(contract["expects_nlp"]),
+        "plan_blob": plan_blob,
+    }
 
 
 def _cleanup_complex_analytics_artifacts(*, artifacts_root: Path) -> Dict[str, int]:
@@ -349,6 +533,8 @@ def execute_sandboxed_python(
         if len(text) > len(chunk):
             raise ComplexAnalyticsOutputLimitError("stdout limit exceeded")
 
+    import warnings as _sandbox_warnings
+
     def _save_plot(*, fig=None, name: str = "chart.png") -> str:  # noqa: ANN001
         if len(artifacts) >= int(max_artifacts):
             raise ComplexAnalyticsOutputLimitError("artifact limit exceeded")
@@ -381,6 +567,11 @@ def execute_sandboxed_python(
         "all": all,
         "any": any,
         "bool": bool,
+        "Exception": Exception,
+        "TypeError": TypeError,
+        "ValueError": ValueError,
+        "RuntimeError": RuntimeError,
+        "UserWarning": UserWarning,
         "dict": dict,
         "enumerate": enumerate,
         "float": float,
@@ -405,9 +596,21 @@ def execute_sandboxed_python(
         "datasets": datasets,
         "save_plot": _save_plot,
     }
-    compiled = compile(code, "<complex_analytics_sandbox>", "exec")
-    # Use a single namespace to keep variable resolution stable inside comprehensions.
-    exec(compiled, exec_namespace, exec_namespace)
+    try:
+        import matplotlib  # noqa: PLC0415
+
+        matplotlib.use("Agg", force=True)
+    except Exception:
+        pass
+    with _sandbox_warnings.catch_warnings():
+        _sandbox_warnings.filterwarnings(
+            "ignore",
+            category=UserWarning,
+            message=r"Could not infer format, so each element will be parsed individually.*",
+        )
+        compiled = compile(code, "<complex_analytics_sandbox>", "exec")
+        # Use a single namespace to keep variable resolution stable inside comprehensions.
+        exec(compiled, exec_namespace, exec_namespace)
 
     raw_result = exec_namespace.get("result")
     if raw_result is None:
@@ -497,6 +700,62 @@ def _extract_python_from_llm_text(text: str) -> str:
     return code.strip()
 
 
+def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    json_candidates = re.findall(
+        r"```(?:json)?\s*(.*?)```",
+        raw,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    candidates: List[str] = [str(item or "").strip() for item in json_candidates if str(item or "").strip()]
+    candidates.append(raw)
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    # fallback: scan plain text for the first JSON object (supports prefix/suffix around JSON)
+    brace_depth = 0
+    string_mode = False
+    escaped = False
+    start_pos: Optional[int] = None
+    for index, char in enumerate(raw):
+        if escaped:
+            escaped = False
+            continue
+        if string_mode:
+            if char == "\\":
+                escaped = True
+            elif char == '"':
+                string_mode = False
+            continue
+        if char == '"':
+            string_mode = True
+            continue
+        if char == "{":
+            if brace_depth == 0:
+                start_pos = index
+            brace_depth += 1
+            continue
+        if char == "}" and brace_depth > 0:
+            brace_depth -= 1
+            if brace_depth == 0 and start_pos is not None:
+                candidate = raw[start_pos : index + 1]
+                try:
+                    parsed = json.loads(candidate)
+                except Exception:
+                    start_pos = None
+                    continue
+                if isinstance(parsed, dict):
+                    return parsed
+                start_pos = None
+    return None
+
+
 def _is_dependency_query(query: str) -> bool:
     q = (query or "").lower()
     dependency_hints = (
@@ -562,7 +821,7 @@ def _build_dataframe_profile_for_codegen(df: Any) -> Dict[str, Any]:
     return profile
 
 
-def _build_codegen_prompt(
+def _build_complex_analysis_plan_prompt(
     *,
     query: str,
     primary_table_name: str,
@@ -570,43 +829,85 @@ def _build_codegen_prompt(
 ) -> str:
     profile_json = json.dumps(dataframe_profile, ensure_ascii=False)
     profile_snippet = profile_json[:14000]
-    chart_required = _is_dependency_query(query) or any(
-        token in (query or "").lower()
-        for token in ("plot", "chart", "visual", "граф", "визуал", "heatmap", "теплов")
-    )
     return textwrap.dedent(
         f"""
-        You are generating offline Python code for a secure analytics sandbox.
-        Return ONLY Python code (no markdown, no explanations).
+You are a planning analyst for offline tabular data execution.
+Return ONLY strict JSON (no markdown, no prose outside JSON) with this schema:
+{{
+  "analysis_goal": "string",
+  "required_artifacts": ["plots"|"tables"|"metrics"|"nlp"|...],
+  "required_outputs": ["summary","metrics","insights","tables","artifacts"],
+  "data_contract": {{
+    "required_inputs": ["datasets","dataset_name","file_ids"],
+    "required_outputs": ["result","artifacts","insights","metrics","tables"]
+  }},
+  "required_contract": {{
+    "expects_visualization": true|false,
+    "expects_dependency": true|false,
+    "expects_nlp": true|false
+  }},
+  "python_generation_prompt": "string",
+  "should_generate_code": true
+}}
 
-        Runtime contract:
-        - Input dataframe: df = datasets[{json.dumps(primary_table_name)}].copy()
-        - Available libs: pandas, numpy, duckdb, matplotlib, seaborn, datetime, re, warnings
-        - Forbidden behavior: subprocess, network, file reads/writes, OS/system calls, eval/exec/open
-        - Use save_plot(fig=..., name="...png") to persist chart artifacts.
-        - Create variable `result` as dict with keys:
-          status, table_name, metrics (dict), notes (list), artifacts (list)
-        - Always fill:
-          result["metrics"]["rows_total"], ["columns_total"], ["columns"]
-        - If charts are requested, generate 1-3 meaningful charts and append to:
-          result["artifacts"].append({{"kind":"<type>", "path": plot_path, "title":"..."}})
-        - For dependency analysis requests:
-          Prefer correlation heatmap (if >=2 numeric columns),
-          else numeric-vs-category dependency chart,
-          else categorical dependency heatmap from crosstab.
-        - Chart requirement: {"required" if chart_required else "optional"}.
-        - Keep script under {_MAX_CODE_LINES} lines.
+Hard requirements for the plan:
+- The generated code must load data using: df = datasets[{json.dumps(primary_table_name)}].copy()
+- The analysis is offline only; no network or file reads.
+- The generated code must produce variable `result` with keys: status, table_name, metrics, notes, artifacts.
+- For dependency/correlation requests, plan must ask for relationship analysis and at least one dependency artifact when feasible.
+- If heatmap is impossible due dtypes, plan must ask for a meaningful fallback chart.
+- Keep target script under {_MAX_CODE_LINES} lines.
 
-        User request:
-        {query}
+User request:
+{query}
 
-        Data profile (JSON):
-        {profile_snippet}
+Data profile (JSON):
+{profile_snippet}
         """
     ).strip()
 
 
-def _validate_generated_code_contract(code: str) -> Optional[str]:
+def _build_codegen_prompt(
+    *,
+    analysis_plan: str,
+    primary_table_name: str,
+    dataframe_profile: Dict[str, Any],
+    plan_contract: Dict[str, Any],
+) -> str:
+    safe_plan = str(analysis_plan or "").strip()
+    profile_snippet = json.dumps(dataframe_profile, ensure_ascii=False)[:16000]
+    contract_snippet = json.dumps(plan_contract, ensure_ascii=False)
+    return textwrap.dedent(
+        f"""
+You are generating offline Python code for a secure analytics sandbox.
+Return Python code only. No markdown. No comments outside code.
+
+Execution plan:
+{safe_plan}
+
+Contract summary:
+{contract_snippet}
+
+Dataset profile JSON:
+{profile_snippet}
+
+Mandatory runtime rules:
+- Start with: df = datasets[{json.dumps(primary_table_name)}].copy()
+- Use only: pandas, numpy, duckdb, matplotlib, seaborn, datetime, re, warnings.
+- Never use network/system/subprocess/file IO/eval/exec/open.
+- Save charts only via save_plot(fig=..., name="...png").
+- Define `result` as dict with keys:
+  status, table_name, metrics (dict), notes (list), artifacts (list), insights (list optional).
+- metrics must include rows_total, columns_total, columns and analytical findings.
+- If visualization/dependency requested and feasible, generate at least one chart artifact.
+- If impossible, add explicit reason to `result["notes"]`.
+- Keep script under {_MAX_CODE_LINES} lines.
+        """.strip()
+    ).strip()
+
+
+def _validate_generated_code_contract(code: str, *, plan_contract: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    effective_contract = plan_contract if isinstance(plan_contract, dict) else {}
     candidate = str(code or "").strip()
     if not candidate:
         return "empty_code"
@@ -630,6 +931,8 @@ def _validate_generated_code_contract(code: str) -> Optional[str]:
         return "missing_result_assignment"
     if "datasets" not in candidate:
         return "missing_datasets_access"
+    if str(effective_contract.get("expects_visualization")).lower() == "true" and "save_plot" not in candidate:
+        return "missing_visualization_contract"
     try:
         _validate_python_security(candidate)
     except ComplexAnalyticsSecurityError:
@@ -651,76 +954,252 @@ async def _generate_complex_analysis_code(
         "codegen_enabled": bool(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_ENABLED", True)),
         "codegen_attempted": False,
         "codegen_status": "disabled",
-        "code_source": "template",
+        "code_source": "none",
         "codegen_error": None,
         "provider_selected": str(model_source or ""),
         "provider_mode": str(provider_mode or ""),
         "model_name": str(model_name or ""),
+        "codegen_plan_status": "disabled",
+        "codegen_plan_error": None,
+        "analysis_goal": None,
+        "analysis_plan": None,
+        "plan_contract": {},
+        "complex_analytics_code_generation_prompt_status": "disabled",
+        "complex_analytics_code_generation_source": "none",
+        "complex_analytics_codegen": {"provider": None, "model_route": None},
+        "complex_analytics_sandbox": {"secure_eval": True},
     }
 
     if not meta["codegen_enabled"]:
+        meta["code_source"] = "template"
+        meta["complex_analytics_code_generation_source"] = "template"
+        meta["codegen_status"] = "fallback"
+        meta["codegen_error"] = "codegen_disabled"
         return fallback_code, meta
 
     profile = _build_dataframe_profile_for_codegen(primary_frame)
-    prompt = _build_codegen_prompt(
+    plan_prompt = _build_complex_analysis_plan_prompt(
         query=query,
         primary_table_name=primary_table_name,
         dataframe_profile=profile,
     )
-    timeout_seconds = float(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS", 8.0) or 8.0)
-    max_tokens = int(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_MAX_TOKENS", 2200) or 2200)
-    force_local = bool(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_FORCE_LOCAL", True))
-    codegen_source = str(model_source or "local").strip().lower() or "local"
-    if force_local:
-        codegen_source = "local"
+    routing = _resolve_complex_analytics_routing(
+        model_source=model_source,
+        provider_mode=provider_mode,
+    )
+    routing_source = str(routing.get("model_source") or "local")
+    routing_mode = str(routing.get("provider_mode") or "explicit")
+    plan_timeout_seconds = float(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_PLAN_TIMEOUT_SECONDS", 6.0) or 6.0)
+    plan_max_tokens = int(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_PLAN_MAX_TOKENS", 900) or 900)
+    code_timeout_seconds = float(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS", 8.0) or 8.0)
+    code_max_tokens = int(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_MAX_TOKENS", 2200) or 2200)
+    force_local = bool(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_FORCE_LOCAL", False))
 
     meta.update(
         {
             "codegen_attempted": True,
             "codegen_status": "attempted",
-            "provider_effective": codegen_source,
+            "provider_effective": routing_source,
+            "provider_effective_plan": None,
+            "provider_effective_codegen": None,
             "provider_overridden": bool(force_local),
         }
     )
 
     try:
-        llm_result = await asyncio.wait_for(
-            llm_manager.generate_response(
-                prompt=prompt,
-                model_source=codegen_source,
-                provider_mode="explicit" if force_local else provider_mode,
-                model_name=model_name,
-                temperature=0.05,
-                max_tokens=max_tokens,
-                conversation_history=None,
-                cannot_wait=True,
-                sla_critical=False,
-                policy_class="complex_analytics_codegen",
-            ),
-            timeout=timeout_seconds,
+        async def _invoke_plan(prompt: str) -> Dict[str, Any]:
+            return await asyncio.wait_for(
+                llm_manager.generate_response(
+                    prompt=prompt,
+                    model_source=routing_source,
+                    provider_mode=routing_mode,
+                    model_name=model_name,
+                    temperature=0.05,
+                    max_tokens=plan_max_tokens,
+                    conversation_history=None,
+                    cannot_wait=True,
+                    sla_critical=False,
+                    policy_class="complex_analytics_plan",
+                ),
+                timeout=plan_timeout_seconds,
+            )
+
+        async def _invoke_codegen(prompt: str) -> Dict[str, Any]:
+            return await asyncio.wait_for(
+                llm_manager.generate_response(
+                    prompt=prompt,
+                    model_source=routing_source,
+                    provider_mode=routing_mode,
+                    model_name=model_name,
+                    temperature=0.05,
+                    max_tokens=code_max_tokens,
+                    conversation_history=None,
+                    cannot_wait=True,
+                    sla_critical=False,
+                    policy_class="complex_analytics_codegen",
+                ),
+                timeout=code_timeout_seconds,
+            )
+
+        current_plan_prompt = (
+            f"{plan_prompt}\nReturn STRICT JSON only and do not include markdown or explanations."
         )
-        candidate = _extract_python_from_llm_text(str(llm_result.get("response") or ""))
-        contract_error = _validate_generated_code_contract(candidate)
+
+        parsed_plan: Optional[Dict[str, Any]] = None
+        plan_error: Optional[str] = None
+        plan_analysis_prompt = ""
+        plan_contract: Dict[str, Any] = _compute_plan_contract(plan={}, query=query)
+
+        for attempt in range(_CODEGEN_PLAN_ATTEMPTS):
+            analysis_plan_result = await _invoke_plan(current_plan_prompt)
+            parsed_plan = _extract_json_from_text(str(analysis_plan_result.get("response") or ""))
+            meta["provider_effective_plan"] = analysis_plan_result.get("provider_effective")
+            meta["provider_effective_codegen"] = analysis_plan_result.get("provider_effective")
+            meta["model_route_plan"] = analysis_plan_result.get("model_route")
+            meta["provider_selected_plan"] = routing_source
+            meta["provider_mode_plan"] = routing_mode
+
+            plan_error = None
+            if not isinstance(parsed_plan, dict):
+                plan_error = "invalid_plan_json"
+            else:
+                plan_analysis_prompt = str(parsed_plan.get("python_generation_prompt") or "").strip()
+                if not _parse_truthy_bool(parsed_plan.get("should_generate_code")):
+                    plan_error = "plan_should_not_generate_code"
+                if not plan_analysis_prompt:
+                    plan_error = "plan_missing_python_generation_prompt"
+                plan_contract = _compute_plan_contract(plan=parsed_plan, query=query)
+            if not plan_error:
+                break
+            if attempt >= (_CODEGEN_PLAN_ATTEMPTS - 1):
+                break
+            current_plan_prompt = (
+                "Return ONLY strict JSON with keys: analysis_goal, required_artifacts, required_outputs, "
+                "data_contract, required_contract, python_generation_prompt, should_generate_code.\n"
+                f"User: {query!r}\n"
+                f"Data profile: {json.dumps(profile, ensure_ascii=False)}\n"
+                "This prompt is hard for machine parsing; enforce strict JSON only."
+            )
+
+        if plan_error or not isinstance(parsed_plan, dict):
+            logger.info(
+                "complex_analytics.codegen_plan status=fallback reason=%s provider=%s mode=%s",
+                plan_error,
+                routing_source,
+                routing_mode,
+            )
+            meta["codegen_plan_status"] = "fallback"
+            meta["codegen_plan_error"] = plan_error
+            meta["codegen_status"] = "fallback"
+            meta["codegen_error"] = plan_error
+            meta["code_source"] = "template"
+            meta["complex_analytics_code_generation_prompt_status"] = "fallback"
+            meta["complex_analytics_code_generation_source"] = "template"
+            meta["complex_analytics_codegen"] = {"provider": routing_source, "model_route": None}
+            inc_counter("complex_analytics_codegen_total", status="fallback", reason=plan_error)
+            return fallback_code, meta
+
+        meta["codegen_plan_status"] = "success"
+        meta["complex_analytics_code_generation_prompt_status"] = "success"
+        meta["analysis_plan"] = parsed_plan
+        meta["analysis_goal"] = str(parsed_plan.get("analysis_goal") or query)
+        meta["plan_contract"] = dict(plan_contract)
+        logger.info(
+            "complex_analytics.codegen_plan status=success provider=%s mode=%s expects_visualization=%s expects_dependency=%s expects_nlp=%s",
+            routing_source,
+            routing_mode,
+            bool(plan_contract.get("expects_visualization")),
+            bool(plan_contract.get("expects_dependency")),
+            bool(plan_contract.get("expects_nlp")),
+        )
+        codegen_prompt = _build_codegen_prompt(
+            analysis_plan=plan_analysis_prompt,
+            primary_table_name=primary_table_name,
+            dataframe_profile=profile,
+            plan_contract=plan_contract,
+        )
+        codegen_result: Optional[Dict[str, Any]] = None
+        candidate = ""
+        contract_error: Optional[str] = "not_attempted"
+        prompt = codegen_prompt
+        for attempt in range(_CODEGEN_REPAIR_ATTEMPTS):
+            codegen_result = await _invoke_codegen(prompt)
+            meta["provider_effective_codegen"] = codegen_result.get("provider_effective")
+            candidate = _extract_python_from_llm_text(str(codegen_result.get("response") or ""))
+            contract_error = _validate_generated_code_contract(candidate, plan_contract=plan_contract)
+            if not contract_error:
+                break
+            prompt = (
+                "Return strict Python only. Previous candidate violated contract: "
+                f"{contract_error}. Fix and regenerate.\n\n{codegen_prompt}"
+            )
+            logger.debug(
+                "Complex analytics codegen contract validation failed (attempt=%s): %s",
+                attempt + 1,
+                contract_error,
+            )
+
         if contract_error:
+            logger.info(
+                "complex_analytics.codegen_execute status=fallback reason=%s provider=%s mode=%s",
+                contract_error,
+                routing_source,
+                routing_mode,
+            )
             meta["codegen_status"] = "fallback"
             meta["codegen_error"] = contract_error
+            meta["code_source"] = "template"
+            meta["complex_analytics_code_generation_source"] = "template"
+            meta["complex_analytics_codegen"] = {
+                "provider": routing_source,
+                "model_route": codegen_result.get("model_route") if isinstance(codegen_result, dict) else None,
+            }
             inc_counter("complex_analytics_codegen_total", status="fallback", reason=contract_error)
             return fallback_code, meta
 
-        meta["codegen_status"] = "success"
         meta["code_source"] = "llm"
-        meta["model_route"] = llm_result.get("model_route")
-        meta["provider_effective_runtime"] = llm_result.get("provider_effective")
+        meta["complex_analytics_code_generation_source"] = "llm"
+        meta["model_route"] = codegen_result.get("model_route")
+        meta["provider_effective_runtime"] = codegen_result.get("provider_effective")
+        meta["provider_selected_runtime"] = routing_source
+        meta["provider_mode_runtime"] = routing_mode
+        meta["complex_analytics_codegen"] = {
+            "provider": codegen_result.get("provider_effective") or routing_source,
+            "model_route": codegen_result.get("model_route"),
+        }
+        meta["codegen_status"] = "success"
+        logger.info(
+            "complex_analytics.codegen_execute status=success provider=%s model_route=%s",
+            codegen_result.get("provider_effective") or routing_source,
+            codegen_result.get("model_route"),
+        )
         inc_counter("complex_analytics_codegen_total", status="success", reason="none")
         return candidate, meta
     except TimeoutError:
+        logger.info(
+            "complex_analytics.codegen_execute status=fallback reason=timeout provider=%s mode=%s",
+            routing_source,
+            routing_mode,
+        )
         meta["codegen_status"] = "fallback"
         meta["codegen_error"] = "timeout"
+        meta["code_source"] = "template"
+        meta["complex_analytics_code_generation_prompt_status"] = (
+            "fallback" if meta.get("codegen_plan_status") != "success" else "success"
+        )
+        meta["complex_analytics_code_generation_source"] = "template"
+        meta["complex_analytics_codegen"] = {"provider": routing_source, "model_route": None}
         inc_counter("complex_analytics_codegen_total", status="fallback", reason="timeout")
         return fallback_code, meta
     except Exception as exc:  # pragma: no cover - provider/runtime dependent
         meta["codegen_status"] = "fallback"
         meta["codegen_error"] = f"runtime_error:{type(exc).__name__}"
+        meta["code_source"] = "template"
+        meta["complex_analytics_code_generation_prompt_status"] = (
+            "fallback" if meta.get("codegen_plan_status") != "success" else "success"
+        )
+        meta["complex_analytics_code_generation_source"] = "template"
+        meta["complex_analytics_codegen"] = {"provider": routing_source, "model_route": None}
         logger.warning("Complex analytics codegen failed: %s", exc)
         inc_counter("complex_analytics_codegen_total", status="fallback", reason="runtime_error")
         return fallback_code, meta
@@ -780,12 +1259,13 @@ con.close()
 
 def to_datetime_silent(series):
     with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning)
         warnings.filterwarnings(
             "ignore",
             message=r"Could not infer format, so each element will be parsed individually.*",
         )
         try:
-            return pd.to_datetime(series, errors="coerce", format="mixed")
+            return pd.to_datetime(series, errors="coerce")
         except TypeError:
             return pd.to_datetime(series, errors="coerce")
 
@@ -1210,6 +1690,194 @@ def _format_complex_analytics_answer(
 
     return "\n".join(lines)
 
+
+def _truncate_for_prompt(value: Any, max_chars: int = 1000) -> str:
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def _build_complex_analytics_execution_context(
+    *,
+    query: str,
+    table_name: str,
+    metrics: Dict[str, Any],
+    notes: Sequence[Any],
+    artifacts: Sequence[Dict[str, Any]],
+    executed_code: str,
+    execution_stdout: str = "",
+) -> Dict[str, Any]:
+    column_profiles = metrics.get("column_profile") if isinstance(metrics.get("column_profile"), list) else []
+    numeric_summary = metrics.get("numeric_summary") if isinstance(metrics.get("numeric_summary"), list) else []
+    datetime_summary = metrics.get("datetime_summary") if isinstance(metrics.get("datetime_summary"), list) else []
+    categorical_summary = metrics.get("categorical_summary") if isinstance(metrics.get("categorical_summary"), list) else []
+    metric_insights = metrics.get("insights") if isinstance(metrics.get("insights"), list) else []
+    return {
+        "query": query,
+        "table_name": table_name,
+        "rows_total": int(metrics.get("rows_total", 0) or 0),
+        "columns_total": int(metrics.get("columns_total", 0) or 0),
+        "columns": [str(c) for c in (metrics.get("columns") or [])][:80],
+        "process_context": metrics.get("potential_process"),
+        "column_profile": column_profiles[:24],
+        "numeric_summary": numeric_summary[:16],
+        "datetime_summary": datetime_summary[:12],
+        "categorical_summary": categorical_summary[:12],
+        "insights": [str(x) for x in metric_insights[:12] if str(x).strip()],
+        "notes": [str(n) for n in list(notes)[:12] if str(n).strip()],
+        "raw_output": _truncate_for_prompt(execution_stdout, max_chars=4000),
+        "artifacts": [
+            {
+                "kind": artifact.get("kind"),
+                "name": artifact.get("name"),
+                "path": artifact.get("path"),
+                "url": artifact.get("url"),
+            }
+            for artifact in artifacts
+            if isinstance(artifact, dict)
+        ],
+        "code_preview": _truncate_for_prompt(executed_code, max_chars=4200),
+    }
+
+
+def _build_complex_analytics_response_prompt(
+    *,
+    execution_query: str,
+    execution_context: Dict[str, Any],
+) -> str:
+    include_code = _wants_python_code(execution_query)
+    language = detect_preferred_response_language(execution_query)
+    payload = json.dumps(execution_context, ensure_ascii=False, indent=2)
+    include_code_clause = (
+        "- Include the executed Python code in full at the end."
+        if include_code
+        else "- Do not include Python code unless explicitly asked."
+    )
+    prompt = textwrap.dedent(
+        f"""
+You are a senior data analyst assistant.
+Given the executed sandbox output for a user request, generate the final user-facing report.
+
+Requirements:
+- Be practical, concise, and evidence-based.
+- Mention only what is directly supported by the executed output.
+- If visual artifacts are present, list them and include markdown image links.
+- Use the stdout/diagnostics to explain caveats and potential limitations.
+- Do not expose internal security sandbox details.
+{include_code_clause}
+- If the data does not support a requested analysis, state that clearly.
+
+User request:
+{execution_query}
+
+Execution output (JSON):
+{payload}
+
+Return:
+Return in this order:
+1) Short confirmation that request was processed.
+2) Data profile summary + key metrics.
+3) Analytical interpretation / conclusions.
+4) Visualizations (name, path/url, what they represent) + markdown image links.
+5) Practical recommendations / next steps for deeper analysis.
+""".strip()
+    ).strip()
+    return apply_language_policy_to_prompt(prompt=prompt, preferred_lang=language)
+
+
+async def _compose_complex_analytics_response(
+    *,
+    query: str,
+    table_name: str,
+    metrics: Dict[str, Any],
+    notes: Sequence[Any],
+    artifacts: Sequence[Dict[str, Any]],
+    executed_code: str,
+    model_source: Optional[str],
+    provider_mode: Optional[str],
+    model_name: Optional[str],
+) -> Tuple[str, Dict[str, Any]]:
+    context = _build_complex_analytics_execution_context(
+        query=query,
+        table_name=table_name,
+        metrics=metrics,
+        notes=notes,
+        artifacts=artifacts,
+        executed_code=executed_code,
+        execution_stdout=metrics.get("stdout", ""),
+    )
+    prompt = _build_complex_analytics_response_prompt(
+        execution_query=query,
+        execution_context=context,
+    )
+    timeout_seconds = float(getattr(settings, "COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS", 10.0) or 10.0)
+    max_tokens = int(getattr(settings, "COMPLEX_ANALYTICS_RESPONSE_MAX_TOKENS", 1800) or 1800)
+    routing = _resolve_complex_analytics_routing(
+        model_source=model_source,
+        provider_mode=provider_mode,
+    )
+    selected_source = str(routing.get("model_source") or "local")
+    selected_mode = str(routing.get("provider_mode") or "explicit")
+    meta: Dict[str, Any] = {
+        "provider_source": selected_source,
+        "provider_mode": selected_mode,
+        "response_status": "not_attempted",
+        "response_error_code": None,
+        "model_route": None,
+        "provider_effective": None,
+        "provider_source_selected": selected_source,
+    }
+    try:
+        response = await asyncio.wait_for(
+            llm_manager.generate_response(
+                prompt=prompt,
+                model_source=selected_source,
+                provider_mode=selected_mode,
+                model_name=model_name,
+                temperature=0.25,
+                max_tokens=max_tokens,
+                conversation_history=None,
+                cannot_wait=True,
+                sla_critical=False,
+                policy_class="complex_analytics_response",
+            ),
+            timeout=timeout_seconds,
+        )
+        text = str(response.get("response") or "").strip()
+        if not text:
+            meta["response_status"] = "fallback"
+            meta["response_error_code"] = "empty_response"
+            logger.info(
+                "complex_analytics.compose status=fallback reason=empty_response provider=%s mode=%s",
+                selected_source,
+                selected_mode,
+            )
+            return "", meta
+        meta["response_status"] = "success"
+        meta["model_route"] = response.get("model_route")
+        meta["provider_effective"] = response.get("provider_effective")
+        logger.info(
+            "complex_analytics.compose status=success provider=%s model_route=%s",
+            meta["provider_effective"] or selected_source,
+            meta["model_route"],
+        )
+        return text, meta
+    except TimeoutError:
+        meta["response_status"] = "error"
+        meta["response_error_code"] = "timeout"
+        logger.info(
+            "complex_analytics.compose status=error reason=timeout provider=%s mode=%s",
+            selected_source,
+            selected_mode,
+        )
+        return "", meta
+    except Exception as exc:  # pragma: no cover - provider/runtime dependent
+        meta["response_status"] = "error"
+        meta["response_error_code"] = f"runtime:{type(exc).__name__}"
+        logger.warning("Complex analytics response composition failed: %s", exc)
+        return "", meta
+
 def _load_table_dataframe(
     *,
     dataset: ResolvedTabularDataset,
@@ -1272,6 +1940,18 @@ def _clarification_for_error(code: str, details: Optional[str] = None) -> str:
         return "Complex analytics requires a tabular dataset in this conversation."
     if code == COMPLEX_ANALYTICS_ERROR_DEPENDENCY:
         return "Complex analytics runtime dependency is missing. Install pandas/numpy/duckdb/matplotlib/seaborn in offline environment."
+    if code == COMPLEX_ANALYTICS_ERROR_CODEGEN:
+        return (
+            "Complex analytics code generation failed for this request. "
+            "Please specify target columns/metrics/charts explicitly and retry."
+        )
+    if code == COMPLEX_ANALYTICS_ERROR_MISSING_ARTIFACTS:
+        return (
+            "Visualization was requested but no valid chart artifacts were produced. "
+            "Specify concrete columns for dependency analysis (for example: x, y, grouping) and retry."
+        )
+    if code == COMPLEX_ANALYTICS_ERROR_VALIDATION:
+        return "Complex analytics result validation failed. Clarify requested outputs and retry."
     return f"Complex analytics sandbox failed{detail_tail}. Please clarify or simplify the request."
 
 
@@ -1308,9 +1988,37 @@ def _build_error_payload(
                 "dataset_version": dataset_version,
                 "message": message,
                 "details": debug_details or {},
+                "complex_analytics_code_generation_prompt_status": "unknown",
+                "complex_analytics_code_generation_source": "unknown",
+                "complex_analytics_codegen": {"provider": None, "model_route": None},
+                "sandbox": {"secure_eval": True},
+                "response_status": "not_attempted",
+                "response_error_code": None,
+                "response_meta": None,
             },
         },
     }
+
+
+def _validate_executor_result(
+    *,
+    sandbox_result: SandboxExecutionResult,
+    plan_contract: Optional[Dict[str, Any]],
+) -> None:
+    result_payload = sandbox_result.result if isinstance(sandbox_result.result, dict) else {}
+    if not isinstance(result_payload.get("metrics"), dict):
+        raise ComplexAnalyticsValidationError(
+            COMPLEX_ANALYTICS_ERROR_VALIDATION,
+            "Sandbox result must contain metrics dictionary",
+        )
+
+    contract = plan_contract if isinstance(plan_contract, dict) else {}
+    expects_visualization = bool(contract.get("expects_visualization"))
+    if expects_visualization and not sandbox_result.artifacts:
+        raise ComplexAnalyticsValidationError(
+            COMPLEX_ANALYTICS_ERROR_MISSING_ARTIFACTS,
+            "Visualization requested but no chart artifacts produced",
+        )
 
 
 def _execute_complex_analytics_sync(
@@ -1330,6 +2038,11 @@ def _execute_complex_analytics_sync(
 
     effective_code = code
     effective_codegen_meta = dict(codegen_meta or {})
+    plan_contract = (
+        dict(effective_codegen_meta.get("plan_contract"))
+        if isinstance(effective_codegen_meta.get("plan_contract"), dict)
+        else {}
+    )
     try:
         sandbox_result = execute_sandboxed_python(
             code=effective_code,
@@ -1339,7 +2052,10 @@ def _execute_complex_analytics_sync(
             max_artifacts=int(settings.COMPLEX_ANALYTICS_MAX_ARTIFACTS),
         )
     except Exception as exec_error:
-        if str((effective_codegen_meta or {}).get("code_source") or "") == "llm":
+        if (
+            str((effective_codegen_meta or {}).get("code_source") or "") == "llm"
+            and bool(getattr(settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK", False))
+        ):
             fallback_code = _build_complex_analysis_code(
                 query=query,
                 primary_table_name=primary_table.table_name,
@@ -1357,7 +2073,10 @@ def _execute_complex_analytics_sync(
                 max_artifacts=int(settings.COMPLEX_ANALYTICS_MAX_ARTIFACTS),
             )
         else:
-            raise
+            raise ComplexAnalyticsValidationError(
+                COMPLEX_ANALYTICS_ERROR_VALIDATION,
+                f"Generated code runtime failure: {type(exec_error).__name__}: {exec_error}",
+            ) from exec_error
 
     metrics = sandbox_result.result.get("metrics")
     notes = sandbox_result.result.get("notes")
@@ -1378,6 +2097,16 @@ def _execute_complex_analytics_sync(
             if public_url:
                 artifact["url"] = public_url
         response_artifacts.append(_sanitize_artifact_for_response(artifact))
+
+    sandbox_result = SandboxExecutionResult(
+        result=sandbox_result.result,
+        stdout=sandbox_result.stdout,
+        artifacts=response_artifacts,
+    )
+    _validate_executor_result(
+        sandbox_result=sandbox_result,
+        plan_contract=plan_contract,
+    )
 
     if response_artifacts:
         inc_counter("complex_analytics_artifacts_generated_total", value=len(response_artifacts))
@@ -1429,9 +2158,25 @@ def _execute_complex_analytics_sync(
                 "code_preview": effective_code[:1200],
                 "code_source": str((effective_codegen_meta or {}).get("code_source") or "template"),
                 "codegen": dict(effective_codegen_meta or {}),
+                "complex_analytics_code_generation_prompt_status": str(
+                    (effective_codegen_meta or {}).get("complex_analytics_code_generation_prompt_status") or "unknown"
+                ),
+                "complex_analytics_code_generation_source": str(
+                    (effective_codegen_meta or {}).get("complex_analytics_code_generation_source") or "unknown"
+                ),
+                "complex_analytics_codegen": dict((effective_codegen_meta or {}).get("complex_analytics_codegen") or {}),
+                "sandbox": {
+                    "secure_eval": True,
+                    "artifacts_limit": int(settings.COMPLEX_ANALYTICS_MAX_ARTIFACTS),
+                    "output_limit_chars": int(settings.COMPLEX_ANALYTICS_MAX_OUTPUT_CHARS),
+                },
+                "plan_contract": dict((effective_codegen_meta or {}).get("plan_contract") or {}),
                 "metrics": metrics if isinstance(metrics, dict) else {},
                 "notes": notes if isinstance(notes, list) else [],
                 "artifact_dir": _artifact_relative_path(str(artifacts_dir)) or run_id,
+                "response_status": "not_attempted",
+                "response_error_code": None,
+                "response_meta": None,
             },
         },
     }
@@ -1512,6 +2257,17 @@ async def execute_complex_analytics_path(
         provider_mode=provider_mode,
         model_name=model_name,
     )
+    code_source = str((codegen_meta or {}).get("code_source") or "none")
+    if code_source != "llm" and not bool(getattr(settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK", False)):
+        reason = str((codegen_meta or {}).get("codegen_error") or "codegen_unavailable")
+        return _build_error_payload(
+            query=query,
+            target_file=target_file,
+            dataset=dataset,
+            code=COMPLEX_ANALYTICS_ERROR_CODEGEN,
+            message=f"Template fallback disabled; reason={reason}",
+            debug_details={"codegen": dict(codegen_meta or {})},
+        )
 
     timeout_seconds = float(settings.COMPLEX_ANALYTICS_TIMEOUT_SECONDS)
     started = perf_counter()
@@ -1531,6 +2287,51 @@ async def execute_complex_analytics_path(
         )
         observe_ms("complex_analytics_executor_ms", (perf_counter() - started) * 1000.0)
         status = str(payload.get("status") or "ok")
+        if status == "ok":
+            fallback_response = str(payload.get("final_response") or "").strip()
+            execution_metrics = payload.get("debug", {}).get("complex_analytics", {}).get("metrics", {})
+            execution_notes = payload.get("debug", {}).get("complex_analytics", {}).get("notes", [])
+            execution_stdout = payload.get("debug", {}).get("complex_analytics", {}).get("stdout", "")
+            execution_code = payload.get("debug", {}).get("complex_analytics", {}).get("code_preview") or ""
+            if isinstance(execution_metrics, dict) and execution_stdout:
+                execution_metrics = dict(execution_metrics)
+                execution_metrics["stdout"] = execution_stdout
+            generated_response, response_meta = await _compose_complex_analytics_response(
+                query=query,
+                table_name=primary_table.table_name,
+                metrics=execution_metrics if isinstance(execution_metrics, dict) else {},
+                notes=execution_notes if isinstance(execution_notes, list) else [],
+                artifacts=payload.get("artifacts") or [],
+                executed_code=execution_code if isinstance(execution_code, str) else "",
+                model_source=model_source,
+                provider_mode=provider_mode,
+                model_name=model_name,
+            )
+            if generated_response:
+                payload["final_response"] = generated_response
+                payload["debug"]["complex_analytics"]["response_meta"] = response_meta
+                payload["debug"]["complex_analytics"]["response_status"] = response_meta.get("response_status")
+                payload["debug"]["complex_analytics"]["response_error_code"] = response_meta.get("response_error_code")
+            else:
+                payload["debug"]["complex_analytics"]["response_status"] = "fallback"
+                if response_meta:
+                    payload["debug"]["complex_analytics"]["response_error_code"] = (
+                        response_meta.get("response_error_code") or "unknown"
+                    )
+                    payload["debug"]["complex_analytics"]["response_meta"] = response_meta
+            if not isinstance(payload.get("final_response"), str) or not payload["final_response"].strip():
+                payload["final_response"] = fallback_response or _format_complex_analytics_answer(
+                    query=query,
+                    table_name=primary_table.table_name,
+                    metrics=payload.get("debug", {}).get("complex_analytics", {}).get("metrics", {}),
+                    notes=payload.get("debug", {}).get("complex_analytics", {}).get("notes", []),
+                    artifacts=payload.get("artifacts") or [],
+                    executed_code=payload.get("debug", {}).get("complex_analytics", {}).get("code_preview") or "",
+                    include_code=_wants_python_code(query),
+                    insights=payload.get("debug", {}).get("complex_analytics", {}).get("metrics", {}).get("insights", []),
+                )
+        if payload["debug"]["complex_analytics"].get("response_status") is None:
+            payload["debug"]["complex_analytics"]["response_status"] = "not_attempted"
         inc_counter(
             "complex_analytics_executor_total",
             status=status,
@@ -1563,6 +2364,17 @@ async def execute_complex_analytics_path(
             dataset=dataset,
             code=COMPLEX_ANALYTICS_ERROR_OUTPUT_LIMIT,
             message=str(exc),
+        )
+    except ComplexAnalyticsValidationError as exc:
+        error_code = str(exc.error_code or COMPLEX_ANALYTICS_ERROR_VALIDATION)
+        inc_counter("complex_analytics_executor_error_total", error_code=error_code)
+        return _build_error_payload(
+            query=query,
+            target_file=target_file,
+            dataset=dataset,
+            code=error_code,
+            message=str(exc),
+            debug_details={"codegen": dict(codegen_meta or {})},
         )
     except RuntimeError as exc:
         message = str(exc)

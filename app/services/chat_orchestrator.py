@@ -107,7 +107,7 @@ class ChatOrchestrator:
                     execution_route = "clarification"
             executor_attempted = bool(rag_debug.get("executor_attempted", False))
             executor_status_raw = str(rag_debug.get("executor_status") or "").strip().lower()
-            if executor_status_raw in {"success", "error", "timeout", "blocked", "not_attempted"}:
+            if executor_status_raw in {"success", "error", "timeout", "blocked", "fallback", "not_attempted"}:
                 executor_status = executor_status_raw
             elif executor_attempted:
                 executor_status = "success" if execution_route == "complex_analytics" else "not_attempted"

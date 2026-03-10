@@ -58,6 +58,8 @@ For metric-critical ambiguous queries against tabular datasets:
 - `is_complex_analytics_query` remains stable at `app.services.chat.complex_analytics` while implementation moved to package module `planner.py`.
 - Broad analytics prompts are expected to execute without manual column clarification when dataset is analyzable; visualization contract auto-repair is internal-only and non-breaking.
 - For `complex_analytics` route with `aihub + policy`, downstream executor stages (plan/codegen/compose) apply provider-aware timeout overrides to reduce false timeout fallback while preserving planner routing semantics.
+- For broad/full analysis requests, runtime artifact limit is now adaptive (within configured hard cap) to reduce failures on multi-chart analytical prompts.
+- Executor backfills profile/statistical metrics from dataframe when generated script does not return complete profiling payload; planner routing contract remains unchanged.
 - For broad full-analysis requests, compose stage may be skipped in favor of deterministic local formatter to avoid low-quality generic LLM summaries (`response_error_code=broad_query_local_formatter`).
 - Route execution branches in RAG builder are now isolated in `app/services/chat/rag_prompt_routes.py` (internal refactor, planner semantics unchanged).
 - Retrieval helper logic for narrative path is extracted to `app/services/chat/rag_retrieval_helpers.py` (no route decision changes).

@@ -77,6 +77,8 @@ Codegen controls:
 - `COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK` (default: true)
 - `COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK` (default: true)
 - `COMPLEX_ANALYTICS_PREFER_LOCAL_COMPOSER_FOR_BROAD_QUERY` (default: true)
+- `COMPLEX_ANALYTICS_MAX_ARTIFACTS` (base artifact budget)
+- `COMPLEX_ANALYTICS_MAX_ARTIFACTS_HARD_CAP` (upper bound for adaptive artifact budget)
 
 ## Recommended Dashboard Panels
 - AI HUB route vs fallback share
@@ -101,6 +103,14 @@ Codegen controls:
   - `codegen_timeout_seconds`
   - `response_timeout_seconds`
   - `sandbox.secure_eval`
+  - `sandbox.artifacts_limit`
+  - `sandbox.artifacts_limit_base`
+- Executor now backfills analytics metrics from dataframe when script output is incomplete:
+  - `column_profile`
+  - `numeric_summary`
+  - `datetime_summary`
+  - `categorical_summary`
+  - `relationship_findings`
 - Internal implementation now emits these fields from modular package `app/services/chat/complex_analytics/*`; metric/log keys are unchanged.
 - Additional refactor in chat-plane orchestration (`orchestrator_helpers.py`, `rag_prompt_routes.py`) does not change metric or structured-log key names.
 - Runtime/refactoring split (`orchestrator_runtime.py`, `rag_retrieval_helpers.py`) also keeps metric names and structured log event keys unchanged.

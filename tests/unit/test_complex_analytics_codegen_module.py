@@ -24,6 +24,7 @@ result = {"status": "ok", "metrics": {}, "notes": [], "artifacts": []}
 
 def test_codegen_prompt_includes_contract_and_dataset():
     prompt = codegen.build_codegen_prompt(
+        query="Analyze dataset and build charts",
         analysis_plan="do analysis",
         primary_table_name="sheet_1",
         dataframe_profile={"rows_total": 10, "columns_total": 2},

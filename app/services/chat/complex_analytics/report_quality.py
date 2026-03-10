@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, List, Sequence
 
 
 BROAD_ANALYSIS_HINTS = (
@@ -30,8 +30,8 @@ LOW_QUALITY_PHRASES = (
     "сообщение об обработке запроса",
     "request was processed",
     "message about request processing",
-    "прactical",
-    "deeper анализа",
+    "practical recommendations and next steps",
+    "deeper analysis",
 )
 
 
@@ -77,11 +77,50 @@ def _contains_metric_signal(text: str, *, is_ru: bool) -> bool:
     return any(token in lower for token in ("rows", "columns", "metric", "statistic"))
 
 
+def _extract_context_columns(execution_context: Dict[str, Any]) -> List[str]:
+    columns: List[str] = []
+    raw_columns = execution_context.get("columns")
+    if isinstance(raw_columns, list):
+        columns.extend([str(item) for item in raw_columns if str(item).strip()])
+    column_profile = execution_context.get("column_profile")
+    if isinstance(column_profile, list):
+        for item in column_profile:
+            if isinstance(item, dict) and str(item.get("column") or "").strip():
+                columns.append(str(item.get("column")))
+    deduped: List[str] = []
+    seen = set()
+    for column in columns:
+        key = column.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(column)
+    return deduped[:40]
+
+
+def _contains_column_reference(text: str, columns: Sequence[str]) -> bool:
+    lower = str(text or "").lower()
+    if not lower:
+        return False
+    normalized = [str(col).strip().lower() for col in columns if str(col).strip()]
+    if not normalized:
+        return True
+    hits = 0
+    for column in normalized:
+        if len(column) <= 2:
+            if re.search(rf"\b{re.escape(column)}\b", lower):
+                hits += 1
+            continue
+        if column in lower:
+            hits += 1
+    required_hits = 1 if len(normalized) == 1 else 2
+    return hits >= required_hits
+
+
 def _contains_visual_signal(text: str, *, artifacts_present: bool) -> bool:
     lower = str(text or "").lower()
     if not artifacts_present:
         return any(token in lower for token in ("visual", "chart", "plot", "граф", "диаграм", "визуал"))
-    # If we already have artifacts, enforce explicit link/image references in final response.
     has_artifact_link = "/uploads/" in lower or "http://" in lower or "https://" in lower
     has_markdown_image = "![" in text and "](" in text
     return bool(has_artifact_link and has_markdown_image)
@@ -109,6 +148,10 @@ def is_compose_response_sufficient(
     if not _contains_metric_signal(candidate, is_ru=is_ru):
         return False
 
+    context_columns = _extract_context_columns(execution_context)
+    if context_columns and not _contains_column_reference(candidate, context_columns):
+        return False
+
     artifacts = execution_context.get("artifacts")
     artifacts_present = isinstance(artifacts, list) and len(artifacts) > 0
     if not _contains_visual_signal(candidate, artifacts_present=artifacts_present):
@@ -126,4 +169,3 @@ def build_local_formatter_meta(reason: str) -> Dict[str, str]:
         "response_status": "fallback",
         "response_error_code": str(reason or "local_formatter"),
     }
-

@@ -80,6 +80,30 @@ Review outliers and segment by category for next analysis iteration.
     assert ok is True
 
 
+def test_compose_quality_gate_rejects_generic_processed_message_even_with_sections():
+    response = """
+## Сообщение об обработке запроса
+### 1) Профиль данных и ключевые метрики
+Запрос был обработан.
+### 2) Аналитический анализ и выводы
+Рекомендуется deeper analysis.
+### 3) Визуализации
+График доступен по ссылке /uploads/x.png
+![histogram](/uploads/x.png)
+### 4) Practical рекомендации
+Нужно сделать проверку.
+"""
+    ok = composer.is_compose_response_sufficient(
+        text=response,
+        query="Проанализируй файл полностью, статистики и связи",
+        execution_context={
+            "columns": ["amount_rub", "status", "priority"],
+            "artifacts": [{"url": "/uploads/x.png"}],
+        },
+    )
+    assert ok is False
+
+
 def test_compose_aihub_policy_timeout_override_allows_slow_provider(monkeypatch):
     async def fake_generate_response(**kwargs):  # noqa: ANN003
         _ = kwargs
@@ -111,7 +135,7 @@ Review outliers and segment by category for next analysis iteration.
         composer.compose_complex_analytics_response(
             query="Analyze dataset and build charts",
             table_name="sheet_1",
-            metrics={"rows_total": 10, "columns_total": 3, "columns": ["a", "b", "c"]},
+            metrics={"rows_total": 10, "columns_total": 3, "columns": ["amount", "duration", "status"]},
             notes=[],
             artifacts=[{"kind": "histogram", "name": "x.png", "path": "uploads/x.png", "url": "/uploads/x.png"}],
             executed_code="result = {}",

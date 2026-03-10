@@ -42,13 +42,15 @@ def clarification_for_error(code: str, details: Optional[str] = None) -> str:
         return "Complex analytics runtime dependency is missing. Install pandas/numpy/duckdb/matplotlib/seaborn in offline environment."
     if code == COMPLEX_ANALYTICS_ERROR_CODEGEN:
         return (
-            "Complex analytics code generation failed for this request. "
-            "Please specify target columns/metrics/charts explicitly and retry."
+            "Complex analytics code generation failed after retry attempts. "
+            "Please retry the same request; full-profile auto-analysis is supported by default. "
+            "You can optionally specify target columns/metrics/charts for stricter control."
         )
     if code == COMPLEX_ANALYTICS_ERROR_MISSING_ARTIFACTS:
         return (
             "Visualization was requested but no valid chart artifacts were produced. "
-            "Specify concrete columns for dependency analysis (for example: x, y, grouping) and retry."
+            "Retry the request; if needed, specify concrete columns for dependency analysis "
+            "(for example: x, y, grouping) to enforce specific charts."
         )
     if code == COMPLEX_ANALYTICS_ERROR_VALIDATION:
         return "Complex analytics result validation failed. Clarify requested outputs and retry."

@@ -23,6 +23,31 @@ Migration note:
 - External HTTP/SSE API contract is unchanged.
 - Change is internal runtime behavior and optional debug-field extension only.
 
+### Complex Analytics Runtime Quality and Artifact Budget Hardening (2026-03-10)
+- Increased and hardened artifact budget controls:
+  - `COMPLEX_ANALYTICS_MAX_ARTIFACTS` default increased (`4 -> 16`),
+  - new hard cap `COMPLEX_ANALYTICS_MAX_ARTIFACTS_HARD_CAP`.
+- Added adaptive per-request artifact limit selection (bounded by hard cap) based on:
+  - broad/full-analysis intent,
+  - plan contract flags (`expects_visualization`, `expects_dependency`),
+  - table width.
+- Added executor-side metrics enrichment to prevent incomplete profile payloads from generated code:
+  - backfills `column_profile`, `numeric_summary`, `datetime_summary`, `categorical_summary`, `relationship_findings`, `insights`.
+- Strengthened compose quality gate:
+  - rejects generic "request processed" responses,
+  - requires column-level grounding when execution context includes column names.
+- Strengthened codegen prompt contract for broad analysis:
+  - requires profile/statistics blocks and relationship analysis with context-specific insights.
+- Improved error clarification text for codegen/artifact failures to prefer retry with automatic full-profile analysis.
+- Added unit coverage:
+  - `tests/unit/test_complex_analytics_analysis_enrichment_module.py`
+  - `tests/unit/test_complex_analytics_execution_limits_module.py`
+  - `tests/unit/test_complex_analytics_composer_module.py::test_compose_quality_gate_rejects_generic_processed_message_even_with_sections`
+
+Migration note:
+- External HTTP/SSE API contract is unchanged.
+- Debug payload includes additional optional internal fields only.
+
 ### Complex Analytics Modular Refactor (2026-03-06)
 - Refactored `complex_analytics` implementation from monolithic module to modular package:
   - `app/services/chat/complex_analytics/{planner,codegen,sandbox,executor,composer,artifacts,errors,telemetry}.py`

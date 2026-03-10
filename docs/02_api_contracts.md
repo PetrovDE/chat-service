@@ -105,6 +105,8 @@ Chat routing fields:
   - `rag_debug.complex_analytics.codegen_plan_timeout_seconds` (optional)
   - `rag_debug.complex_analytics.codegen_timeout_seconds` (optional)
   - `rag_debug.complex_analytics.sandbox.secure_eval` (optional)
+  - `rag_debug.complex_analytics.sandbox.artifacts_limit` (optional)
+  - `rag_debug.complex_analytics.sandbox.artifacts_limit_base` (optional)
   - `rag_debug.complex_analytics.response_timeout_seconds` (optional)
 
 Chat payload examples:
@@ -224,6 +226,16 @@ Language behavior:
 - API compatibility:
   - HTTP/SSE contract is unchanged.
   - Added optional debug fields only (`codegen_plan_timeout_seconds`, `codegen_timeout_seconds`, `response_timeout_seconds`).
+
+## Update 2026-03-10 (Complex Analytics Quality and Artifact Budget)
+
+- Internal runtime quality hardening:
+  - adaptive artifact budget per request/plan complexity (`max_artifacts` effective per run),
+  - metrics backfill in executor for incomplete script output (`column_profile`, statistical summaries, relationship findings),
+  - stricter compose quality gate against generic "request processed" style responses.
+- API compatibility:
+  - HTTP/SSE contract unchanged,
+  - additional debug-only optional fields (`sandbox.artifacts_limit`, `sandbox.artifacts_limit_base`).
 
 ## Internal Refactor Note (2026-03-03)
 

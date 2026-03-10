@@ -27,6 +27,7 @@ from .planner import (
 )
 from .sandbox import validate_python_security
 from .template_codegen import build_complex_analysis_code
+from .report_quality import is_broad_full_analysis_query
 
 logger = logging.getLogger(__name__)
 
@@ -83,14 +84,26 @@ def _resolve_codegen_timeouts(*, model_source: Optional[str], provider_mode: Opt
 
 def build_codegen_prompt(
     *,
+    query: str,
     analysis_plan: str,
     primary_table_name: str,
     dataframe_profile: Dict[str, Any],
     plan_contract: Dict[str, Any],
 ) -> str:
     safe_plan = str(analysis_plan or "").strip()
+    broad_analysis = is_broad_full_analysis_query(query)
     profile_snippet = json.dumps(dataframe_profile, ensure_ascii=False)[:16000]
     contract_snippet = json.dumps(plan_contract, ensure_ascii=False)
+    quality_requirements = (
+        "- Build detailed column profiles for all relevant columns and include as metrics['column_profile'].\n"
+        "- Compute numeric_summary, datetime_summary, categorical_summary when data supports it.\n"
+        "- Compute relationship_findings for numeric feature pairs when >=2 numeric columns are available.\n"
+        "- Add concrete insights that reference actual column names from the dataset.\n"
+    )
+    broad_query_requirements = (
+        "- This is a broad/full analysis request: provide comprehensive EDA, not a minimal template.\n"
+        "- When visualization is feasible, generate multiple chart artifacts (distribution + categorical + relationship view).\n"
+    )
     return textwrap.dedent(
         f"""
 You are generating offline Python code for a secure analytics sandbox.
@@ -115,6 +128,8 @@ Mandatory runtime rules:
 - metrics must include rows_total, columns_total, columns and analytical findings.
 - If visualization/dependency requested and feasible, generate at least one chart artifact.
 - If impossible, add explicit reason to `result["notes"]`.
+- Always prefer context-specific analytics based on dataset profile and user request.
+{quality_requirements}{broad_query_requirements if broad_analysis else ""}
 - Keep script under {MAX_CODE_LINES} lines.
         """.strip()
     ).strip()
@@ -350,6 +365,7 @@ async def generate_complex_analysis_code(
             code_timeout_seconds,
         )
         codegen_prompt = build_codegen_prompt(
+            query=query,
             analysis_plan=(plan_result.python_generation_prompt if plan_result else plan_analysis_prompt),
             primary_table_name=primary_table_name,
             dataframe_profile=profile,

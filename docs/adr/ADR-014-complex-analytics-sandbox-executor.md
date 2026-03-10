@@ -115,3 +115,14 @@ Trade-offs:
   - fewer false fallback outcomes (`reason=timeout`) on slow AI HUB policy responses,
   - no external API contract changes (debug-only optional fields).
 
+## Update 2026-03-10 (Quality and Artifact Budget)
+- Artifact handling:
+  - increased base artifact limit and introduced hard cap setting,
+  - effective artifact limit is resolved dynamically by query/plan complexity and dataset width.
+- Result quality:
+  - executor enriches incomplete script metrics from dataframe to keep profile/statistics contract useful even on partial code outputs.
+- Compose quality:
+  - generic "request processed" style responses are rejected by stricter quality gate,
+  - responses must reference concrete columns/metrics when context provides them.
+- External API contract unchanged; only internal behavior and optional debug details were extended.
+

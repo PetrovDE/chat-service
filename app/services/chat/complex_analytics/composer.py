@@ -342,6 +342,7 @@ Given the executed sandbox output for a user request, generate the final user-fa
 Requirements:
 - Be practical, concise, and evidence-based.
 - Mention only what is directly supported by the executed output.
+- Reference concrete dataset columns and metrics by name (avoid generic placeholders).
 - If visual artifacts are present, list them and include markdown image links.
 - Use the stdout/diagnostics to explain caveats and potential limitations.
 - Do not expose internal security sandbox details.

@@ -21,6 +21,7 @@ from .artifacts import (
     cleanup_complex_analytics_artifacts,
     sanitize_artifact_for_response,
 )
+from .analysis_enrichment import enrich_metrics_from_dataframe
 from .codegen import (
     build_complex_analysis_code,
     generate_complex_analysis_code,
@@ -49,6 +50,7 @@ from .errors import (
     ComplexAnalyticsValidationError,
     SandboxResult,
 )
+from .execution_limits import resolve_max_artifacts_limit
 from .executor_compose import apply_compose_stage_runtime
 from .executor_support import (
     build_error_payload as _support_build_error_payload,
@@ -194,6 +196,12 @@ def _execute_complex_analytics_sync(
 
     effective_code = code
     effective_codegen_meta = dict(codegen_meta or {})
+    primary_frame = datasets.get(primary_table.table_name)
+    max_artifacts_limit = resolve_max_artifacts_limit(
+        query=query,
+        codegen_meta=effective_codegen_meta,
+        primary_frame=primary_frame,
+    )
     plan_contract = (
         dict(effective_codegen_meta.get("plan_contract"))
         if isinstance(effective_codegen_meta.get("plan_contract"), dict)
@@ -205,7 +213,7 @@ def _execute_complex_analytics_sync(
             datasets=datasets,
             artifacts_dir=artifacts_dir,
             max_output_chars=int(settings.COMPLEX_ANALYTICS_MAX_OUTPUT_CHARS),
-            max_artifacts=int(settings.COMPLEX_ANALYTICS_MAX_ARTIFACTS),
+            max_artifacts=max_artifacts_limit,
         )
     except Exception as exec_error:
         if (
@@ -226,7 +234,7 @@ def _execute_complex_analytics_sync(
                 datasets=datasets,
                 artifacts_dir=artifacts_dir,
                 max_output_chars=int(settings.COMPLEX_ANALYTICS_MAX_OUTPUT_CHARS),
-                max_artifacts=int(settings.COMPLEX_ANALYTICS_MAX_ARTIFACTS),
+                max_artifacts=max_artifacts_limit,
             )
         else:
             raise ComplexAnalyticsValidationError(
@@ -237,6 +245,10 @@ def _execute_complex_analytics_sync(
     metrics = sandbox_result.result.get("metrics")
     notes = sandbox_result.result.get("notes")
     insights = sandbox_result.result.get("insights")
+    if isinstance(metrics, dict) and primary_frame is not None:
+        metrics = enrich_metrics_from_dataframe(metrics=metrics, frame=primary_frame)
+        sandbox_result.result["metrics"] = metrics
+
     artifacts = sandbox_result.artifacts
     result_artifacts = sandbox_result.result.get("artifacts")
     if isinstance(result_artifacts, list):
@@ -329,7 +341,8 @@ def _execute_complex_analytics_sync(
                 "complex_analytics_codegen": dict((effective_codegen_meta or {}).get("complex_analytics_codegen") or {}),
                 "sandbox": {
                     "secure_eval": True,
-                    "artifacts_limit": int(settings.COMPLEX_ANALYTICS_MAX_ARTIFACTS),
+                    "artifacts_limit": max_artifacts_limit,
+                    "artifacts_limit_base": int(getattr(settings, "COMPLEX_ANALYTICS_MAX_ARTIFACTS", 16) or 16),
                     "output_limit_chars": int(settings.COMPLEX_ANALYTICS_MAX_OUTPUT_CHARS),
                 },
                 "plan_contract": dict((effective_codegen_meta or {}).get("plan_contract") or {}),

@@ -30,6 +30,11 @@ Important behavior:
   - `COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS_AIHUB_POLICY`
   - `COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS_AIHUB_POLICY`
   Effective timeout is `max(base_timeout, aihub_policy_timeout)` per stage.
+- Sandbox artifact budget is adaptive by request/plan complexity and table width:
+  - base: `COMPLEX_ANALYTICS_MAX_ARTIFACTS`
+  - hard cap: `COMPLEX_ANALYTICS_MAX_ARTIFACTS_HARD_CAP`
+- Executor enriches metrics from dataframe when generated script under-delivers:
+  - `column_profile`, `numeric_summary`, `datetime_summary`, `categorical_summary`, `relationship_findings`.
 - The route is implemented as modular package `app/services/chat/complex_analytics/` with separate planner/codegen/sandbox/executor/composer modules.
 - Codegen/compose use the selected provider/model from request/conversation resolution; explicit local/provider selection has priority.
 - `COMPLEX_ANALYTICS_CODEGEN_FORCE_LOCAL=true` can be used as an operational override, but is not the default behavior contract.
@@ -112,6 +117,8 @@ Execution-plane telemetry fields (non-breaking extension):
 - `rag_debug.complex_analytics.response_error_code`: may include `low_content_quality` and `broad_query_local_formatter`
 - `rag_debug.complex_analytics.response_timeout_seconds`: effective timeout for compose stage
 - `rag_debug.complex_analytics.sandbox.secure_eval`: sandbox execution guard flag
+- `rag_debug.complex_analytics.sandbox.artifacts_limit`: effective artifact limit for this run
+- `rag_debug.complex_analytics.sandbox.artifacts_limit_base`: configured base artifact limit
 
 ## Update 2026-03-06
 - `complex_analytics` path uses backend two-pass code generation (`plan -> codegen`) and final response composition stage.

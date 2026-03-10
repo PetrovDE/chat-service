@@ -117,6 +117,33 @@ Verification:
 - `tests/unit/test_complex_analytics_codegen_module.py`
 - `tests/unit/test_complex_analytics_composer_module.py`
 
+## Runtime Quality Hardening (2026-03-10)
+
+Observed issues:
+- `artifact limit exceeded` on broad multi-chart prompts.
+- Some generated scripts returned partial `metrics` payload (missing `column_profile` and statistical blocks).
+- Compose stage could return generic "request processed" style responses without column-level grounding.
+
+Implemented fixes:
+- Added adaptive artifact budget:
+  - base `COMPLEX_ANALYTICS_MAX_ARTIFACTS` (increased),
+  - hard cap `COMPLEX_ANALYTICS_MAX_ARTIFACTS_HARD_CAP`,
+  - request/plan-aware boost (visual/dependency/broad-query and table width signals).
+- Added executor-side metrics enrichment from dataframe:
+  - backfills `column_profile`, `numeric_summary`, `datetime_summary`, `categorical_summary`, `relationship_findings`, and insights when script output is incomplete.
+- Strengthened compose quality gate:
+  - blocks generic "request processed" responses,
+  - requires concrete metric/column grounding against execution context.
+- Strengthened codegen prompt contract for broad-analysis requests:
+  - explicit requirement for profile bundle + relationship analysis + multiple meaningful charts when feasible.
+
+Verification:
+- `tests/unit/test_complex_analytics_analysis_enrichment_module.py`
+- `tests/unit/test_complex_analytics_execution_limits_module.py`
+- `tests/unit/test_complex_analytics_composer_module.py`
+- `tests/unit/test_complex_analytics_executor.py`
+- `tests/integration/test_complex_analytics_path.py`
+
 ## Regression Verification
 
 Executed test gates:

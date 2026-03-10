@@ -46,6 +46,22 @@ class ComposeMeta:
         }
 
 
+def _is_aihub_policy_route(*, model_source: Optional[str], provider_mode: Optional[str]) -> bool:
+    source = str(model_source or "").strip().lower()
+    mode = str(provider_mode or "").strip().lower()
+    return source in {"aihub", "ai_hub", "ai-hub"} and mode == "policy"
+
+
+def _resolve_compose_timeout_seconds(*, model_source: Optional[str], provider_mode: Optional[str]) -> float:
+    base_timeout = float(getattr(settings, "COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS", 10.0) or 10.0)
+    if not _is_aihub_policy_route(model_source=model_source, provider_mode=provider_mode):
+        return base_timeout
+    policy_timeout = float(
+        getattr(settings, "COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS_AIHUB_POLICY", base_timeout) or base_timeout
+    )
+    return max(base_timeout, policy_timeout)
+
+
 def wants_python_code(query: str) -> bool:
     q = (query or "").lower()
     return any(token in q for token in ("python", "код", "script", "notebook", "пайтон", "питон"))
@@ -391,14 +407,17 @@ async def compose_complex_analytics_response(
         execution_query=query,
         execution_context=context,
     )
-    timeout_seconds = float(getattr(settings, "COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS", 10.0) or 10.0)
-    max_tokens = int(getattr(settings, "COMPLEX_ANALYTICS_RESPONSE_MAX_TOKENS", 1800) or 1800)
     routing = resolve_complex_analytics_routing(
         model_source=model_source,
         provider_mode=provider_mode,
     )
     selected_source = str(routing.get("model_source") or "local")
     selected_mode = str(routing.get("provider_mode") or "explicit")
+    timeout_seconds = _resolve_compose_timeout_seconds(
+        model_source=selected_source,
+        provider_mode=selected_mode,
+    )
+    max_tokens = int(getattr(settings, "COMPLEX_ANALYTICS_RESPONSE_MAX_TOKENS", 1800) or 1800)
     meta = ComposeMeta(
         provider_source=selected_source,
         provider_mode=selected_mode,
@@ -428,43 +447,57 @@ async def compose_complex_analytics_response(
             meta.response_status = "fallback"
             meta.response_error_code = "empty_response"
             logger.info(
-                "complex_analytics.compose status=fallback reason=empty_response provider=%s mode=%s",
+                "complex_analytics.compose status=fallback reason=empty_response provider=%s mode=%s timeout=%ss",
                 selected_source,
                 selected_mode,
+                timeout_seconds,
             )
-            return "", meta.as_dict()
+            payload = meta.as_dict()
+            payload["response_timeout_seconds"] = timeout_seconds
+            return "", payload
         if not is_compose_response_sufficient(text=text, query=query, execution_context=context):
             meta.response_status = "fallback"
             meta.response_error_code = "low_content_quality"
             logger.info(
-                "complex_analytics.compose status=fallback reason=low_content_quality provider=%s mode=%s",
+                "complex_analytics.compose status=fallback reason=low_content_quality provider=%s mode=%s timeout=%ss",
                 selected_source,
                 selected_mode,
+                timeout_seconds,
             )
-            return "", meta.as_dict()
+            payload = meta.as_dict()
+            payload["response_timeout_seconds"] = timeout_seconds
+            return "", payload
         meta.response_status = "success"
         meta.model_route = response.get("model_route")
         meta.provider_effective = response.get("provider_effective")
         logger.info(
-            "complex_analytics.compose status=success provider=%s model_route=%s",
+            "complex_analytics.compose status=success provider=%s model_route=%s timeout=%ss",
             meta.provider_effective or selected_source,
             meta.model_route,
+            timeout_seconds,
         )
-        return text, meta.as_dict()
+        payload = meta.as_dict()
+        payload["response_timeout_seconds"] = timeout_seconds
+        return text, payload
     except TimeoutError:
         meta.response_status = "error"
         meta.response_error_code = "timeout"
         logger.info(
-            "complex_analytics.compose status=error reason=timeout provider=%s mode=%s",
+            "complex_analytics.compose status=error reason=timeout provider=%s mode=%s timeout=%ss",
             selected_source,
             selected_mode,
+            timeout_seconds,
         )
-        return "", meta.as_dict()
+        payload = meta.as_dict()
+        payload["response_timeout_seconds"] = timeout_seconds
+        return "", payload
     except Exception as exc:  # pragma: no cover - provider/runtime dependent
         meta.response_status = "error"
         meta.response_error_code = f"runtime:{type(exc).__name__}"
         logger.warning("Complex analytics response composition failed: %s", exc)
-        return "", meta.as_dict()
+        payload = meta.as_dict()
+        payload["response_timeout_seconds"] = timeout_seconds
+        return "", payload
 
 
 # Compatibility aliases.

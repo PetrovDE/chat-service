@@ -131,6 +131,7 @@ Not fully aligned with target clean boundaries:
   - final response composition.
 - For broad analytics prompts with required charts, codegen now applies safe auto-repair when generated code misses visualization contract (`save_plot(...)`) before template fallback.
 - Compose stage now has a quality gate: weak/non-informative LLM report text falls back to local structured formatter built from executed metrics/artifacts.
+- AI HUB policy latency in complex analytics now uses provider-aware timeout overrides on plan/codegen/compose stages (`max(base, aihub_policy_override)` per stage) to reduce false timeout fallbacks.
 - Internal architecture for this route is modularized into:
   - `planner.py`, `codegen.py`, `sandbox.py`, `executor.py`, `composer.py`, `artifacts.py`, `errors.py`, `telemetry.py`,
   - `dataset_context.py`, `template_codegen.py`, `report_quality.py`, `localization.py`, `auto_visual_patch.py`, `executor_support.py`.

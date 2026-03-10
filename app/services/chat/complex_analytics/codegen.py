@@ -42,6 +42,45 @@ class CodegenMeta:
         return dict(self.payload)
 
 
+def _is_aihub_policy_route(*, model_source: Optional[str], provider_mode: Optional[str]) -> bool:
+    source = str(model_source or "").strip().lower()
+    mode = str(provider_mode or "").strip().lower()
+    return source in {"aihub", "ai_hub", "ai-hub"} and mode == "policy"
+
+
+def _resolve_timeout_seconds(
+    *,
+    base_attr: str,
+    policy_override_attr: str,
+    model_source: Optional[str],
+    provider_mode: Optional[str],
+    default_value: float,
+) -> float:
+    base_timeout = float(getattr(settings, base_attr, default_value) or default_value)
+    if not _is_aihub_policy_route(model_source=model_source, provider_mode=provider_mode):
+        return base_timeout
+    policy_timeout = float(getattr(settings, policy_override_attr, base_timeout) or base_timeout)
+    return max(base_timeout, policy_timeout)
+
+
+def _resolve_codegen_timeouts(*, model_source: Optional[str], provider_mode: Optional[str]) -> Tuple[float, float]:
+    plan_timeout = _resolve_timeout_seconds(
+        base_attr="COMPLEX_ANALYTICS_CODEGEN_PLAN_TIMEOUT_SECONDS",
+        policy_override_attr="COMPLEX_ANALYTICS_CODEGEN_PLAN_TIMEOUT_SECONDS_AIHUB_POLICY",
+        model_source=model_source,
+        provider_mode=provider_mode,
+        default_value=6.0,
+    )
+    code_timeout = _resolve_timeout_seconds(
+        base_attr="COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS",
+        policy_override_attr="COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS_AIHUB_POLICY",
+        model_source=model_source,
+        provider_mode=provider_mode,
+        default_value=8.0,
+    )
+    return plan_timeout, code_timeout
+
+
 def build_codegen_prompt(
     *,
     analysis_plan: str,
@@ -166,9 +205,11 @@ async def generate_complex_analysis_code(
     )
     routing_source = str(routing.get("model_source") or "local")
     routing_mode = str(routing.get("provider_mode") or "explicit")
-    plan_timeout_seconds = float(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_PLAN_TIMEOUT_SECONDS", 6.0) or 6.0)
+    plan_timeout_seconds, code_timeout_seconds = _resolve_codegen_timeouts(
+        model_source=routing_source,
+        provider_mode=routing_mode,
+    )
     plan_max_tokens = int(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_PLAN_MAX_TOKENS", 900) or 900)
-    code_timeout_seconds = float(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS", 8.0) or 8.0)
     code_max_tokens = int(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_MAX_TOKENS", 2200) or 2200)
     force_local = bool(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_FORCE_LOCAL", False))
 
@@ -180,6 +221,8 @@ async def generate_complex_analysis_code(
             "provider_effective_plan": None,
             "provider_effective_codegen": None,
             "provider_overridden": bool(force_local),
+            "codegen_plan_timeout_seconds": plan_timeout_seconds,
+            "codegen_timeout_seconds": code_timeout_seconds,
         }
     )
 
@@ -297,12 +340,14 @@ async def generate_complex_analysis_code(
         meta["analysis_goal"] = str((plan_result.analysis_goal if plan_result else parsed_plan.get("analysis_goal")) or query)
         meta["plan_contract"] = dict(plan_contract)
         logger.info(
-            "complex_analytics.codegen_plan status=success provider=%s mode=%s expects_visualization=%s expects_dependency=%s expects_nlp=%s",
+            "complex_analytics.codegen_plan status=success provider=%s mode=%s expects_visualization=%s expects_dependency=%s expects_nlp=%s timeout_plan=%ss timeout_codegen=%ss",
             routing_source,
             routing_mode,
             bool(plan_contract.get("expects_visualization")),
             bool(plan_contract.get("expects_dependency")),
             bool(plan_contract.get("expects_nlp")),
+            plan_timeout_seconds,
+            code_timeout_seconds,
         )
         codegen_prompt = build_codegen_prompt(
             analysis_plan=(plan_result.python_generation_prompt if plan_result else plan_analysis_prompt),
@@ -385,9 +430,11 @@ async def generate_complex_analysis_code(
         return candidate, CodegenMeta(meta).as_dict()
     except TimeoutError:
         logger.info(
-            "complex_analytics.codegen_execute status=fallback reason=timeout provider=%s mode=%s",
+            "complex_analytics.codegen_execute status=fallback reason=timeout provider=%s mode=%s timeout_plan=%ss timeout_codegen=%ss",
             routing_source,
             routing_mode,
+            plan_timeout_seconds,
+            code_timeout_seconds,
         )
         meta["codegen_status"] = "fallback"
         meta["codegen_error"] = "timeout"

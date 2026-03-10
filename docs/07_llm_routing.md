@@ -25,6 +25,11 @@ Important behavior:
   - `codegen` LLM call (Python only),
   - sandbox execution,
   - final `compose` LLM call for user-facing report with quality gate and local formatter fallback.
+- For `complex_analytics` in `aihub + policy` route mode, provider-aware timeout overrides are applied for slow policy path latency:
+  - `COMPLEX_ANALYTICS_CODEGEN_PLAN_TIMEOUT_SECONDS_AIHUB_POLICY`
+  - `COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS_AIHUB_POLICY`
+  - `COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS_AIHUB_POLICY`
+  Effective timeout is `max(base_timeout, aihub_policy_timeout)` per stage.
 - The route is implemented as modular package `app/services/chat/complex_analytics/` with separate planner/codegen/sandbox/executor/composer modules.
 - Codegen/compose use the selected provider/model from request/conversation resolution; explicit local/provider selection has priority.
 - `COMPLEX_ANALYTICS_CODEGEN_FORCE_LOCAL=true` can be used as an operational override, but is not the default behavior contract.
@@ -101,8 +106,11 @@ Execution-plane telemetry fields (non-breaking extension):
 - `rag_debug.complex_analytics.complex_analytics_codegen.provider`: effective provider for codegen stage
 - `rag_debug.complex_analytics.codegen_auto_visual_patch_applied`: bool
 - `rag_debug.complex_analytics.complex_analytics_codegen.auto_visual_patch_applied`: bool
+- `rag_debug.complex_analytics.codegen_plan_timeout_seconds`: effective timeout for plan stage
+- `rag_debug.complex_analytics.codegen_timeout_seconds`: effective timeout for codegen stage
 - `rag_debug.complex_analytics.response_status`: `success | fallback | error | not_attempted`
 - `rag_debug.complex_analytics.response_error_code`: may include `low_content_quality` and `broad_query_local_formatter`
+- `rag_debug.complex_analytics.response_timeout_seconds`: effective timeout for compose stage
 - `rag_debug.complex_analytics.sandbox.secure_eval`: sandbox execution guard flag
 
 ## Update 2026-03-06

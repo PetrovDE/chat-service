@@ -103,3 +103,15 @@ Trade-offs:
   - `_apply_compose_stage` in `executor.py` remains compatibility wrapper.
   (no external API contract changes).
 
+## Update 2026-03-10
+- AI HUB policy path latency handling was tightened for complex analytics:
+  - provider-aware timeout overrides added for plan/codegen/compose stages,
+  - effective stage timeout is `max(base_timeout, aihub_policy_timeout)`.
+- New settings:
+  - `COMPLEX_ANALYTICS_CODEGEN_PLAN_TIMEOUT_SECONDS_AIHUB_POLICY`
+  - `COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS_AIHUB_POLICY`
+  - `COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS_AIHUB_POLICY`
+- Consequence:
+  - fewer false fallback outcomes (`reason=timeout`) on slow AI HUB policy responses,
+  - no external API contract changes (debug-only optional fields).
+

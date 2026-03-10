@@ -102,7 +102,10 @@ Chat routing fields:
   - `rag_debug.complex_analytics.complex_analytics_codegen` (optional)
   - `rag_debug.complex_analytics.codegen_auto_visual_patch_applied` (optional)
   - `rag_debug.complex_analytics.complex_analytics_codegen.auto_visual_patch_applied` (optional)
+  - `rag_debug.complex_analytics.codegen_plan_timeout_seconds` (optional)
+  - `rag_debug.complex_analytics.codegen_timeout_seconds` (optional)
   - `rag_debug.complex_analytics.sandbox.secure_eval` (optional)
+  - `rag_debug.complex_analytics.response_timeout_seconds` (optional)
 
 Chat payload examples:
 - Local explicit (no AI HUB attempts expected):
@@ -208,6 +211,19 @@ Language behavior:
 - Compose stage may fallback to local structured formatter when LLM output quality is too low (`response_error_code=low_content_quality`), without API contract changes.
 - For broad full-analysis prompts, compose stage may be intentionally bypassed in favor of deterministic local formatter output (`response_error_code=broad_query_local_formatter`).
 - New optional debug fields for complex analytics pipeline are documented above and remain non-breaking.
+
+## Update 2026-03-10 (Complex Analytics AI HUB Timeout Tuning)
+
+- Internal behavior update for `model_source=aihub` and `provider_mode=policy`:
+  - codegen plan/codegen and compose stages now use provider-aware timeout overrides.
+  - effective timeout is `max(base, aihub_policy_override)` for each stage.
+- New settings:
+  - `COMPLEX_ANALYTICS_CODEGEN_PLAN_TIMEOUT_SECONDS_AIHUB_POLICY`
+  - `COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS_AIHUB_POLICY`
+  - `COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS_AIHUB_POLICY`
+- API compatibility:
+  - HTTP/SSE contract is unchanged.
+  - Added optional debug fields only (`codegen_plan_timeout_seconds`, `codegen_timeout_seconds`, `response_timeout_seconds`).
 
 ## Internal Refactor Note (2026-03-03)
 

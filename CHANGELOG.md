@@ -2,6 +2,27 @@
 
 ## [Unreleased] - 2026-03-03
 
+### Complex Analytics AI HUB Policy Timeout Tuning (2026-03-10)
+- Fixed complex analytics false timeout fallback in `aihub + policy` route by adding provider-aware stage timeouts:
+  - `COMPLEX_ANALYTICS_CODEGEN_PLAN_TIMEOUT_SECONDS_AIHUB_POLICY`
+  - `COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS_AIHUB_POLICY`
+  - `COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS_AIHUB_POLICY`
+- Stage timeout selection now uses `max(base_timeout, aihub_policy_timeout)` for:
+  - plan generation,
+  - code generation,
+  - final response composition.
+- Extended debug telemetry (non-breaking, optional fields):
+  - `complex_analytics.codegen_plan_timeout_seconds`
+  - `complex_analytics.codegen_timeout_seconds`
+  - `complex_analytics.response_timeout_seconds`
+- Added unit regression coverage:
+  - `tests/unit/test_complex_analytics_codegen_module.py::test_codegen_aihub_policy_timeout_override_allows_slow_provider`
+  - `tests/unit/test_complex_analytics_composer_module.py::test_compose_aihub_policy_timeout_override_allows_slow_provider`
+
+Migration note:
+- External HTTP/SSE API contract is unchanged.
+- Change is internal runtime behavior and optional debug-field extension only.
+
 ### Complex Analytics Modular Refactor (2026-03-06)
 - Refactored `complex_analytics` implementation from monolithic module to modular package:
   - `app/services/chat/complex_analytics/{planner,codegen,sandbox,executor,composer,artifacts,errors,telemetry}.py`

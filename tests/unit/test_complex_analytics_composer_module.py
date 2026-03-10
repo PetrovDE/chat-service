@@ -78,3 +78,49 @@ Review outliers and segment by category for next analysis iteration.
         execution_context={"artifacts": [{"url": "/uploads/x.png"}]},
     )
     assert ok is True
+
+
+def test_compose_aihub_policy_timeout_override_allows_slow_provider(monkeypatch):
+    async def fake_generate_response(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        await asyncio.sleep(0.03)
+        return {
+            "response": """
+## Full Analytics Report
+### 1) Summary
+Rows and columns metrics are calculated.
+### 2) Key Insights
+Distribution and dependency patterns detected.
+### 3) Relationships Between Features
+Strong correlation observed between amount and duration.
+### 4) Visualizations
+Histogram chart available at /uploads/x.png with interpretation.
+![histogram](/uploads/x.png)
+### 5) Recommendations
+Review outliers and segment by category for next analysis iteration.
+""",
+            "model_route": "aihub",
+            "provider_effective": "aihub",
+        }
+
+    monkeypatch.setattr(composer.llm_manager, "generate_response", fake_generate_response)
+    monkeypatch.setattr(composer.settings, "COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(composer.settings, "COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS_AIHUB_POLICY", 0.2)
+
+    text, meta = asyncio.run(
+        composer.compose_complex_analytics_response(
+            query="Analyze dataset and build charts",
+            table_name="sheet_1",
+            metrics={"rows_total": 10, "columns_total": 3, "columns": ["a", "b", "c"]},
+            notes=[],
+            artifacts=[{"kind": "histogram", "name": "x.png", "path": "uploads/x.png", "url": "/uploads/x.png"}],
+            executed_code="result = {}",
+            model_source="aihub",
+            provider_mode="policy",
+            model_name="gpt-4.1-mini",
+        )
+    )
+
+    assert "Full Analytics Report" in text
+    assert meta.get("response_status") == "success"
+    assert float(meta.get("response_timeout_seconds") or 0.0) >= 0.2

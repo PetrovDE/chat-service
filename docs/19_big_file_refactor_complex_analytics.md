@@ -97,6 +97,26 @@ Next iteration (quality):
   - metric `online_report.metrics.complex_analytics_report_quality`
   - gate config `tests/evals/gates.preprod.json`
 
+## AI HUB Policy Timeout Fix (2026-03-10)
+
+Observed issue:
+- `complex_analytics` on `aihub + policy` could fallback with `reason=timeout` before provider response arrived, leading to weak/generic output paths.
+
+Implemented fix:
+- Added provider-aware timeout overrides for slow AI HUB policy path:
+  - `COMPLEX_ANALYTICS_CODEGEN_PLAN_TIMEOUT_SECONDS_AIHUB_POLICY`
+  - `COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS_AIHUB_POLICY`
+  - `COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS_AIHUB_POLICY`
+- Effective timeout per stage is now computed as `max(base_timeout, aihub_policy_override)`.
+- Added debug trace fields for effective timeouts:
+  - `complex_analytics.codegen_plan_timeout_seconds`
+  - `complex_analytics.codegen_timeout_seconds`
+  - `complex_analytics.response_timeout_seconds`
+
+Verification:
+- `tests/unit/test_complex_analytics_codegen_module.py`
+- `tests/unit/test_complex_analytics_composer_module.py`
+
 ## Regression Verification
 
 Executed test gates:

@@ -42,10 +42,10 @@ Request-id behavior contract:
 - `complex_analytics_codegen_total{status=success|fallback,reason=...}`
 
 Structured log events for complex analytics pipeline:
-- `complex_analytics.codegen_plan` (`status`, `reason`, `provider`, `mode`, contract flags)
-- `complex_analytics.codegen_execute` (`status`, `reason`, `provider`, `model_route`)
+- `complex_analytics.codegen_plan` (`status`, `reason`, `provider`, `mode`, contract flags, effective timeouts)
+- `complex_analytics.codegen_execute` (`status`, `reason`, `provider`, `model_route`, effective timeouts)
   - includes `status=success_via_auto_visual_patch` when visualization contract is repaired before execution
-- `complex_analytics.compose` (`status`, `reason`, `provider`, `model_route`)
+- `complex_analytics.compose` (`status`, `reason`, `provider`, `model_route`, effective timeout)
   - includes `status=fallback reason=low_content_quality` when compose output is too weak and local formatter is used
   - includes `status=fallback reason=broad_query_local_formatter` when broad full-analysis query is answered directly by local formatter policy
 - `chat_route_decision` (includes `execution_route`, `executor_status`, `executor_error_code`, `artifacts_count`)
@@ -67,8 +67,13 @@ Executor applies retention cleanup on each run for artifact root:
 Codegen controls:
 - `COMPLEX_ANALYTICS_CODEGEN_ENABLED`
 - `COMPLEX_ANALYTICS_CODEGEN_FORCE_LOCAL`
+- `COMPLEX_ANALYTICS_CODEGEN_PLAN_TIMEOUT_SECONDS`
 - `COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS`
+- `COMPLEX_ANALYTICS_CODEGEN_PLAN_TIMEOUT_SECONDS_AIHUB_POLICY`
+- `COMPLEX_ANALYTICS_CODEGEN_TIMEOUT_SECONDS_AIHUB_POLICY`
 - `COMPLEX_ANALYTICS_CODEGEN_MAX_TOKENS`
+- `COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS`
+- `COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS_AIHUB_POLICY`
 - `COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK` (default: true)
 - `COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK` (default: true)
 - `COMPLEX_ANALYTICS_PREFER_LOCAL_COMPOSER_FOR_BROAD_QUERY` (default: true)
@@ -92,6 +97,9 @@ Codegen controls:
   - `complex_analytics_codegen.provider`
   - `codegen_auto_visual_patch_applied`
   - `complex_analytics_codegen.auto_visual_patch_applied`
+  - `codegen_plan_timeout_seconds`
+  - `codegen_timeout_seconds`
+  - `response_timeout_seconds`
   - `sandbox.secure_eval`
 - Internal implementation now emits these fields from modular package `app/services/chat/complex_analytics/*`; metric/log keys are unchanged.
 - Additional refactor in chat-plane orchestration (`orchestrator_helpers.py`, `rag_prompt_routes.py`) does not change metric or structured-log key names.

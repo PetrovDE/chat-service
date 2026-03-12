@@ -4,6 +4,7 @@ from app.domain.chat.query_planner import (
     INTENT_COMPLEX_ANALYTICS,
     INTENT_NARRATIVE_RETRIEVAL,
     INTENT_TABULAR_AGGREGATE,
+    INTENT_TABULAR_LOOKUP,
     INTENT_TABULAR_PROFILE,
     ROUTE_COMPLEX_ANALYTICS,
     ROUTE_DETERMINISTIC_ANALYTICS,
@@ -53,6 +54,16 @@ def test_planner_routes_aggregate_query_to_deterministic():
     )
     assert decision.route == ROUTE_DETERMINISTIC_ANALYTICS
     assert decision.intent == INTENT_TABULAR_AGGREGATE
+    assert decision.requires_clarification is False
+
+
+def test_planner_routes_lookup_query_to_deterministic():
+    decision = plan_query(
+        query="Find rows where region is north",
+        files=[_tabular_file()],
+    )
+    assert decision.route == ROUTE_DETERMINISTIC_ANALYTICS
+    assert decision.intent == INTENT_TABULAR_LOOKUP
     assert decision.requires_clarification is False
 
 

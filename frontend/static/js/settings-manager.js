@@ -6,6 +6,7 @@ class SettingsManager {
         this.settings = {
             mode: 'local',
             model: 'llama3.1:8b',
+            embedding_model: null,
             temperature: 0.7,
             max_tokens: 2048,
             prompt_max_chars: 50000,
@@ -28,64 +29,116 @@ class SettingsManager {
                 return this.loadAvailableModels('local');
             }
 
-            const modelsData = await this.apiService.get(`/models/list?mode=${selectedMode}`);
-            console.log('Models response:', modelsData);
+            const [chatModelsData, embeddingModelsData] = await Promise.all([
+                this.apiService.get(`/models/list?mode=${selectedMode}&capability=chat`),
+                this.apiService.get(`/models/list?mode=${selectedMode}&capability=embedding`),
+            ]);
 
-            const modelSelector = document.getElementById('model-selector');
-            if (!modelSelector || !modelsData) return;
+            this.renderModelSelector({
+                selectorId: 'model-selector',
+                modelsData: chatModelsData,
+                settingsKey: 'model',
+                emptyLabel: 'No chat models',
+                collectCapabilities: true,
+            });
+            this.renderModelSelector({
+                selectorId: 'embedding-model-selector',
+                modelsData: embeddingModelsData,
+                settingsKey: 'embedding_model',
+                emptyLabel: 'No embedding models',
+                collectCapabilities: false,
+            });
 
-            let modelsList = [];
-            if (Array.isArray(modelsData)) {
-                modelsList = modelsData;
-            } else if (modelsData.models && Array.isArray(modelsData.models)) {
-                modelsList = modelsData.models;
-            } else if (modelsData.data && Array.isArray(modelsData.data)) {
-                modelsList = modelsData.data;
-            }
-
-            if (modelsList.length === 0) {
-                modelSelector.innerHTML = '<option value="">Нет доступных моделей</option>';
-                console.warn('No models available for mode:', selectedMode);
-                this.updateModelCapsHint('');
-                return;
-            }
-
-            this.modelCapabilities = {};
-            modelSelector.innerHTML = modelsList.map((model) => {
-                const modelValue = typeof model === 'string' ? model : (model.name || model.id || String(model));
-                const modelLabel = typeof model === 'string' ? model : (model.name || model.id || String(model));
-
-                if (typeof model === 'object' && model) {
-                    this.modelCapabilities[modelValue] = {
-                        context_window: Number(model.context_window) || null,
-                        max_output_tokens: Number(model.max_output_tokens) || null,
-                    };
-                }
-
-                return `<option value="${modelValue}">${modelLabel}</option>`;
-            }).join('');
-
-            if (this.settings.model) {
-                const optionExists = Array.from(modelSelector.options).some((opt) => opt.value === this.settings.model);
-                if (optionExists) {
-                    modelSelector.value = this.settings.model;
-                } else {
-                    const firstModel = typeof modelsList[0] === 'string' ? modelsList[0] : (modelsList[0].name || modelsList[0].id);
-                    this.settings.model = firstModel;
-                    modelSelector.value = firstModel;
-                    console.log('Current model not found, selected first:', firstModel);
-                }
-            }
-
-            this.applyModelCapabilities(modelSelector.value || this.settings.model);
-            console.log('Loaded', modelsList.length, 'models for mode:', selectedMode);
+            const selectedChatModel = document.getElementById('model-selector')?.value || this.settings.model;
+            this.applyModelCapabilities(selectedChatModel);
+            console.log('Loaded provider-aware chat/embedding models for mode:', selectedMode);
         } catch (error) {
             console.error('Load models error:', error);
             const modelSelector = document.getElementById('model-selector');
             if (modelSelector) {
-                modelSelector.innerHTML = '<option value="">Ошибка загрузки моделей</option>';
+                modelSelector.innerHTML = '<option value="">Model load error</option>';
+            }
+            const embeddingSelector = document.getElementById('embedding-model-selector');
+            if (embeddingSelector) {
+                embeddingSelector.innerHTML = '<option value="">Model load error</option>';
             }
             this.updateModelCapsHint('');
+        }
+    }
+
+    extractModelsList(modelsData) {
+        if (!modelsData) return [];
+        if (Array.isArray(modelsData)) return modelsData;
+        if (Array.isArray(modelsData.models)) return modelsData.models;
+        if (Array.isArray(modelsData.data)) return modelsData.data;
+        return [];
+    }
+
+    renderModelSelector({ selectorId, modelsData, settingsKey, emptyLabel, collectCapabilities = false }) {
+        const selector = document.getElementById(selectorId);
+        if (!selector) return;
+
+        const modelsList = this.extractModelsList(modelsData);
+        const defaultModel = typeof modelsData?.default_model === 'string' ? modelsData.default_model : null;
+
+        const options = [];
+        const seen = new Set();
+        for (const model of modelsList) {
+            const modelValue = typeof model === 'string' ? model : (model?.name || model?.id || String(model));
+            if (!modelValue || seen.has(modelValue)) continue;
+            seen.add(modelValue);
+            options.push(model);
+        }
+
+        if (defaultModel && !seen.has(defaultModel)) {
+            options.unshift({ name: defaultModel, is_default: true });
+            seen.add(defaultModel);
+        }
+
+        if (options.length === 0) {
+            selector.innerHTML = `<option value="">${emptyLabel}</option>`;
+            if (settingsKey === 'embedding_model') {
+                this.settings.embedding_model = null;
+            }
+            return;
+        }
+
+        if (collectCapabilities) {
+            this.modelCapabilities = {};
+        }
+
+        selector.innerHTML = options.map((model) => {
+            const modelValue = typeof model === 'string' ? model : (model.name || model.id || String(model));
+            const modelLabel = typeof model === 'string' ? model : (model.name || model.id || String(model));
+
+            if (collectCapabilities && typeof model === 'object' && model) {
+                this.modelCapabilities[modelValue] = {
+                    context_window: Number(model.context_window) || null,
+                    max_output_tokens: Number(model.max_output_tokens) || null,
+                };
+            }
+
+            return `<option value="${modelValue}">${modelLabel}</option>`;
+        }).join('');
+
+        const currentValue = this.settings[settingsKey];
+        const optionExists = currentValue
+            ? Array.from(selector.options).some((opt) => opt.value === currentValue)
+            : false;
+
+        let selectedValue = null;
+        if (optionExists) {
+            selectedValue = currentValue;
+        } else if (defaultModel && seen.has(defaultModel)) {
+            selectedValue = defaultModel;
+        } else {
+            const first = options[0];
+            selectedValue = typeof first === 'string' ? first : (first.name || first.id || null);
+        }
+
+        if (selectedValue) {
+            selector.value = selectedValue;
+            this.settings[settingsKey] = selectedValue;
         }
     }
 
@@ -102,6 +155,11 @@ class SettingsManager {
     setModel(model) {
         this.settings.model = model;
         console.log('Model set to:', model);
+    }
+
+    setEmbeddingModel(model) {
+        this.settings.embedding_model = model || null;
+        console.log('Embedding model set to:', this.settings.embedding_model);
     }
 
     setTemperature(temperature) {
@@ -165,14 +223,20 @@ class SettingsManager {
 
     applySettings() {
         const modelSelector = document.getElementById('model-selector');
+        const embeddingSelector = document.getElementById('embedding-model-selector');
         const tempSlider = document.getElementById('temperatureSlider');
         const tempValue = document.getElementById('temperatureValue');
         const maxTokensInput = document.getElementById('maxTokensInput');
         const promptMaxCharsInput = document.getElementById('promptMaxCharsInput');
+        const ragDebugToggle = document.getElementById('ragDebugToggle');
 
         if (modelSelector && modelSelector.value) {
             this.settings.model = modelSelector.value;
             this.applyModelCapabilities(modelSelector.value);
+        }
+
+        if (embeddingSelector && embeddingSelector.value) {
+            this.settings.embedding_model = embeddingSelector.value;
         }
 
         if (tempSlider && tempValue) {
@@ -199,6 +263,7 @@ class SettingsManager {
 
     setupUI() {
         const modelSelector = document.getElementById('model-selector');
+        const embeddingSelector = document.getElementById('embedding-model-selector');
         const tempSlider = document.getElementById('temperatureSlider');
         const tempValue = document.getElementById('temperatureValue');
         const maxTokensInput = document.getElementById('maxTokensInput');
@@ -209,6 +274,12 @@ class SettingsManager {
             modelSelector.addEventListener('change', (e) => {
                 this.setModel(e.target.value);
                 this.applyModelCapabilities(e.target.value);
+            });
+        }
+
+        if (embeddingSelector) {
+            embeddingSelector.addEventListener('change', (e) => {
+                this.setEmbeddingModel(e.target.value);
             });
         }
 

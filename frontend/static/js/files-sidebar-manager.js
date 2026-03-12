@@ -1,3 +1,5 @@
+import { formatRelativeTimestamp } from './time-format.js';
+
 export class FilesSidebarManager {
     constructor(apiService, uiController) {
         this.apiService = apiService;
@@ -109,7 +111,7 @@ export class FilesSidebarManager {
         const icon = this.getFileIcon(file.file_type);
         const statusBadge = this.getStatusBadge(file.is_processed);
         const fileSize = this.formatFileSize(file.file_size);
-        const uploadDate = this.formatDate(file.uploaded_at);
+        const uploadDate = formatRelativeTimestamp(file.uploaded_at);
         const conversationInfo = this.renderConversationInfo(file.conversation_ids);
 
         return `
@@ -137,7 +139,7 @@ export class FilesSidebarManager {
 
     renderRetryAction(file) {
         const status = String(file?.is_processed || '');
-        if (status !== 'failed' && status !== 'partial_success') {
+        if (status !== 'failed' && status !== 'partial_success' && status !== 'partial_failed') {
             return '';
         }
         return `<button class="file-item-btn" data-action="retry" data-file-id="${file.id}" type="button">Retry</button>`;
@@ -165,6 +167,7 @@ export class FilesSidebarManager {
             txt: 'TXT',
             md: 'MD',
             csv: 'CSV',
+            tsv: 'TSV',
             xlsx: 'XLSX',
             xls: 'XLS',
             json: 'JSON',
@@ -180,11 +183,17 @@ export class FilesSidebarManager {
         if (status === 'processing') {
             return '<span class="file-item-status processing">Processing</span>';
         }
+        if (status === 'queued' || status === 'parsing' || status === 'parsed' || status === 'chunking' || status === 'embedding' || status === 'indexing') {
+            return '<span class="file-item-status processing">Processing</span>';
+        }
         if (status === 'failed') {
             return '<span class="file-item-status failed">Failed</span>';
         }
-        if (status === 'partial_success') {
+        if (status === 'partial_success' || status === 'partial_failed') {
             return '<span class="file-item-status partial">Partial</span>';
+        }
+        if (status === 'uploaded') {
+            return '<span class="file-item-status pending">Uploaded</span>';
         }
         return '<span class="file-item-status pending">Pending</span>';
     }
@@ -194,24 +203,6 @@ export class FilesSidebarManager {
         const sizes = ['B', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(1024));
         return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
-    }
-
-    formatDate(dateString) {
-        if (!dateString) return '';
-
-        const date = new Date(dateString);
-        const now = new Date();
-        const diffMs = now - date;
-        const diffMins = Math.floor(diffMs / 60000);
-        const diffHours = Math.floor(diffMs / 3600000);
-        const diffDays = Math.floor(diffMs / 86400000);
-
-        if (diffMins < 1) return 'just now';
-        if (diffMins < 60) return `${diffMins} min ago`;
-        if (diffHours < 24) return `${diffHours} h ago`;
-        if (diffDays < 7) return `${diffDays} d ago`;
-
-        return date.toLocaleDateString();
     }
 
     async handleDeleteFile(fileId) {
@@ -244,7 +235,7 @@ export class FilesSidebarManager {
         }
 
         const mode = document.getElementById('mode-selector')?.value || 'local';
-        const model = document.getElementById('model-selector')?.value || null;
+        const model = document.getElementById('embedding-model-selector')?.value || null;
 
         try {
             this.uiController.showLoading('Scheduling reprocessing...');

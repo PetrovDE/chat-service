@@ -39,6 +39,7 @@ class CRUDFile(CRUDBase[File, dict, dict]):
             file_type=file_type,
             file_size=file_size,
             content_preview=content_preview,
+            is_processed="uploaded",
         )
         db.add(db_obj)
         await db.commit()
@@ -85,7 +86,7 @@ class CRUDFile(CRUDBase[File, dict, dict]):
         """Get all processed files for a user"""
         query = (
             select(File)
-            .where(and_(File.user_id == user_id, File.is_processed.in_(["completed", "partial_success"])))
+            .where(and_(File.user_id == user_id, File.is_processed.in_(["completed", "partial_failed", "partial_success"])))
             .order_by(File.processed_at.desc())
         )
         result = await db.execute(query)
@@ -106,7 +107,7 @@ class CRUDFile(CRUDBase[File, dict, dict]):
                 and_(
                     ConversationFile.conversation_id == conversation_id,
                     File.user_id == user_id,
-                    File.is_processed.in_(["completed", "partial_success"]),
+                    File.is_processed.in_(["completed", "partial_failed", "partial_success"]),
                 )
             )
             .order_by(File.uploaded_at.desc())
@@ -178,7 +179,7 @@ class CRUDFile(CRUDBase[File, dict, dict]):
                 file.custom_metadata = {**existing, **metadata_patch}
             if status == "completed":
                 file.processed_at = datetime.utcnow()
-            if status == "partial_success":
+            if status in ("partial_success", "partial_failed"):
                 file.processed_at = datetime.utcnow()
             await db.commit()
             await db.refresh(file)

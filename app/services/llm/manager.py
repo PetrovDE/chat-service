@@ -21,7 +21,7 @@ class LLMManager:
 
     def __init__(self):
         self.default_source = settings.DEFAULT_MODEL_SOURCE
-        self.ollama_model = settings.OLLAMA_CHAT_MODEL or settings.EMBEDDINGS_MODEL
+        self.ollama_model = settings.OLLAMA_CHAT_MODEL
         self.openai_model = settings.OPENAI_MODEL
         self.aihub_model = settings.AIHUB_DEFAULT_MODEL
         self.providers: Dict[str, BaseLLMProvider] = {"ollama": ollama_provider, "openai": openai_provider, "aihub": aihub_provider}
@@ -212,11 +212,25 @@ class LLMManager:
     ) -> Optional[List[float]]:
         source = self._normalize_source(model_source or self.default_source)
         provider = self._get_provider(source)
-        model_name = self.provider_registry.resolve_embedding_model(source, model_name)
-
-        logger.debug("Generating embedding: source=%s, model=%s", source, model_name)
-
-        return await provider.generate_embedding(text=text, model=model_name)
+        requested_model = model_name
+        decision = self.provider_registry.resolve_embedding_model_decision(source, requested_model)
+        model_name = decision.resolved_model
+        logger.info(
+            "Embedding model resolution: source=%s requested=%s resolved=%s resolution_source=%s reason=%s",
+            source,
+            requested_model,
+            decision.resolved_model,
+            decision.source,
+            decision.reason,
+        )
+        vector = await provider.generate_embedding(text=text, model=model_name)
+        logger.info(
+            "Embedding generated: provider=%s model=%s dim=%s",
+            source,
+            model_name,
+            len(vector) if vector else 0,
+        )
+        return vector
 
 
 llm_manager = LLMManager()

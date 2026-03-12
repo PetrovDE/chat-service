@@ -82,6 +82,11 @@ def build_where(
     conversation_id: Optional[str],
     user_id: Optional[str],
     file_ids: Optional[List[str]],
+    sheet_names: Optional[List[str]] = None,
+    chunk_types: Optional[List[str]] = None,
+    namespace: Optional[str] = None,
+    embedding_mode: Optional[str] = None,
+    embedding_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     where: Dict[str, Any] = {}
     if file_ids:
@@ -91,6 +96,24 @@ def build_where(
 
     if user_id:
         where["user_id"] = user_id
+    if sheet_names:
+        where["sheet_name"] = {"$in": [str(x) for x in sheet_names]}
+    if chunk_types:
+        where["chunk_type"] = {"$in": [str(x) for x in chunk_types]}
+    if namespace:
+        where["collection"] = str(namespace)
+    if embedding_mode:
+        mode = str(embedding_mode).strip().lower()
+        if mode == "ollama":
+            mode = "local"
+        if mode == "corporate":
+            mode = "aihub"
+        where["embedding_mode"] = mode
+    if embedding_model:
+        model = str(embedding_model).strip()
+        if ":" in model:
+            _, model = model.split(":", 1)
+        where["embedding_model"] = model
 
     return where if where else None
 

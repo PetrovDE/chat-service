@@ -165,6 +165,7 @@ body {
 .message-input,
 #mode-selector,
 #model-selector,
+#embedding-model-selector,
 #ragModeSelector {
     width: 100%;
     background: var(--bg-elevated);
@@ -361,7 +362,7 @@ body {
 .composer-controls {
     grid-area: controls;
     display: grid;
-    grid-template-columns: minmax(150px, 220px) minmax(170px, 260px) minmax(150px, 220px);
+    grid-template-columns: minmax(140px, 200px) minmax(160px, 240px) minmax(160px, 240px) minmax(140px, 200px);
     gap: var(--space-2);
     align-items: center;
     justify-self: center;

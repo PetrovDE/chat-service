@@ -2,9 +2,8 @@
 File processing service: extraction -> chunking -> embeddings -> vector store.
 
 Notes:
-- For local/ollama embeddings use settings.OLLAMA_EMBED_MODEL first.
-- embedding_model from endpoint is treated as an override, but chat-model
-  names are ignored for embedding workflows.
+- Embedding model resolution is provider-aware and capability-aware.
+- chat model and embedding model are resolved independently.
 """
 
 from __future__ import annotations
@@ -38,6 +37,8 @@ from app.services.ingestion import (
     IngestionWorkerConfig,
     SqliteIngestionQueueAdapter,
 )
+from app.services.llm.exceptions import ProviderAuthError, ProviderConfigError, ProviderTransientError
+from app.services.llm.manager import llm_manager
 from app.services.tabular.storage_adapter import build_tabular_dataset_metadata
 
 logger = logging.getLogger(__name__)
@@ -125,39 +126,6 @@ async def _finalize_ingestion(
     )
 
 
-def _looks_like_chat_model(model_name: str) -> bool:
-    m = (model_name or "").lower().strip()
-    if not m:
-        return False
-    embed_tokens = ["embed", "embedding", "nomic", "bge", "e5", "gte", "text-embedding"]
-    if any(t in m for t in embed_tokens):
-        return False
-    chat_tokens = ["llama", "mistral", "phi", "qwen", "gemma", "yi", "deepseek", "mixtral", "gpt", "claude"]
-    return any(t in m for t in chat_tokens)
-
-
-def _resolve_embedding_model(mode: str, override: Optional[str]) -> str:
-    """Resolve which model should be used for embeddings."""
-    mode = (mode or "local").lower().strip()
-    if mode == "corporate":
-        mode = "aihub"
-
-    if mode in ("local", "ollama"):
-        base = settings.OLLAMA_EMBED_MODEL or settings.EMBEDDINGS_MODEL
-    elif mode == "aihub":
-        base = settings.AIHUB_EMBEDDING_MODEL or settings.EMBEDDINGS_MODEL
-    else:
-        base = settings.EMBEDDINGS_MODEL
-
-    if override:
-        if _looks_like_chat_model(override):
-            logger.warning("embedding_model override looks like chat model (%s). Using %s", override, base)
-            return base
-        return override
-
-    return base
-
-
 def _normalize_embedding_mode(mode: str) -> str:
     normalized = (mode or "local").strip().lower()
     if normalized == "corporate":
@@ -165,6 +133,136 @@ def _normalize_embedding_mode(mode: str) -> str:
     if normalized == "ollama":
         return "local"
     return normalized or "local"
+
+
+def _provider_source_for_embedding_mode(mode: str) -> str:
+    normalized = _normalize_embedding_mode(mode)
+    if normalized == "aihub":
+        return "aihub"
+    if normalized == "openai":
+        return "openai"
+    return "ollama"
+
+
+def _resolve_embedding_model(
+    mode: str,
+    override: Optional[str],
+) -> tuple[str, str, str, str]:
+    provider_source = _provider_source_for_embedding_mode(mode)
+    decision = llm_manager.provider_registry.resolve_embedding_model_decision(provider_source, override)
+    logger.info(
+        (
+            "Embedding resolution: mode=%s provider=%s requested_override=%s resolved_model=%s "
+            "resolution_source=%s reason=%s"
+        ),
+        mode,
+        provider_source,
+        override,
+        decision.resolved_model,
+        decision.source,
+        decision.reason,
+    )
+    return provider_source, decision.resolved_model, decision.source, decision.reason
+
+
+async def _resolve_runtime_embedding_model(
+    mode: str,
+    override: Optional[str],
+) -> tuple[str, str, str, str]:
+    provider_source, resolved_model, resolution_source, resolution_reason = _resolve_embedding_model(mode, override)
+
+    # Keep explicit valid overrides unchanged; caller asked for this exact model.
+    if resolution_source == "override":
+        return provider_source, resolved_model, resolution_source, resolution_reason
+
+    # Provider-aware capability check for local/Ollama defaults.
+    if provider_source != "ollama":
+        return provider_source, resolved_model, resolution_source, resolution_reason
+
+    try:
+        available_models = await llm_manager.get_available_models(source=provider_source)
+    except Exception:
+        available_models = []
+
+    if not available_models or resolved_model in available_models:
+        return provider_source, resolved_model, resolution_source, resolution_reason
+
+    candidate = llm_manager.provider_registry.model_resolver.pick_first_embedding_candidate(
+        provider=provider_source,
+        available_models=available_models,
+        preferred=resolved_model,
+    )
+    if candidate and candidate != resolved_model:
+        logger.warning(
+            (
+                "Embedding runtime fallback within provider: mode=%s provider=%s requested_override=%s "
+                "resolved_default=%s runtime_model=%s reason=%s"
+            ),
+            mode,
+            provider_source,
+            override,
+            resolved_model,
+            candidate,
+            "default_not_available",
+        )
+        return provider_source, candidate, "provider_capability", f"default_unavailable:{resolved_model}"
+
+    return provider_source, resolved_model, resolution_source, resolution_reason
+
+
+async def _preflight_validate_embedding(
+    *,
+    embedding_mode: str,
+    requested_embedding_model: Optional[str],
+    embedding_model: str,
+    resolution_source: str,
+    resolution_reason: str,
+) -> None:
+    if not bool(getattr(settings, "EMBEDDING_PREFLIGHT_VALIDATE", True)):
+        return
+
+    provider_source = _provider_source_for_embedding_mode(embedding_mode)
+    logger.info(
+        (
+            "Embedding preflight check: provider=%s mode=%s requested_model=%s resolved_model=%s "
+            "resolution_source=%s reason=%s"
+        ),
+        provider_source,
+        embedding_mode,
+        requested_embedding_model,
+        embedding_model,
+        resolution_source,
+        resolution_reason,
+    )
+    try:
+        probe_embedding = await llm_manager.generate_embedding(
+            text="embedding preflight probe",
+            model_source=provider_source,
+            model_name=embedding_model,
+        )
+    except ProviderTransientError as exc:
+        logger.warning(
+            "Embedding preflight transient error, skipping strict failure: provider=%s model=%s err=%s",
+            provider_source,
+            embedding_model,
+            exc,
+        )
+        return
+    except ProviderAuthError as exc:
+        raise ValueError(
+            f"Embedding auth failed: provider={provider_source} model={embedding_model} "
+            f"status={getattr(exc, 'status_code', None) or 'n/a'}"
+        ) from exc
+    except ProviderConfigError as exc:
+        raise ValueError(
+            f"Embedding model unavailable/config error: provider={provider_source} model={embedding_model} "
+            f"status={getattr(exc, 'status_code', None) or 'n/a'}"
+        ) from exc
+
+    if not probe_embedding:
+        raise ValueError(
+            f"Embedding preflight returned empty vector: provider={provider_source} model={embedding_model}"
+        )
 
 
 def _build_ingestion_idempotency_key(
@@ -232,11 +330,55 @@ async def process_file_async(
     embedding_model: Optional[str] = None,
 ) -> None:
     mode = _normalize_embedding_mode(embedding_mode)
-    resolved = _resolve_embedding_model(mode, embedding_model)
-    logger.info(
-        "Scheduling file processing: file_id=%s mode=%s model_override=%s resolved_model=%s path=%s",
-        file_id, mode, embedding_model, resolved, file_path
+    provider_source, resolved, resolution_source, resolution_reason = await _resolve_runtime_embedding_model(
+        mode,
+        embedding_model,
     )
+    await _preflight_validate_embedding(
+        embedding_mode=mode,
+        requested_embedding_model=embedding_model,
+        embedding_model=resolved,
+        resolution_source=resolution_source,
+        resolution_reason=resolution_reason,
+    )
+    logger.info(
+        (
+            "Scheduling file processing: file_id=%s mode=%s provider=%s requested_override=%s "
+            "resolved_model=%s resolution_source=%s path=%s"
+        ),
+        file_id,
+        mode,
+        provider_source,
+        embedding_model,
+        resolved,
+        resolution_source,
+        file_path,
+    )
+    async with AsyncSessionLocal() as db:
+        try:
+            await crud_file.update_processing_status(
+                db,
+                file_id=file_id,
+                status="queued",
+                embedding_model=f"{mode}:{resolved}",
+                metadata_patch={
+                    "ingestion_progress": {
+                        "status": "queued",
+                        "stage": "queued",
+                        "started_at": _utc_now_iso(),
+                        "finished_at": None,
+                        "total_chunks_expected": 0,
+                        "chunks_processed": 0,
+                        "chunks_failed": 0,
+                        "chunks_indexed": 0,
+                        "vector_upserts_expected": 0,
+                        "vector_upserts_actual": 0,
+                    },
+                    "error": None,
+                },
+            )
+        except Exception:
+            logger.warning("Failed to pre-mark file queued: file_id=%s", file_id, exc_info=True)
     worker = await _ensure_worker_started()
     job_payload = IngestionJobPayload(
         file_id=str(file_id),
@@ -290,10 +432,29 @@ async def process_file_background(
     embedding_model: Optional[str] = None,
 ) -> None:
     mode = _normalize_embedding_mode(embedding_mode)
-    resolved = _resolve_embedding_model(mode, embedding_model)
+    provider_source, resolved, resolution_source, resolution_reason = await _resolve_runtime_embedding_model(
+        mode,
+        embedding_model,
+    )
+    await _preflight_validate_embedding(
+        embedding_mode=mode,
+        requested_embedding_model=embedding_model,
+        embedding_model=resolved,
+        resolution_source=resolution_source,
+        resolution_reason=resolution_reason,
+    )
     logger.info(
-        "Running file processing (await): file_id=%s mode=%s model_override=%s resolved_model=%s path=%s",
-        file_id, mode, embedding_model, resolved, file_path
+        (
+            "Running file processing (await): file_id=%s mode=%s provider=%s requested_override=%s "
+            "resolved_model=%s resolution_source=%s path=%s"
+        ),
+        file_id,
+        mode,
+        provider_source,
+        embedding_model,
+        resolved,
+        resolution_source,
+        file_path,
     )
     await _process_file(file_id, file_path, mode, resolved)
 
@@ -345,7 +506,21 @@ async def recover_pending_file_jobs(limit: int = 200) -> int:
     async with AsyncSessionLocal() as db:
         stmt = (
             select(FileModel)
-            .where(FileModel.is_processed.in_(["pending", "processing"]))
+            .where(
+                FileModel.is_processed.in_(
+                    [
+                        "pending",
+                        "uploaded",
+                        "queued",
+                        "processing",
+                        "parsing",
+                        "parsed",
+                        "chunking",
+                        "embedding",
+                        "indexing",
+                    ]
+                )
+            )
             .order_by(FileModel.uploaded_at.asc())
             .limit(limit)
         )

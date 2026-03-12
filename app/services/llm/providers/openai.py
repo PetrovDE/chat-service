@@ -7,6 +7,7 @@ import httpx
 
 from app.core.config import settings
 from app.observability.metrics import inc_counter, observe_ms
+from app.services.llm.exceptions import ProviderAuthError, ProviderConfigError, ProviderTransientError
 from app.services.llm.providers.base import BaseLLMProvider
 from app.utils.retry import async_retry
 
@@ -112,7 +113,7 @@ class OpenAIProvider(BaseLLMProvider):
             raise
 
     async def generate_embedding(self, text: str, model: Optional[str] = None) -> Optional[List[float]]:
-        embedding_model = model or "text-embedding-ada-002"
+        embedding_model = model or settings.OPENAI_EMBEDDING_MODEL
         payload = {"model": embedding_model, "input": text}
         headers = self._get_headers()
         started = time.perf_counter()
@@ -127,11 +128,38 @@ class OpenAIProvider(BaseLLMProvider):
             observe_ms("llm_provider_duration_ms", (time.perf_counter() - started) * 1000.0, provider="openai", operation="embedding")
             inc_counter("llm_provider_success_total", provider="openai", operation="embedding")
             return data["data"][0]["embedding"]
-        except Exception as e:
-            logger.error("OpenAI embedding error: %s", e)
+        except httpx.HTTPStatusError as exc:
+            status = int(getattr(exc.response, "status_code", 0) or 0)
+            logger.error("OpenAI embedding HTTP error: status=%s model=%s", status, embedding_model, exc_info=True)
             inc_counter("llm_provider_error_total", provider="openai", operation="embedding")
-            return None
+            if status in {401, 403}:
+                raise ProviderAuthError(
+                    f"OpenAI embedding unauthorized (status={status})",
+                    provider="openai",
+                    status_code=status,
+                ) from exc
+            if status in {408, 425, 429} or 500 <= status <= 599:
+                raise ProviderTransientError(
+                    f"OpenAI embedding transient HTTP error (status={status})",
+                    provider="openai",
+                    status_code=status,
+                ) from exc
+            raise ProviderConfigError(
+                f"OpenAI embedding request failed (status={status})",
+                provider="openai",
+                status_code=status,
+            ) from exc
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError, httpx.ReadError) as exc:
+            logger.error("OpenAI embedding transient network error: %s", exc, exc_info=True)
+            inc_counter("llm_provider_error_total", provider="openai", operation="embedding")
+            raise ProviderTransientError(
+                "OpenAI embedding network/timeout failure",
+                provider="openai",
+            ) from exc
+        except Exception as e:
+            logger.error("OpenAI embedding error: %s", e, exc_info=True)
+            inc_counter("llm_provider_error_total", provider="openai", operation="embedding")
+            raise
 
 
 openai_provider = OpenAIProvider()
-

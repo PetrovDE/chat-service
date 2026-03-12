@@ -1,124 +1,169 @@
 # app/api/v1/endpoints/models.py
-from typing import Any, Dict
+from typing import Any, Dict, List
 import logging
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.core.config import settings
 from app.schemas import ModelsListResponse, ModelsStatusResponse
 from app.services.llm.manager import llm_manager
+from app.services.llm.model_resolver import CAP_CHAT, CAP_EMBEDDING, infer_model_capability
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 HTTP_TIMEOUT_MODELS = httpx.Timeout(10.0, connect=3.0)
 
 
-@router.get("/list", response_model=ModelsListResponse)
-async def list_models(mode: str = "local") -> Dict[str, Any]:
-    """List available models by provider mode."""
-    try:
-        logger.info("Getting models for mode: %s", mode)
+def _normalize_mode(mode: str) -> str:
+    return llm_manager.provider_registry.normalize_source(mode)
 
-        if mode in ["local", "ollama"]:
-            ollama_url = str(settings.EMBEDDINGS_BASEURL).rstrip("/")
-            logger.info("Querying Ollama: %s", ollama_url)
 
-            try:
-                async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_MODELS) as client:
-                    response = await client.get(f"{ollama_url}/api/tags")
-                    response.raise_for_status()
-                    data = response.json()
-                models = data.get("models", [])
-                logger.info("Got %d models from Ollama", len(models))
+def _normalize_capability(capability: str) -> str:
+    value = str(capability or CAP_CHAT).strip().lower()
+    if value in {CAP_CHAT, CAP_EMBEDDING}:
+        return value
+    return CAP_CHAT
 
-                return {
-                    "mode": mode,
-                    "models": [{"name": m.get("name"), "size": m.get("size", 0)} for m in models],
-                    "count": len(models),
-                }
-            except Exception as e:
-                logger.error("Error querying Ollama: %s", e)
-                return {
-                    "mode": mode,
-                    "models": [],
-                    "count": 0,
-                    "error": str(e),
-                }
 
-        if mode in ["aihub", "corporate"]:
-            logger.info("Querying AI HUB for models")
+def _parse_catalog(raw_catalog: str) -> List[str]:
+    out: List[str] = []
+    for item in str(raw_catalog or "").split(","):
+        model = str(item or "").strip()
+        if model and model not in out:
+            out.append(model)
+    return out
 
-            try:
-                logger.info("Using llm_manager to get detailed AI HUB models")
-                detailed_models = await llm_manager.get_available_models_detailed(source="aihub")
 
-                if detailed_models:
-                    aihub_models = []
-                    for model in detailed_models:
-                        aihub_models.append(
-                            {
-                                "name": model.get("name"),
-                                "size": 0,
-                                "context_window": model.get("context_window"),
-                                "max_output_tokens": model.get("max_output_tokens"),
-                            }
-                        )
-                    logger.info("Got %d models from AI HUB via llm_manager", len(aihub_models))
-                else:
-                    logger.warning("No models returned from AI HUB, using defaults")
-                    aihub_models = [
-                        {
-                            "name": "vikhr",
-                            "size": 0,
-                            "context_window": None,
-                            "max_output_tokens": None,
-                        },
-                        {
-                            "name": "gpt-4",
-                            "size": 0,
-                            "context_window": None,
-                            "max_output_tokens": None,
-                        },
-                    ]
-
-                return {
-                    "mode": mode,
-                    "models": aihub_models,
-                    "count": len(aihub_models),
-                }
-
-            except Exception as e:
-                logger.error("Error getting AI HUB models: %s", e, exc_info=True)
-                return {
-                    "mode": mode,
-                    "models": [
-                        {"name": "vikhr", "size": 0},
-                        {"name": "gpt-4", "size": 0},
-                    ],
-                    "count": 2,
-                    "error": str(e),
-                }
-
-        if mode == "openai":
-            logger.info("Using OpenAI models")
-            openai_models = [
-                {"name": "gpt-4", "size": 0},
-                {"name": "gpt-3.5-turbo", "size": 0},
-                {"name": "gpt-4-turbo", "size": 0},
-            ]
-            return {
-                "mode": mode,
-                "models": openai_models,
-                "count": len(openai_models),
+def _model_rows(
+    *,
+    names: List[str],
+    capability: str,
+    default_model: str,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    seen = set()
+    for name in names:
+        model = str(name or "").strip()
+        if not model or model in seen:
+            continue
+        inferred = infer_model_capability(model)
+        if capability == CAP_CHAT and inferred == CAP_EMBEDDING:
+            continue
+        if capability == CAP_EMBEDDING and inferred == CAP_CHAT:
+            continue
+        seen.add(model)
+        rows.append(
+            {
+                "name": model,
+                "size": 0,
+                "capability": inferred,
+                "is_default": bool(model == default_model),
             }
+        )
 
-        logger.warning("Unknown mode: %s", mode)
-        return {"mode": mode, "models": [], "count": 0}
+    if default_model and default_model not in seen:
+        rows.insert(
+            0,
+            {
+                "name": default_model,
+                "size": 0,
+                "capability": infer_model_capability(default_model),
+                "is_default": True,
+            },
+        )
+
+    if not rows and default_model:
+        rows = [
+            {
+                "name": default_model,
+                "size": 0,
+                "capability": infer_model_capability(default_model),
+                "is_default": True,
+            }
+        ]
+
+    return rows
+
+
+@router.get("/list", response_model=ModelsListResponse)
+async def list_models(
+    mode: str = Query("local"),
+    capability: str = Query(CAP_CHAT),
+) -> Dict[str, Any]:
+    """List available provider models with capability-aware defaults."""
+    selected_mode = _normalize_mode(mode)
+    selected_capability = _normalize_capability(capability)
+    try:
+        if selected_capability == CAP_CHAT:
+            decision = llm_manager.provider_registry.resolve_chat_model_decision(selected_mode, None)
+        else:
+            decision = llm_manager.provider_registry.resolve_embedding_model_decision(selected_mode, None)
+
+        provider_models = await llm_manager.get_available_models(source=selected_mode)
+
+        catalog_models: List[str] = []
+        if selected_mode == "aihub":
+            catalog_models = _parse_catalog(
+                settings.AIHUB_CHAT_MODEL_CATALOG if selected_capability == CAP_CHAT else settings.AIHUB_EMBED_MODEL_CATALOG
+            )
+        elif selected_mode == "ollama":
+            catalog_models = _parse_catalog(
+                settings.OLLAMA_CHAT_MODEL_CATALOG if selected_capability == CAP_CHAT else settings.OLLAMA_EMBED_MODEL_CATALOG
+            )
+        elif selected_mode == "openai":
+            if selected_capability == CAP_CHAT and settings.OPENAI_MODEL:
+                catalog_models = [settings.OPENAI_MODEL]
+            if selected_capability == CAP_EMBEDDING and settings.OPENAI_EMBEDDING_MODEL:
+                catalog_models = [settings.OPENAI_EMBEDDING_MODEL]
+
+        merged_names: List[str] = []
+        for name in provider_models + catalog_models:
+            normalized = str(name or "").strip()
+            if normalized and normalized not in merged_names:
+                merged_names.append(normalized)
+
+        models = _model_rows(
+            names=merged_names,
+            capability=selected_capability,
+            default_model=decision.resolved_model,
+        )
+        logger.info(
+            (
+                "Models listed: mode=%s capability=%s provider=%s default_model=%s "
+                "resolution_source=%s count=%d"
+            ),
+            mode,
+            selected_capability,
+            selected_mode,
+            decision.resolved_model,
+            decision.source,
+            len(models),
+        )
+        return {
+            "mode": selected_mode,
+            "capability": selected_capability,
+            "default_model": decision.resolved_model,
+            "models": models,
+            "count": len(models),
+        }
 
     except Exception as e:
-        logger.error("Error getting models: %s", e, exc_info=True)
-        return {"mode": mode, "models": [], "count": 0, "error": str(e)}
+        logger.error(
+            "Error getting models mode=%s capability=%s: %s",
+            mode,
+            selected_capability,
+            e,
+            exc_info=True,
+        )
+        return {
+            "mode": selected_mode,
+            "capability": selected_capability,
+            "default_model": None,
+            "models": [],
+            "count": 0,
+            "error": str(e),
+        }
 
 
 @router.get("/status", response_model=ModelsStatusResponse)

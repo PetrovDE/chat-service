@@ -9,6 +9,7 @@ import numpy as np
 
 from app.core.config import settings
 from app.observability.metrics import inc_counter, observe_ms
+from app.services.llm.exceptions import ProviderAuthError, ProviderConfigError, ProviderTransientError
 from app.services.llm.providers.aihub_auth import AIHubAuthManager
 from app.services.llm.providers.base import BaseLLMProvider
 from app.utils.retry import async_retry
@@ -23,7 +24,7 @@ class AIHubProvider(BaseLLMProvider):
         self.verify_ssl = settings.AIHUB_VERIFY_SSL
         self.stream_path = getattr(settings, "AIHUB_CHAT_STREAM_PATH", "").strip()
         self.default_model = settings.AIHUB_DEFAULT_MODEL or "vikhr"
-        self.embedding_model = settings.AIHUB_EMBEDDING_MODEL or "arctic"
+        self.embedding_model = settings.AIHUB_EMBEDDING_MODEL
         self.auth_manager = AIHubAuthManager()
         logger.info("AIHubProvider initialized: base_url=%s verify_ssl=%s", self.base_url, self.verify_ssl)
 
@@ -61,7 +62,10 @@ class AIHubProvider(BaseLLMProvider):
     async def _get_headers(self) -> Dict[str, str]:
         token = await self.auth_manager.get_token()
         if not token:
-            raise RuntimeError("Failed to obtain AI HUB authentication token")
+            raise ProviderAuthError(
+                "Failed to obtain AI HUB authentication token",
+                provider="aihub",
+            )
         return {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -286,7 +290,12 @@ class AIHubProvider(BaseLLMProvider):
         if not text or not text.strip():
             return None
 
-        embedding_model = model or self.embedding_model
+        embedding_model = (model or self.embedding_model or "").strip()
+        if not embedding_model:
+            raise ProviderConfigError(
+                "AI HUB embedding model is not configured. Set AIHUB_EMBEDDING_MODEL.",
+                provider="aihub",
+            )
         payload = {"input": text.strip()}
         started = time.perf_counter()
         try:
@@ -310,10 +319,49 @@ class AIHubProvider(BaseLLMProvider):
             observe_ms("llm_provider_duration_ms", (time.perf_counter() - started) * 1000.0, provider="aihub", operation="embedding")
             inc_counter("llm_provider_success_total", provider="aihub", operation="embedding")
             return processed.tolist()
+        except httpx.HTTPStatusError as exc:
+            status = int(getattr(exc.response, "status_code", 0) or 0)
+            body_preview = ""
+            try:
+                body_preview = (exc.response.text or "")[:300]
+            except Exception:
+                body_preview = ""
+            logger.error(
+                "AI HUB embedding HTTP error: status=%s model=%s body=%s",
+                status,
+                embedding_model,
+                body_preview,
+                exc_info=True,
+            )
+            inc_counter("llm_provider_error_total", provider="aihub", operation="embedding")
+            if status in {401, 403}:
+                raise ProviderAuthError(
+                    f"AI HUB embedding unauthorized (status={status})",
+                    provider="aihub",
+                    status_code=status,
+                ) from exc
+            if status in {408, 425, 429} or 500 <= status <= 599:
+                raise ProviderTransientError(
+                    f"AI HUB embedding transient HTTP error (status={status})",
+                    provider="aihub",
+                    status_code=status,
+                ) from exc
+            raise ProviderConfigError(
+                f"AI HUB embedding request failed (status={status}, model={embedding_model})",
+                provider="aihub",
+                status_code=status,
+            ) from exc
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError, httpx.ReadError) as exc:
+            logger.error("AI HUB embedding transient network error: %s", exc, exc_info=True)
+            inc_counter("llm_provider_error_total", provider="aihub", operation="embedding")
+            raise ProviderTransientError(
+                "AI HUB embedding network/timeout failure",
+                provider="aihub",
+            ) from exc
         except Exception as e:
             logger.error("AI HUB embedding error: %s", e, exc_info=True)
             inc_counter("llm_provider_error_total", provider="aihub", operation="embedding")
-            return None
+            raise
 
     def _extract_embedding_from_response(self, response_data: Dict[str, Any]) -> Optional[Any]:
         if "embeddings" in response_data:

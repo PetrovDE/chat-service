@@ -73,7 +73,7 @@ def build_rag_caveats(
     partial_files = []
     for file_obj in files:
         status = str(getattr(file_obj, "is_processed", "") or "")
-        if status == "partial_success":
+        if status in {"partial_success", "partial_failed"}:
             progress = {}
             custom_meta = getattr(file_obj, "custom_metadata", None)
             if isinstance(custom_meta, dict):

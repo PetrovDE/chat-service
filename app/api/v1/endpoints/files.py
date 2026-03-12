@@ -26,6 +26,7 @@ from app.db.models.file import File as FileModel
 from app.db.session import get_db
 from app.schemas.file import FileDeleteResponse, FileInfo, FileProcessingStatus, FileReprocessResponse, FileUploadResponse
 from app.services.tabular.storage_adapter import cleanup_tabular_artifacts_for_file
+from app.utils.time import ensure_utc_datetime
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -140,8 +141,8 @@ def _to_file_info(file_obj: FileModel, conversation_ids: List[UUID]) -> FileInfo
         file_size=file_obj.file_size,
         is_processed=file_obj.is_processed,
         chunks_count=file_obj.chunks_count,
-        uploaded_at=file_obj.uploaded_at,
-        processed_at=file_obj.processed_at,
+        uploaded_at=ensure_utc_datetime(file_obj.uploaded_at),
+        processed_at=ensure_utc_datetime(file_obj.processed_at),
         conversation_ids=conversation_ids,
     )
 
@@ -256,6 +257,19 @@ async def upload_file(
             embedding_mode=embedding_mode,
             embedding_model=embedding_model,
         )
+    except ValueError as e:
+        logger.warning("File processing preflight failed: %s", e)
+        try:
+            path = Path(file_record.path)
+            await crud_file.remove(db, id=file_record.id)
+            if path.exists():
+                path.unlink()
+        except Exception:
+            logger.warning("Failed to rollback file record after preflight error file_id=%s", file_record.id, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        ) from e
     except Exception as e:
         logger.exception("Failed to schedule file processing")
         try:
@@ -279,7 +293,7 @@ async def upload_file(
         content_preview=file_record.content_preview,
         is_processed=file_record.is_processed,
         chunks_count=file_record.chunks_count,
-        uploaded_at=file_record.uploaded_at,
+        uploaded_at=ensure_utc_datetime(file_record.uploaded_at),
     )
 
 
@@ -304,6 +318,12 @@ async def reprocess_file(
             embedding_mode=embedding_mode,
             embedding_model=embedding_model,
         )
+    except ValueError as e:
+        logger.warning("Reprocess preflight failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        ) from e
     except Exception as e:
         logger.exception("Failed to schedule file processing")
         raise HTTPException(

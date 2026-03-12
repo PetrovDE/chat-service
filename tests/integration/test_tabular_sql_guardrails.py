@@ -101,3 +101,16 @@ def test_tabular_sql_guardrails_happy_path_includes_trace_fields(tmp_path: Path,
     assert isinstance(debug_payload.get("policy_decision"), dict)
     assert debug_payload["policy_decision"]["allowed"] is True
     assert isinstance(debug_payload.get("guardrail_flags"), list)
+
+
+def test_tabular_sql_lookup_happy_path_returns_lookup_intent(tmp_path: Path, monkeypatch):
+    file_obj = _make_legacy_sidecar_file(tmp_path)
+    monkeypatch.setattr(tabular_sql.settings, "TABULAR_SQL_MAX_SCANNED_ROWS", 1000)
+    monkeypatch.setattr(tabular_sql.settings, "TABULAR_SQL_TIMEOUT_SECONDS", 2.0)
+
+    result = asyncio.run(execute_tabular_sql_path(query="find rows where city = msk", files=[file_obj]))
+    assert result is not None
+    assert result["status"] == "ok"
+    debug_payload = result["debug"]
+    assert debug_payload["intent"] == "tabular_lookup"
+    assert "sql_lookup" in result["sources"][0]

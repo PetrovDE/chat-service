@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import re
 import logging
-from typing import List, Dict, Any, Optional
+from hashlib import sha1
+from typing import List, Dict, Any, Optional, Tuple
 
 from app.core.config import settings
 
@@ -33,8 +35,8 @@ class VectorStoreManager:
 
         self.client = PersistentClient(path=self.persist_directory)
 
-        self._collections_cache: Dict[int, Any] = {}
-        self._current_dimension: Optional[int] = None
+        self._collections_cache: Dict[Tuple[int, Optional[str], Optional[str]], Any] = {}
+        self._current_collection_key: Optional[Tuple[int, Optional[str], Optional[str]]] = None
         self._current_collection: Optional[Any] = None
 
         logger.info(
@@ -43,29 +45,99 @@ class VectorStoreManager:
             self.persist_directory,
         )
 
-    def _get_collection_name(self, dimension: int) -> str:
-        return f"{self.base_collection_name}_{dimension}d"
+    _COLLECTION_TOKEN_RE = re.compile(r"[^a-z0-9_-]+")
 
-    def _ensure_collection(self, embedding: List[float]) -> Any:
+    def _normalize_collection_token(self, value: Optional[str], *, fallback: str) -> str:
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return fallback
+        normalized = self._COLLECTION_TOKEN_RE.sub("-", raw).strip("-_")
+        if not normalized:
+            normalized = fallback
+        return normalized[:40]
+
+    def _normalize_embedding_identity(
+        self,
+        *,
+        embedding_mode: Optional[str],
+        embedding_model: Optional[str],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        mode = self._normalize_collection_token(embedding_mode, fallback="default") if embedding_mode else None
+        model = self._normalize_collection_token(embedding_model, fallback="default") if embedding_model else None
+        if not mode and not model:
+            return None, None
+        return mode or "default", model or "default"
+
+    def _collection_cache_key(
+        self,
+        *,
+        dimension: int,
+        embedding_mode: Optional[str],
+        embedding_model: Optional[str],
+    ) -> Tuple[int, Optional[str], Optional[str]]:
+        mode, model = self._normalize_embedding_identity(
+            embedding_mode=embedding_mode,
+            embedding_model=embedding_model,
+        )
+        return (int(dimension), mode, model)
+
+    def _get_collection_name(
+        self,
+        dimension: int,
+        *,
+        embedding_mode: Optional[str] = None,
+        embedding_model: Optional[str] = None,
+    ) -> str:
+        mode, model = self._normalize_embedding_identity(
+            embedding_mode=embedding_mode,
+            embedding_model=embedding_model,
+        )
+        if not mode and not model:
+            # Keep legacy naming for old collections without model identity.
+            return f"{self.base_collection_name}_{dimension}d"
+
+        identity_hash = sha1(f"{mode}:{model}".encode("utf-8")).hexdigest()[:10]
+        return f"{self.base_collection_name}_{dimension}d_{mode}_{model}_{identity_hash}"
+
+    def _ensure_collection(
+        self,
+        embedding: List[float],
+        *,
+        embedding_mode: Optional[str] = None,
+        embedding_model: Optional[str] = None,
+    ) -> Any:
         dimension = len(embedding)
+        cache_key = self._collection_cache_key(
+            dimension=dimension,
+            embedding_mode=embedding_mode,
+            embedding_model=embedding_model,
+        )
+        collection_name = self._get_collection_name(
+            dimension,
+            embedding_mode=embedding_mode,
+            embedding_model=embedding_model,
+        )
 
-        if self._current_dimension == dimension and self._current_collection is not None:
+        if self._current_collection_key == cache_key and self._current_collection is not None:
             return self._current_collection
 
-        if dimension in self._collections_cache:
-            self._current_dimension = dimension
-            self._current_collection = self._collections_cache[dimension]
-            logger.info("Active collection: %s (dim=%d)", self._get_collection_name(dimension), dimension)
+        if cache_key in self._collections_cache:
+            self._current_collection_key = cache_key
+            self._current_collection = self._collections_cache[cache_key]
+            logger.info("Active collection: %s key=%s", collection_name, cache_key)
             return self._current_collection
 
-        collection_name = self._get_collection_name(dimension)
         try:
             collection = self.client.get_or_create_collection(
                 name=collection_name,
-                metadata={"dimension": dimension},
+                metadata={
+                    "dimension": dimension,
+                    "embedding_mode": embedding_mode or "",
+                    "embedding_model": embedding_model or "",
+                },
             )
-            self._collections_cache[dimension] = collection
-            self._current_dimension = dimension
+            self._collections_cache[cache_key] = collection
+            self._current_collection_key = cache_key
             self._current_collection = collection
 
             try:
@@ -73,7 +145,14 @@ class VectorStoreManager:
             except Exception:
                 count = -1
 
-            logger.info("Collection initialized: %s dim=%d count=%s", collection_name, dimension, str(count))
+            logger.info(
+                "Collection initialized: %s dim=%d mode=%s model=%s count=%s",
+                collection_name,
+                dimension,
+                embedding_mode or "",
+                embedding_model or "",
+                str(count),
+            )
             return collection
         except Exception as e:
             logger.error("Failed to initialize collection: %s", e, exc_info=True)
@@ -158,6 +237,66 @@ class VectorStoreManager:
 
         return where
 
+    def _identity_from_metadata(self, metadata: Optional[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
+        raw = metadata or {}
+        mode_raw = str(raw.get("embedding_mode") or "").strip().lower() or None
+        model_raw = str(raw.get("embedding_model") or "").strip() or None
+
+        if model_raw and ":" in model_raw:
+            mode_part, model_part = model_raw.split(":", 1)
+            if not mode_raw and mode_part:
+                mode_raw = mode_part.strip().lower()
+            model_raw = model_part.strip() or None
+
+        if mode_raw == "ollama":
+            mode_raw = "local"
+        if mode_raw == "corporate":
+            mode_raw = "aihub"
+
+        return mode_raw, model_raw
+
+    def _identity_from_filter(self, where: Optional[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
+        if not isinstance(where, dict):
+            return None, None
+        mode = where.get("embedding_mode")
+        model = where.get("embedding_model")
+        if isinstance(mode, dict):
+            mode = mode.get("$eq")
+        if isinstance(model, dict):
+            model = model.get("$eq")
+        return self._identity_from_metadata({"embedding_mode": mode, "embedding_model": model})
+
+    def _extract_dimension_from_name(self, collection_name: str) -> Optional[int]:
+        m = re.search(r"_(\d+)d(?:_|$)", str(collection_name or ""))
+        if not m:
+            return None
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+
+    def _query_collection(
+        self,
+        *,
+        collection: Any,
+        embedding_query: List[float],
+        top_k: int,
+        safe_filter: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        query_params = {"query_embeddings": [embedding_query], "n_results": top_k}
+        if safe_filter:
+            query_params["where"] = self._normalize_where(safe_filter)
+        results = collection.query(**query_params)
+        return self._parse_results(results)
+
+    def resolve_collection_name(self, *, embedding: List[float], metadata: Optional[Dict[str, Any]]) -> str:
+        mode, model = self._identity_from_metadata(metadata)
+        return self._get_collection_name(
+            len(embedding),
+            embedding_mode=mode,
+            embedding_model=model,
+        )
+
     def add_document(
         self,
         *,
@@ -169,22 +308,43 @@ class VectorStoreManager:
         if embedding is None:
             raise ValueError("Embedding is required")
 
-        self._ensure_collection(embedding)
-        safe_metadata = self._sanitize(metadata or {}, mode="storage")
+        mode, model = self._identity_from_metadata(metadata)
+        collection_name = self._get_collection_name(
+            len(embedding),
+            embedding_mode=mode,
+            embedding_model=model,
+        )
+        self._ensure_collection(
+            embedding,
+            embedding_mode=mode,
+            embedding_model=model,
+        )
+        enriched_metadata = dict(metadata or {})
+        enriched_metadata["collection"] = collection_name
+        enriched_metadata["embedding_dimension"] = len(embedding)
+        safe_metadata = self._sanitize(enriched_metadata, mode="storage")
 
         try:
-            self._current_collection.add(
-                documents=[content],
-                metadatas=[safe_metadata],
-                embeddings=[embedding],
-                ids=[doc_id] if doc_id else None,
-            )
+            add_payload = {
+                "documents": [content],
+                "metadatas": [safe_metadata],
+                "embeddings": [embedding],
+            }
+            if doc_id:
+                add_payload["ids"] = [doc_id]
+            upsert_fn = getattr(self._current_collection, "upsert", None)
+            if callable(upsert_fn):
+                upsert_fn(**add_payload)
+            else:
+                self._current_collection.add(**add_payload)
             logger.info(
-                "Document added: id=%s size=%d dim=%d collection=%s",
+                "Document added: id=%s size=%d dim=%d mode=%s model=%s collection=%s",
                 doc_id or "-",
                 len(content or ""),
                 len(embedding),
-                self._get_collection_name(len(embedding)),
+                mode or "-",
+                model or "-",
+                collection_name,
             )
             return True
         except Exception as e:
@@ -231,25 +391,55 @@ class VectorStoreManager:
         if search_all_dimensions:
             return self._query_all_dimensions(embedding_query, top_k, filter_dict)
 
-        self._ensure_collection(embedding_query)
-
         safe_filter = self._sanitize(filter_dict or {}, mode="where") if filter_dict else None
+        mode, model = self._identity_from_filter(safe_filter or {})
 
         logger.info(
-            "Query: collection=%s top_k=%d dim=%d filter=%s",
-            self._get_collection_name(dimension),
-            top_k,
+            "Query: dim=%d top_k=%d mode=%s model=%s filter=%s",
             dimension,
+            top_k,
+            mode or "-",
+            model or "-",
             safe_filter if safe_filter else None,
         )
 
         try:
-            query_params = {"query_embeddings": [embedding_query], "n_results": top_k}
-            if safe_filter:
-                query_params["where"] = self._normalize_where(safe_filter)
+            if mode or model:
+                collection = self._ensure_collection(
+                    embedding_query,
+                    embedding_mode=mode,
+                    embedding_model=model,
+                )
+                return self._query_collection(
+                    collection=collection,
+                    embedding_query=embedding_query,
+                    top_k=top_k,
+                    safe_filter=safe_filter,
+                )
 
-            results = self._current_collection.query(**query_params)
-            return self._parse_results(results)
+            # No explicit embedding identity in filters: query all base collections for this dimension.
+            rows: List[Dict[str, Any]] = []
+            for collection in self._iter_base_collections():
+                name = str(getattr(collection, "name", ""))
+                coll_dim = self._extract_dimension_from_name(name)
+                if coll_dim is not None and coll_dim != dimension:
+                    continue
+                try:
+                    rows.extend(
+                        self._query_collection(
+                            collection=collection,
+                            embedding_query=embedding_query,
+                            top_k=top_k,
+                            safe_filter=safe_filter,
+                        )
+                    )
+                except Exception:
+                    continue
+
+            if not rows:
+                return []
+            rows = sorted(rows, key=lambda x: float(x.get("distance", 1e9)))[:top_k]
+            return rows
         except Exception as e:
             logger.error("Query failed: %s", e, exc_info=True)
             return []
@@ -261,20 +451,18 @@ class VectorStoreManager:
         filter_dict: Optional[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         all_results: List[Dict[str, Any]] = []
+        safe_filter = self._sanitize(filter_dict or {}, mode="where") if filter_dict else None
 
-        _ = self._ensure_collection(embedding_query)
-
-        for dim in list(self._collections_cache.keys()):
+        for collection in self._iter_base_collections():
             try:
-                collection = self._collections_cache[dim]
-                safe_filter = self._sanitize(filter_dict or {}, mode="where") if filter_dict else None
-
-                query_params = {"query_embeddings": [embedding_query], "n_results": top_k}
-                if safe_filter:
-                    query_params["where"] = self._normalize_where(safe_filter)
-
-                results = collection.query(**query_params)
-                all_results.extend(self._parse_results(results))
+                all_results.extend(
+                    self._query_collection(
+                        collection=collection,
+                        embedding_query=embedding_query,
+                        top_k=top_k,
+                        safe_filter=safe_filter,
+                    )
+                )
             except Exception:
                 continue
 

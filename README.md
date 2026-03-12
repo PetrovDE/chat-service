@@ -6,7 +6,7 @@
 - Принимает сообщения в чат (`/api/v1/chat`, `/api/v1/chat/stream`).
 - Поддерживает провайдеры моделей: `ollama/local`, `aihub` (`corporate` alias), `openai`.
 - Загружает файлы, асинхронно индексирует их в ChromaDB и использует в RAG (`/api/v1/files/*`).
-- Для `xlsx/xls/csv` поддерживает adaptive row-dense ingestion и deterministic `tabular_sql` path для aggregate-вопросов.
+- Для `xlsx/xls/csv/tsv` поддерживает table-aware ingestion (file/sheet summaries + row-groups) и deterministic `tabular_sql` path для aggregate/profile/lookup вопросов.
 - Для аналитических запросов по файлу поддерживает deterministic `tabular_profile` (per-column SQL stats).
 - Хранит пользователей, чаты, сообщения и файлы в PostgreSQL.
 - Отдаёт встроенный frontend из `frontend/` (SPA монтируется на `/`).
@@ -78,7 +78,7 @@ Browser SPA (frontend/index.html + static/js)
 11. [`docs/examples/delete.response.json`](docs/examples/delete.response.json)
 12. [`docs/examples/retrieve_debug.request.json`](docs/examples/retrieve_debug.request.json)
 13. [`docs/examples/retrieve_debug.response.json`](docs/examples/retrieve_debug.response.json)
-14. [`docs/examples/status.response.partial_success.json`](docs/examples/status.response.partial_success.json)
+14. [`docs/examples/status.response.partial_failed.json`](docs/examples/status.response.partial_failed.json)
 15. [`docs/examples/status.response.processing.json`](docs/examples/status.response.processing.json)
 16. [`docs/examples/upload.request.json`](docs/examples/upload.request.json)
 17. [`docs/examples/upload.response.json`](docs/examples/upload.response.json)
@@ -102,7 +102,7 @@ Browser SPA (frontend/index.html + static/js)
 
 3. Пустой/слабый RAG-ответ.
 Где смотреть: отправить chat с `rag_debug=true` (или `?debug=true`), проверить `rag_debug.top_chunks`, `filters/where`, `retrieval_mode`; сравнить с `docs/examples/retrieve_debug.*.json`.
-Если файл табличный (`xlsx/xls/csv`) и в debug видно аномально малое `retrieved_chunks_total` при нормальном `chunks_count`, проверьте metadata chunk identity:
+Если файл табличный (`xlsx/xls/csv/tsv`) и в debug видно аномально малое `retrieved_chunks_total` при нормальном `chunks_count`, проверьте metadata chunk identity:
 `chunk_id`, `chunk_index` (dedup контекста выполняется по `chunk_id`, fallback: `file_id + chunk_index`).
 Для `full_file` дополнительно проверьте row-level поля:
 `rows_expected_total`, `rows_retrieved_total`, `rows_used_map_total`, `rows_used_reduce_total`, `row_coverage_ratio`.
@@ -111,7 +111,7 @@ Browser SPA (frontend/index.html + static/js)
 Где смотреть: значения в `.env` (`DATABASE_URL`, `ALEMBIC_DATABASE_URL`, `JWT_SECRET_KEY`), ошибки старта в логах uvicorn/FastAPI, проверка БД через `docker compose -f docker-compose.db.yml ps`.
 
 5. Модели недоступны/медленные ответы.
-Где смотреть: `GET /api/v1/models/status`, `GET /api/v1/models/list?mode=...`, логи провайдера в backend (`app/services/llm/providers/*`), общие метрики задержек в `/metrics`.
+Где смотреть: `GET /api/v1/models/status`, `GET /api/v1/models/list?mode=...&capability=chat|embedding`, логи провайдера в backend (`app/services/llm/providers/*`), общие метрики задержек в `/metrics`.
 
 ## XLSX / CSV Settings (LangChain-first)
 - `XLSX_CHUNK_MAX_CHARS`: adaptive char-budget для row-dense чанков.
@@ -121,9 +121,24 @@ Browser SPA (frontend/index.html + static/js)
 - `RAG_FULL_FILE_MIN_ROW_COVERAGE`: порог row coverage для full-file.
 - `RAG_FULL_FILE_ESCALATION_MAX_CHUNKS`: лимит repass-бюджета при low row coverage.
 - `XLSX_CELL_MAX_CHARS`: optional cap на длину ячейки в chunk serialization (`0` = без cap).
+- `TABULAR_ROW_GROUP_ROWS_NARROW / MEDIUM / WIDE`: динамический размер row-group чанков.
+- `TABULAR_MAX_EMBEDDING_DOCS`: hard cap на число embedding документов для huge таблиц.
+- `TABULAR_WIDE_CELL_HARD_LIMIT`: hard cap для слишком длинных текстовых ячеек (если `XLSX_CELL_MAX_CHARS=0`).
 - `OLLAMA_EMBED_MAX_INPUT_CHARS`: max размер одного embed-сегмента для local/Ollama.
 - `OLLAMA_EMBED_SEGMENT_OVERLAP_CHARS`: overlap между embed-сегментами.
-- Для `xlsx/xls/csv` ingestion создает sidecar SQLite dataset (`custom_metadata.tabular_sidecar`) для deterministic `tabular_sql` path.
+- Для `xlsx/xls/csv/tsv` ingestion сохраняет `tabular_dataset` (shared DuckDB/Parquet runtime) для deterministic `tabular_sql` path.
+
+## Ingestion Status Lifecycle
+- `uploaded -> queued -> parsing -> parsed -> chunking -> embedding -> indexing -> completed`
+- Частичный успех: `partial_failed`
+- Фатальная ошибка: `failed`
+- `completed` выставляется только при полной консистентности expected/processed/indexed/upsert counters.
+
+## RAG Debug Quick Checks
+- `retrieval_path`: `vector` или `structured`
+- `top_chunks[*].chunk_type`: `file_summary | sheet_summary | row_group | ...`
+- `top_similarity_scores`: верхние similarity значения
+- `context_tokens`: оценка фактически отправленного контекста в LLM
 
 ## Chat Service Internals (2026-03-03)
 
@@ -153,3 +168,21 @@ This keeps HTTP/SSE behavior stable while reducing file size and improving testa
 - Implement unified observability + eval framework for offline contour (including fallback-rate and SLO alarms).
 - Use [`docs/11_llm_file_chat_best_practices_architecture.md`](docs/11_llm_file_chat_best_practices_architecture.md) as the architecture baseline.
 - Use [`docs/12_codex_cursor_prompts_offline_architecture.md`](docs/12_codex_cursor_prompts_offline_architecture.md) as implementation prompt pack for Cursor/Codex.
+
+## Embedding Defaults (2026-03-12)
+- Embedding model resolution is provider-aware and capability-aware (chat and embedding are resolved independently).
+- AI HUB default embedding model: `qwen3-emb`.
+- Local/Ollama default embedding model: `OLLAMA_EMBED_MODEL` (by default `nomic-embed-text:latest`), with optional capability-based runtime match from available local models.
+- `arctic` remains available as explicit AI HUB embedding override (`embedding_model=arctic`).
+- Invalid embedding overrides that point to chat-only models (for example `llama3.2:latest`) do not trigger cross-provider fallback and are resolved only within the selected provider policy.
+- Provider routing for embeddings is strict:
+  - `local/ollama` -> Ollama only,
+  - `aihub` -> AI HUB only,
+  - no hidden cross-provider fallback.
+- Upload/reprocess performs embedding preflight validation and returns `422` for auth/config/model-availability errors.
+- New vectors are written into model-scoped collections (`<base>_<dim>d_<mode>_<model>_<hash>`), so different embedding spaces (provider/model) are not mixed.
+
+## Time Rendering Consistency (2026-03-12)
+- File timestamps and message timestamps now use the same frontend time parsing/formatting path (`frontend/static/js/time-format.js`).
+- Backend serialization for conversation messages and file timestamps is normalized to UTC-aware ISO (`+00:00`), then rendered in client local timezone.
+- This removes file-menu UTC/GMT-like drift relative to message timestamps.

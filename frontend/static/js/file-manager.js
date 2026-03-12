@@ -20,7 +20,7 @@ class FileManager {
         const file = event.target.files[0];
         if (!file) return;
 
-        const allowedTypes = ['.pdf', '.docx', '.txt', '.md', '.csv', '.json', '.xlsx'];
+        const allowedTypes = ['.pdf', '.docx', '.txt', '.md', '.csv', '.tsv', '.json', '.xlsx'];
         const fileExt = `.${file.name.split('.').pop().toLowerCase()}`;
 
         if (!allowedTypes.includes(fileExt)) {
@@ -55,7 +55,7 @@ class FileManager {
     }
 
     getEmbeddingModel() {
-        return document.getElementById('model-selector')?.value || null;
+        return document.getElementById('embedding-model-selector')?.value || null;
     }
 
     async uploadAndProcess(file) {
@@ -112,7 +112,10 @@ class FileManager {
             const processed = Number(fileInfo.chunks_processed || 0);
             const failed = Number(fileInfo.chunks_failed || 0);
             const indexed = Number(fileInfo.chunks_indexed || 0);
-            const progressText = expected > 0 ? `${processed}/${expected} (ok=${indexed}, bad=${failed})` : status;
+            const stage = String(fileInfo.stage || status || '');
+            const progressText = expected > 0
+                ? `${stage}: ${processed}/${expected} (ok=${indexed}, bad=${failed})`
+                : stage;
             this.renderPendingAttachment(fileName, fileSize, progressText);
 
             if (status === 'completed') {
@@ -129,7 +132,7 @@ class FileManager {
                 return;
             }
 
-            if (status === 'partial_success') {
+            if (status === 'partial_success' || status === 'partial_failed') {
                 this.attachedFiles.push({
                     id: fileId,
                     name: fileName,

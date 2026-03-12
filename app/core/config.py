@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     app_secret_key: str = Field(default="")
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8080, ge=1, le=65535)
-    supported_filetypes: str = Field(default="pdf,docx,txt,md,csv,json,xlsx,xls")
+    supported_filetypes: str = Field(default="pdf,docx,txt,md,csv,tsv,json,xlsx,xls")
 
     # Corporate API
     CORPORATE_API_URL: str = Field(default="")
@@ -42,7 +42,9 @@ class Settings(BaseSettings):
     AIHUB_REQUEST_TIMEOUT: int = Field(default=120, ge=1, le=900)
     AIHUB_VERIFY_SSL: bool = Field(default=False)
     AIHUB_DEFAULT_MODEL: str = Field(default="vikhr")
-    AIHUB_EMBEDDING_MODEL: str = Field(default="embedding-model")
+    AIHUB_EMBEDDING_MODEL: str = Field(default="qwen3-emb")
+    AIHUB_EMBED_MODEL_CATALOG: str = Field(default="qwen3-emb,arctic")
+    AIHUB_CHAT_MODEL_CATALOG: str = Field(default="")
     AIHUB_CHAT_STREAM_PATH: str = Field(default="")
     AIHUB_MAX_PROMPT_CHARS: int = Field(default=50000, ge=1000)
     AIHUB_MAX_HISTORY_MESSAGE_CHARS: int = Field(default=2000, ge=100)
@@ -67,6 +69,11 @@ class Settings(BaseSettings):
     EMBEDDINGS_MODEL: str = Field(default="nomic-embed-text:latest")
     OLLAMA_CHAT_MODEL: str = Field(default="llama3.2:latest")
     OLLAMA_EMBED_MODEL: str = Field(default="nomic-embed-text:latest")
+    OLLAMA_EMBED_MODEL_CATALOG: str = Field(default="nomic-embed-text:latest,qwen3-emb,mxbai-embed-large")
+    OLLAMA_CHAT_MODEL_CATALOG: str = Field(default="")
+    OPENAI_EMBEDDING_MODEL: str = Field(default="text-embedding-3-small")
+    MODEL_INVALID_OVERRIDE_POLICY: str = Field(default="fallback_default")
+    EMBEDDING_PREFLIGHT_VALIDATE: bool = Field(default=True)
     OLLAMA_EMBED_MAX_INPUT_CHARS: int = Field(default=3500, ge=500, le=50000)
     OLLAMA_EMBED_SEGMENT_OVERLAP_CHARS: int = Field(default=250, ge=0, le=10000)
     EMBEDDINGS_DIM: int = Field(default=0, ge=0)
@@ -103,6 +110,17 @@ class Settings(BaseSettings):
     XLSX_CHUNK_MAX_ROWS: int = Field(default=40, ge=1, le=2000)
     XLSX_MAX_COLUMNS_PER_CHUNK: int = Field(default=0, ge=0, le=1000)
     XLSX_CELL_MAX_CHARS: int = Field(default=0, ge=0, le=200000)
+    TABULAR_ROW_GROUP_ROWS_NARROW: int = Field(default=200, ge=20, le=2000)
+    TABULAR_ROW_GROUP_ROWS_MEDIUM: int = Field(default=100, ge=20, le=2000)
+    TABULAR_ROW_GROUP_ROWS_WIDE: int = Field(default=50, ge=10, le=1000)
+    TABULAR_ROW_GROUP_MEDIUM_COLUMNS_THRESHOLD: int = Field(default=12, ge=2, le=500)
+    TABULAR_ROW_GROUP_WIDE_COLUMNS_THRESHOLD: int = Field(default=40, ge=5, le=2000)
+    TABULAR_MAX_EMBEDDING_DOCS: int = Field(default=320, ge=16, le=5000)
+    TABULAR_SUMMARY_TOP_COLUMNS: int = Field(default=12, ge=1, le=256)
+    TABULAR_COLUMN_SUMMARY_ENABLED: bool = Field(default=True)
+    TABULAR_COLUMN_SUMMARY_MAX_COLUMNS: int = Field(default=6, ge=1, le=128)
+    TABULAR_WIDE_CELL_HARD_LIMIT: int = Field(default=2000, ge=200, le=50000)
+    RAG_SCORE_THRESHOLD: float = Field(default=0.0, ge=0.0, le=1.0)
     FULL_FILE_MAP_MAX_BATCHES: int = Field(default=300, ge=10, le=5000)
     FULL_FILE_DIRECT_CONTEXT_MAX_CHUNKS: int = Field(default=24, ge=4, le=500)
     FULL_FILE_DIRECT_CONTEXT_MAX_CHARS: int = Field(default=42000, ge=4000, le=180000)
@@ -177,13 +195,21 @@ class Settings(BaseSettings):
     def _normalize_supported_filetypes(cls, value: str) -> str:
         raw = str(value or "").strip()
         if not raw:
-            return "pdf,docx,txt,md,csv,json,xlsx,xls"
+            return "pdf,docx,txt,md,csv,tsv,json,xlsx,xls"
         parts = []
         for item in raw.split(","):
             ext = item.strip().lower().lstrip(".")
             if ext:
                 parts.append(ext)
-        return ",".join(parts) if parts else "pdf,docx,txt,md,csv,json,xlsx,xls"
+        return ",".join(parts) if parts else "pdf,docx,txt,md,csv,tsv,json,xlsx,xls"
+
+    @field_validator("MODEL_INVALID_OVERRIDE_POLICY", mode="before")
+    @classmethod
+    def _normalize_invalid_override_policy(cls, value: str) -> str:
+        normalized = str(value or "fallback_default").strip().lower()
+        if normalized not in {"fallback_default", "error"}:
+            return "fallback_default"
+        return normalized
 
     @property
     def allowed_origins_list(self) -> list[str]:

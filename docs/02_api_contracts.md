@@ -64,7 +64,7 @@
 | GET | `/api/v1/files/{file_id}` | Детали файла | auth Bearer, path `file_id` | `200 FileInfo` | `401`, `403`, `404`, `422` |
 | GET | `/api/v1/files/status/{file_id}` | Статус ingestion + counters | auth Bearer, path `file_id` | `200 FileProcessingStatus` | `401`, `403`, `404`, `422` |
 | DELETE | `/api/v1/files/{file_id}` | Удаление файла + cleanup индекса | auth Bearer, path `file_id` | `200 FileDeleteResponse` | `401`, `403`, `404`, `422`, `500` |
-| GET | `/api/v1/models/list` | Список моделей по mode | query `mode` (`local|ollama|aihub|corporate|openai`) | `200 ModelsListResponse` | `422` |
+| GET | `/api/v1/models/list` | Список моделей по mode/capability | query `mode` (`local|ollama|aihub|corporate|openai`), `capability` (`chat|embedding`) | `200 ModelsListResponse` | `422` |
 | GET | `/api/v1/models/status` | Доступность провайдеров/моделей | body: none | `200 ModelsStatusResponse` | - |
 | GET | `/api/v1/stats/user` | Пользовательская статистика | auth Bearer | `200 UserStatsResponse` | `401`, `403` |
 | GET | `/api/v1/stats/system` | Системная статистика (admin) | auth Bearer (admin) | `200 SystemStatsResponse` | `401`, `403` |
@@ -73,8 +73,8 @@
 ## Notes
 
 - `/metrics` не включается в OpenAPI (`include_in_schema=False`), но доступен как endpoint Prometheus.
-- `FileProcessingStatus.status`: `pending | processing | completed | partial_success | failed`.
-- `FileProcessingStatus.stage`: `queued | extract | chunk | embed_upsert | finalized | failed`.
+- `FileProcessingStatus.status`: `uploaded | queued | parsing | parsed | chunking | embedding | indexing | completed | partial_failed | failed`.
+- `FileProcessingStatus.stage`: mirrors ingestion stage and ends with terminal stage (`completed|partial_failed|failed`).
 - В статусе файла возвращаются counters: `total_chunks_expected`, `chunks_processed`, `chunks_failed`, `chunks_indexed`.
 
 Chat routing fields:
@@ -180,7 +180,8 @@ RAG debug (для `POST /chat` и SSE `start`):
   - absolute filesystem paths are not returned in API payloads.
 - Для `retrieval_mode=tabular_sql` intent может быть:
   - `tabular_aggregate` (single SQL aggregate/group query),
-  - `tabular_profile` (per-column deterministic profiling).
+  - `tabular_profile` (per-column deterministic profiling),
+  - `tabular_lookup` (deterministic filtered row lookup).
 - Для `retrieval_mode=clarification` backend возвращает только уточняющий вопрос (без retrieval и без numeric guess).
 - В debug присутствует `tabular_sql.{storage_engine,dataset_version,dataset_provenance_id,table_name,table_version,table_provenance_id,...}`:
   - aggregate path: `sql`, `result`, `operation`, `sql_guardrails`, ...
@@ -289,3 +290,13 @@ This change is internal and does not modify HTTP/SSE contracts listed above.
 
 
 
+
+## Update 2026-03-12 (Provider-aware embeddings and timestamp serialization)
+- Embedding model resolution is provider-aware:
+  - `aihub` default embedding model: `qwen3-emb`,
+  - `local/ollama` default embedding model: `OLLAMA_EMBED_MODEL` (default `nomic-embed-text:latest`).
+- `arctic` remains available as explicit AI HUB override (`embedding_model=arctic`).
+- `chat model` and `embedding model` are resolved independently; chat-only overrides are not used for embeddings.
+- `/api/v1/models/list` accepts `capability=chat|embedding` and returns capability-specific defaults.
+- New vectors are written into model-scoped collections to avoid mixing embedding spaces.
+- File/message timestamps are serialized as UTC-aware ISO values (`+00:00`).

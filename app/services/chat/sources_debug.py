@@ -139,10 +139,12 @@ def build_top_chunks_debug(context_documents: List[Dict[str, Any]], max_items: i
                 "chunk_id": chunk_id or None,
                 "filename": str(meta.get("filename") or meta.get("source") or "unknown"),
                 "sheet_name": meta.get("sheet_name"),
+                "chunk_type": meta.get("chunk_type"),
                 "chunk_index": chunk_index,
                 "row_start": meta.get("row_start"),
                 "row_end": meta.get("row_end"),
                 "total_rows": meta.get("total_rows"),
+                "collection": meta.get("collection"),
                 "preview": (doc.get("content") or "")[:220],
             }
         )
@@ -220,6 +222,7 @@ def build_standard_rag_debug_payload(
     )
     context_tokens = sum(estimate_text_tokens((doc.get("content") or "")) for doc in context_docs)
     payload["filters"] = payload.get("filters") or payload.get("where")
+    payload["applied_filters"] = payload["filters"]
     payload["top_chunks"] = top_chunks
     payload["top_chunks_limit"] = max_items
     payload["top_chunks_total"] = len(context_docs)
@@ -227,8 +230,12 @@ def build_standard_rag_debug_payload(
     payload["retrieval_hits"] = int(payload.get("returned_count", len(context_docs)) or 0)
     payload["retrieved_chunks_total"] = len(context_docs)
     payload["avg_score"] = float(avg_score)
+    payload["top_similarity_scores"] = [float(item.get("score", 0.0) or 0.0) for item in top_chunks[:10]]
     payload["context_tokens"] = int(context_tokens)
     payload["llm_tokens_used"] = llm_tokens_used
+    retrieval_mode = str(payload.get("retrieval_mode") or "")
+    payload["retrieval_path"] = "structured" if retrieval_mode.startswith("tabular_sql") else "vector"
+    payload["structured_path_used"] = bool(payload["retrieval_path"] == "structured")
 
     row_stats = build_row_coverage_stats(context_docs)
     rows_expected = payload.get("rows_expected_total", row_stats["rows_expected_total"])

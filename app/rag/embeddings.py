@@ -1,9 +1,11 @@
 """
-Embeddings Manager
-Менеджер для генерации эмбеддингов через различные провайдеры
+Embeddings manager used by ingestion and retrieval flows.
 """
-import logging
+
+from __future__ import annotations
+
 import asyncio
+import logging
 from typing import List, Optional
 
 from app.core.config import settings
@@ -13,15 +15,10 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingsManager:
-    """
-    Менеджер эмбеддингов с поддержкой различных провайдеров
-    Поддерживает: local (Ollama), corporate/aihub (AI HUB)
-    """
-
-    # Маппинг режимов на размерности эмбеддингов
     DEFAULT_DIMENSIONS = {
-        "local": 0,  # FIX: dimension is model-specific; 0 = auto (no strict check)
-        "aihub": 1024,  # arctic модель
+        "local": 0,
+        "aihub": 1024,
+        "openai": 0,
     }
 
     def __init__(
@@ -31,107 +28,106 @@ class EmbeddingsManager:
         ollama_url: Optional[str] = None,
         hub_url: Optional[str] = None,
         keycloak_token: Optional[str] = None,
-        system_user: Optional[str] = None
+        system_user: Optional[str] = None,
     ):
-        """
-        Инициализация менеджера эмбеддингов
+        normalized_mode = str(mode or "local").strip().lower()
+        if normalized_mode == "corporate":
+            normalized_mode = "aihub"
+        if normalized_mode == "ollama":
+            normalized_mode = "local"
+        if normalized_mode not in {"local", "aihub", "openai"}:
+            raise ValueError(f"Unsupported embeddings mode: {mode}")
 
-        Args:
-            mode: Режим работы ('local' или 'corporate')
-            model: Модель для эмбеддингов (если не указана, используется из настроек)
-            ollama_url: URL Ollama (для обратной совместимости)
-            hub_url: URL HUB (для обратной совместимости)
-            keycloak_token: Токен Keycloak (для обратной совместимости)
-            system_user: System user (для обратной совместимости)
-        """
-        # Нормализация режима: corporate -> aihub (для внутреннего использования)
-        self.mode = "aihub" if mode == "corporate" else mode
+        self.mode = normalized_mode
         self.original_mode = mode
         self.model = model
 
-        # Для обратной совместимости со старым кодом
+        # Backward-compatible fields used by some callers/tests.
         self.ollama_url = ollama_url or settings.EMBEDDINGS_BASEURL
         self.hub_url = hub_url or settings.CORPORATE_API_URL
         self.keycloak_token = keycloak_token or settings.CORPORATE_API_TOKEN
         self.system_user = system_user or settings.CORPORATE_API_USERNAME
 
-        logger.info(
-            f"🚀 EmbeddingsManager initialized: mode={self.original_mode} "
-            f"(internal: {self.mode}), model={self.model}"
-        )
+        logger.info("EmbeddingsManager initialized: requested_mode=%s mode=%s model=%s", mode, self.mode, model)
+
+    def _provider_source(self) -> str:
+        if self.mode == "aihub":
+            return "aihub"
+        if self.mode == "openai":
+            return "openai"
+        return "ollama"
 
     def switch_mode(self, mode: str):
-        """Переключить режим работы"""
-        if mode not in ["local", "corporate", "aihub"]:
-            raise ValueError(f"Incorrect mode: must be 'local' or 'corporate', got '{mode}'")
-
+        normalized_mode = str(mode or "local").strip().lower()
+        if normalized_mode == "corporate":
+            normalized_mode = "aihub"
+        if normalized_mode == "ollama":
+            normalized_mode = "local"
+        if normalized_mode not in {"local", "aihub", "openai"}:
+            raise ValueError(f"Unsupported embeddings mode: {mode}")
         self.original_mode = mode
-        self.mode = "aihub" if mode == "corporate" else mode
-        logger.info(f"🔄 Switched embeddings mode to: {self.original_mode} (internal: {self.mode})")
+        self.mode = normalized_mode
+        logger.info("Embeddings mode switched: requested_mode=%s mode=%s", mode, self.mode)
 
     def switch_model(self, model: str):
-        """Переключить модель"""
         self.model = model
-        logger.info(f"🔄 Switched embeddings model to: {model}")
+        logger.info("Embeddings model switched: model=%s", model)
 
     def update_token(self, keycloak_token: str):
-        """Обновить токен (для обратной совместимости)"""
         self.keycloak_token = keycloak_token
-        logger.info("🔑 Updated Keycloak token")
+        logger.info("Embeddings token updated")
 
     async def get_available_models(self) -> List[str]:
-        """Получить список доступных моделей"""
         try:
-            models = await llm_manager.get_available_models(source=self.mode)
-            logger.info(f"📋 Available models for {self.original_mode}: {models}")
+            models = await llm_manager.get_available_models(source=self._provider_source())
+            logger.info("Available embedding models mode=%s count=%d", self.mode, len(models))
             return models
-        except Exception as e:
-            logger.error(f"❌ Failed to get available models: {e}")
+        except Exception as exc:
+            logger.error("Failed to get embedding models mode=%s error=%s", self.mode, exc, exc_info=True)
             return []
 
     def get_embedding_dimension(self) -> int:
-        """
-        Получить ожидаемую размерность эмбеддингов для текущего режима
-        0 = не проверяем строго (auto)
-        """
         return self.DEFAULT_DIMENSIONS.get(self.mode, 0)
 
     def embedd_documents(self, texts: List[str]) -> List[List[float]]:
-        """Синхронная обертка (для совместимости)"""
-        import asyncio
-
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(self.embedd_documents_async(texts))
-        else:
-            logger.warning("⚠️ embedd_documents called from async context, consider using embedd_documents_async")
-            try:
-                import nest_asyncio
-                nest_asyncio.apply()
-            except ImportError:
-                logger.error("❌ nest_asyncio not installed, cannot run async code from sync context")
-                raise RuntimeError("Please install nest_asyncio or use embedd_documents_async")
-            return asyncio.run(self.embedd_documents_async(texts))
+        logger.warning("embedd_documents called in async context; use embedd_documents_async instead")
+        try:
+            import nest_asyncio
+
+            nest_asyncio.apply()
+        except Exception as exc:
+            raise RuntimeError("Install nest_asyncio or use embedd_documents_async") from exc
+        return asyncio.run(self.embedd_documents_async(texts))
 
     async def embedd_documents_async(self, texts: List[str]) -> List[List[float]]:
-        """Асинхронная генерация эмбеддингов"""
         if not texts:
-            logger.warning("⚠️ Empty texts list provided")
             return []
 
-        # FIX: embedding_model никогда не должен быть None
-        if self.mode == "aihub":
-            embedding_model = self.model or settings.AIHUB_EMBEDDING_MODEL or settings.EMBEDDINGS_MODEL
-        else:
-            embedding_model = self.model or settings.OLLAMA_EMBED_MODEL or settings.EMBEDDINGS_MODEL
+        provider_source = self._provider_source()
+        decision = llm_manager.provider_registry.resolve_embedding_model_decision(provider_source, self.model)
+        embedding_model = decision.resolved_model
 
-        # FIX: если EMBEDDINGS_DIM=0 — не проверяем строго
+        if not str(embedding_model or "").strip():
+            raise ValueError(f"Embedding model is not configured for mode '{self.mode}'")
+
         expected_dim = settings.EMBEDDINGS_DIM or self.get_embedding_dimension()
-
         logger.info(
-            f"🔮 Generating embeddings for {len(texts)} texts using {self.original_mode}, "
-            f"model: {embedding_model}, expected dimension: {expected_dim}"
+            (
+                "Embedding batch started: mode=%s provider=%s requested_model=%s resolved_model=%s "
+                "resolution_source=%s reason=%s texts=%d expected_dim=%s"
+            ),
+            self.mode,
+            provider_source,
+            self.model,
+            embedding_model,
+            decision.source,
+            decision.reason,
+            len(texts),
+            expected_dim,
         )
 
         local_max_chars = int(getattr(settings, "OLLAMA_EMBED_MAX_INPUT_CHARS", 3500) or 3500)
@@ -163,24 +159,22 @@ class EmbeddingsManager:
             for vec in vectors:
                 if len(vec) != dim:
                     raise RuntimeError("Inconsistent embedding dimensions across segments")
-                for i, value in enumerate(vec):
-                    total[i] += float(value)
-            n = float(len(vectors))
-            return [value / n for value in total]
+                for idx, value in enumerate(vec):
+                    total[idx] += float(value)
+            factor = float(len(vectors))
+            return [value / factor for value in total]
 
-        all_embeddings = []
-
-        concurrency = settings.AIHUB_EMBEDDING_CONCURRENCY if self.mode == "aihub" else settings.EMBEDDING_CONCURRENCY
-        semaphore = asyncio.Semaphore(max(1, int(concurrency)))
         results: List[Optional[List[float]]] = [None] * len(texts)
         segmented_inputs = 0
         segment_calls_total = 0
+        concurrency = settings.AIHUB_EMBEDDING_CONCURRENCY if self.mode == "aihub" else settings.EMBEDDING_CONCURRENCY
+        semaphore = asyncio.Semaphore(max(1, int(concurrency)))
 
         async def _embed_one(idx: int, text: str) -> None:
             nonlocal segmented_inputs, segment_calls_total
             source_text = str(text or "")
             segments = [source_text]
-            if self.mode in ("local", "ollama"):
+            if self.mode == "local":
                 segments = _split_for_embedding(source_text, local_max_chars, local_overlap_chars)
 
             if len(segments) > 1:
@@ -189,42 +183,56 @@ class EmbeddingsManager:
                 segment_vectors: List[List[float]] = []
                 for seg in segments:
                     async with semaphore:
-                        seg_embedding = await llm_manager.generate_embedding(
+                        segment_embedding = await llm_manager.generate_embedding(
                             text=seg,
-                            model_source=self.mode,
-                            model_name=embedding_model
+                            model_source=provider_source,
+                            model_name=embedding_model,
                         )
-                    if not seg_embedding or len(seg_embedding) == 0:
-                        raise RuntimeError(f"Empty embedding returned for text {idx+1} segment")
-                    segment_vectors.append(seg_embedding)
+                    if not segment_embedding:
+                        raise RuntimeError(f"Empty embedding returned for text index={idx} segment")
+                    segment_vectors.append(segment_embedding)
                 embedding = _mean_pool(segment_vectors)
             else:
                 async with semaphore:
                     embedding = await llm_manager.generate_embedding(
                         text=source_text,
-                        model_source=self.mode,
-                        model_name=embedding_model
+                        model_source=provider_source,
+                        model_name=embedding_model,
                     )
-                if not embedding or len(embedding) == 0:
-                    raise RuntimeError(f"Empty embedding returned for text {idx+1}")
+                if not embedding:
+                    raise RuntimeError(f"Empty embedding returned for text index={idx}")
 
             actual_dim = len(embedding)
             if expected_dim and actual_dim != expected_dim:
                 logger.warning(
-                    f"⚠️ Unexpected embedding dimension: expected {expected_dim}, "
-                    f"got {actual_dim} for text {idx+1}"
+                    "Unexpected embedding dimension: mode=%s expected=%d actual=%d idx=%d",
+                    self.mode,
+                    expected_dim,
+                    actual_dim,
+                    idx,
                 )
             results[idx] = embedding
 
         try:
             await asyncio.gather(*[_embed_one(i, t) for i, t in enumerate(texts)])
-        except Exception as e:
-            logger.error(f"❌ Failed to generate embeddings batch: {e}")
-            raise RuntimeError(f"Embedding generation failed: {e}")
+        except Exception as exc:
+            logger.error(
+                "Embedding batch failed: mode=%s model=%s texts=%d error=%s",
+                self.mode,
+                embedding_model,
+                len(texts),
+                exc,
+                exc_info=True,
+            )
+            raise
 
         if segmented_inputs > 0:
             logger.info(
-                "🔀 Segmented %d/%d embedding inputs into %d local calls (max_chars=%d overlap=%d)",
+                (
+                    "Embedding segmentation applied: mode=%s segmented_inputs=%d total_inputs=%d "
+                    "segment_calls=%d max_chars=%d overlap=%d"
+                ),
+                self.mode,
                 segmented_inputs,
                 len(texts),
                 segment_calls_total,
@@ -232,17 +240,20 @@ class EmbeddingsManager:
                 local_overlap_chars,
             )
 
+        output: List[List[float]] = []
         for emb in results:
             if emb is None:
                 raise RuntimeError("Embedding generation failed: missing result entry")
-            all_embeddings.append(emb)
+            output.append(emb)
 
         logger.info(
-            f"✅ Generated {len(all_embeddings)} embeddings successfully "
-            f"(dimension: {len(all_embeddings[0]) if all_embeddings else 'N/A'})"
+            "Embedding batch completed: mode=%s model=%s texts=%d dim=%d",
+            self.mode,
+            embedding_model,
+            len(output),
+            len(output[0]) if output else 0,
         )
-        return all_embeddings
+        return output
 
 
-# Singleton instance
 embeddings_manager = EmbeddingsManager()

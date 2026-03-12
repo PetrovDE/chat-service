@@ -101,6 +101,85 @@ def execute_aggregate_sync_pipeline(
     }
 
 
+def execute_lookup_sync_pipeline(
+    *,
+    query: str,
+    dataset: ResolvedTabularDataset,
+    table: ResolvedTabularTable,
+    target_file: Any,
+    timeout_seconds: float,
+    build_guardrails_fn,
+    build_execution_limits_fn,
+    build_sql_fn: Callable[[str, ResolvedTabularTable], Tuple[str, Dict[str, Any]]],
+    run_guarded_query_fn,
+    observe_ms_fn,
+    rows_to_result_text_fn,
+) -> Dict[str, Any]:
+    t0 = perf_counter()
+    guardrails = build_guardrails_fn()
+    execution_limits = build_execution_limits_fn()
+    sql, plan = build_sql_fn(query, table)
+    with TabularExecutionSession(dataset=dataset, table=table, limits=execution_limits) as session:
+        rows, guarded_sql, guard_debug = run_guarded_query_fn(
+            session=session,
+            guardrails=guardrails,
+            sql=sql,
+            estimated_scan_rows=int(table.row_count or 0),
+            timeout_seconds=timeout_seconds,
+        )
+        rows_total = int(table.row_count or 0)
+        rows_retrieved = int(len(rows))
+        coverage_ratio = float(rows_retrieved / rows_total) if rows_total > 0 else 0.0
+
+    observe_ms_fn("tabular_sql_execution_ms", (perf_counter() - t0) * 1000.0, intent="lookup")
+    result_text = rows_to_result_text_fn(rows)
+    return {
+        "status": "ok",
+        "prompt_context": (
+            "Deterministic tabular SQL lookup result (source of truth):\n"
+            f"table={table.table_name}\n"
+            f"sql={guarded_sql}\n"
+            f"rows={rows_retrieved}\n"
+            f"result={result_text}"
+        ),
+        "debug": {
+            "retrieval_mode": "tabular_sql",
+            "intent": "tabular_lookup",
+            "deterministic_path": True,
+            "tabular_sql": {
+                "storage_engine": dataset.engine,
+                "dataset_id": dataset.dataset_id,
+                "dataset_version": dataset.dataset_version,
+                "dataset_provenance_id": dataset.dataset_provenance_id,
+                "table_name": table.table_name,
+                "table_version": table.table_version,
+                "table_provenance_id": table.provenance_id,
+                "table_row_count": rows_total,
+                "rows_retrieved": rows_retrieved,
+                "executed_sql": guarded_sql,
+                "policy_decision": guard_debug.get("policy_decision"),
+                "guardrail_flags": guard_debug.get("guardrail_flags", []),
+                "sql": guarded_sql,
+                "result": result_text,
+                "sql_guardrails": guard_debug,
+                **plan,
+            },
+        },
+        "sources": [
+            (
+                f"{getattr(target_file, 'original_filename', 'unknown')} "
+                f"| table={table.table_name} | dataset_v={dataset.dataset_version} "
+                f"| table_v={table.table_version} | sql_lookup"
+            )
+        ],
+        "rows_expected_total": rows_total,
+        "rows_retrieved_total": rows_retrieved,
+        "rows_used_map_total": rows_retrieved,
+        "rows_used_reduce_total": rows_retrieved,
+        "row_coverage_ratio": coverage_ratio,
+    }
+
+
 def build_profile_payload_pipeline(
     *,
     session: TabularExecutionSession,

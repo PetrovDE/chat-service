@@ -1,4 +1,11 @@
 import { formatMessage } from './formatters.js';
+import {
+    formatMessageDateLabel,
+    formatMessageTimeLabel,
+    nowTimestampISO,
+    parseAppTimestamp,
+    toLocalDateKey,
+} from './time-format.js';
 
 class ChatManager {
     constructor(apiService, uiController) {
@@ -73,7 +80,7 @@ class ChatManager {
             this.isGenerating = true;
             this.showGenerating(true);
 
-            this.addMessageToUI('user', normalizedMessage, new Date().toISOString());
+            this.addMessageToUI('user', normalizedMessage, nowTimestampISO());
 
             const attachedFiles = window.app?.fileManager?.getAttachedFiles?.() || [];
             const fileIds = attachedFiles.map((file) => file.id);
@@ -101,7 +108,7 @@ class ChatManager {
                 window.app.fileManager.clearAttachedFiles();
             }
         } catch (error) {
-            this.addMessageToUI('assistant', `Error: ${error.message || 'Failed to send message'}`, new Date().toISOString());
+            this.addMessageToUI('assistant', `Error: ${error.message || 'Failed to send message'}`, nowTimestampISO());
             throw error;
         } finally {
             this.isGenerating = false;
@@ -226,14 +233,15 @@ class ChatManager {
         const emptyState = chatMessages.querySelector('.chat-empty-state');
         if (emptyState) emptyState.remove();
 
-        this.ensureDateDivider(new Date().toISOString());
+        const nowIso = nowTimestampISO();
+        this.ensureDateDivider(nowIso);
 
         const messageDiv = document.createElement('article');
         messageDiv.className = 'message assistant';
         messageDiv.innerHTML = `
             <div class="message-bubble"></div>
             <div class="message-meta"></div>
-            <time class="message-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+            <time class="message-time">${formatMessageTimeLabel(nowIso)}</time>
         `;
 
         chatMessages.appendChild(messageDiv);
@@ -247,14 +255,14 @@ class ChatManager {
         const emptyState = chatMessages.querySelector('.chat-empty-state');
         if (emptyState) emptyState.remove();
 
-        const messageTime = timestamp || new Date().toISOString();
+        const messageTime = timestamp || nowTimestampISO();
         this.ensureDateDivider(messageTime);
 
         const messageDiv = document.createElement('article');
         messageDiv.className = `message ${role}`;
 
         const html = role === 'assistant' ? formatMessage(content) : this.escapeText(content).replace(/\n/g, '<br>');
-        const timeLabel = new Date(messageTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const timeLabel = formatMessageTimeLabel(messageTime);
 
         messageDiv.innerHTML = `
             <div class="message-bubble">${html}</div>
@@ -325,20 +333,17 @@ class ChatManager {
         const chatMessages = document.getElementById('chatMessages');
         if (!chatMessages) return;
 
-        const date = new Date(timestamp);
-        if (Number.isNaN(date.getTime())) return;
+        const date = parseAppTimestamp(timestamp);
+        if (!date || Number.isNaN(date.getTime())) return;
 
-        const dateKey = date.toISOString().slice(0, 10);
+        const dateKey = toLocalDateKey(date);
         if (dateKey === this.lastRenderedDate) return;
 
         this.lastRenderedDate = dateKey;
 
         const divider = document.createElement('div');
         divider.className = 'date-divider';
-
-        const today = new Date();
-        const isToday = today.toDateString() === date.toDateString();
-        divider.textContent = isToday ? 'Today' : date.toLocaleDateString();
+        divider.textContent = formatMessageDateLabel(date);
 
         chatMessages.appendChild(divider);
     }

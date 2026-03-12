@@ -15,6 +15,7 @@ ROUTE_NARRATIVE_RETRIEVAL = "narrative_retrieval"
 
 INTENT_TABULAR_AGGREGATE = "tabular_aggregate"
 INTENT_TABULAR_PROFILE = "tabular_profile"
+INTENT_TABULAR_LOOKUP = "tabular_lookup"
 INTENT_COMPLEX_ANALYTICS = "complex_analytics"
 INTENT_NARRATIVE_RETRIEVAL = "narrative_retrieval"
 INTENT_METRIC_CLARIFICATION = "metric_clarification"
@@ -51,6 +52,20 @@ _PROFILE_HINTS = (
     "per column",
     "full analysis",
     "analyze dataset",
+)
+_LOOKUP_HINTS = (
+    "find rows",
+    "show rows",
+    "show records",
+    "lookup",
+    "filter",
+    "where",
+    "найди строки",
+    "покажи строки",
+    "покажи записи",
+    "выведи строки",
+    "фильтр",
+    "где ",
 )
 _METRIC_KEYWORDS = (
     "\u043c\u0435\u0442\u0440\u0438\u043a",
@@ -107,6 +122,8 @@ def detect_tabular_intent(query: str) -> Optional[str]:
         return "profile"
     if any(hint in q for hint in (_COUNT_HINTS + _SUM_HINTS + _AVG_HINTS + _MIN_HINTS + _MAX_HINTS + _AGGREGATE_SCOPE_HINTS)):
         return "aggregate"
+    if any(hint in q for hint in _LOOKUP_HINTS):
+        return "lookup"
     return None
 
 
@@ -325,6 +342,21 @@ def plan_query(
             route=ROUTE_DETERMINISTIC_ANALYTICS,
             intent=INTENT_TABULAR_AGGREGATE,
             confidence=0.92 if column_matches else 0.84,
+            requires_clarification=False,
+            reason_codes=reason_codes,
+            metric_critical=metric_critical,
+        )
+        _observe_decision(decision)
+        return decision
+
+    if intent_kind == "lookup":
+        reason_codes.append("tabular_lookup_intent")
+        if column_matches:
+            reason_codes.append("column_match_found")
+        decision = QueryPlanDecision(
+            route=ROUTE_DETERMINISTIC_ANALYTICS,
+            intent=INTENT_TABULAR_LOOKUP,
+            confidence=0.86 if column_matches else 0.8,
             requires_clarification=False,
             reason_codes=reason_codes,
             metric_critical=metric_critical,

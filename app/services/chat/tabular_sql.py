@@ -13,6 +13,7 @@ from app.services.chat.tabular_sql_pipeline import (
     build_profile_payload_pipeline,
     build_tabular_error_result_pipeline,
     execute_aggregate_sync_pipeline,
+    execute_lookup_sync_pipeline,
     execute_profile_sync_pipeline,
 )
 from app.services.tabular import (
@@ -61,6 +62,19 @@ _PROFILE_HINTS = (
     "full analysis",
     "analyze dataset",
 )
+_LOOKUP_HINTS = (
+    "find rows",
+    "show rows",
+    "show records",
+    "lookup",
+    "where",
+    "filter",
+    "найди строки",
+    "покажи строки",
+    "покажи записи",
+    "выведи строки",
+    "где ",
+)
 
 
 def is_tabular_aggregate_intent(query: str) -> bool:
@@ -77,6 +91,10 @@ def _norm(text: str) -> str:
 
 def _quote_ident(name: str) -> str:
     return '"' + str(name or "").replace('"', '""') + '"'
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + str(value or "").replace("'", "''") + "'"
 
 
 def _extract_row_tuples(rows: Sequence[Tuple[Any, ...]]) -> List[Tuple[Any, ...]]:
@@ -182,6 +200,81 @@ def _build_sql(
     }
 
 
+def _extract_lookup_value(query: str) -> Optional[str]:
+    q = (query or "").strip()
+    if not q:
+        return None
+    for regex in (r'"([^"]{1,200})"', r"'([^']{1,200})'"):
+        m = re.search(regex, q)
+        if m:
+            return str(m.group(1)).strip()
+
+    lowered = q.lower()
+    patterns = [
+        r"(?:where|где)\s+.+?(?:=|равно|is|equals)\s+([a-zа-я0-9_./:\-]{1,120})",
+        r"(?:client|customer|клиент)\s+([a-zа-я0-9_./:\-]{1,120})",
+        r"(?:category|segment|категор)\s+([a-zа-я0-9_./:\-]{1,120})",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, lowered)
+        if m:
+            return str(m.group(1)).strip()
+    return None
+
+
+def _build_lookup_sql(
+    *,
+    query: str,
+    table: ResolvedTabularTable,
+) -> Tuple[str, Dict[str, Any]]:
+    q = (query or "").lower()
+    matched_columns = _pick_columns_from_query(query, table)
+    result_columns = matched_columns[:6] if matched_columns else table.columns[:8]
+    if not result_columns:
+        result_columns = table.columns[:4]
+    if not result_columns:
+        result_columns = ["*"]
+
+    lookup_value = _extract_lookup_value(query)
+    filter_column: Optional[str] = None
+    where_clause = ""
+    if lookup_value:
+        if matched_columns:
+            filter_column = matched_columns[0]
+        else:
+            for col in table.columns:
+                col_norm = _norm(col)
+                alias_norm = _norm(table.column_aliases.get(col, ""))
+                if "id" in col_norm or "name" in col_norm or "клиент" in alias_norm or "client" in alias_norm:
+                    filter_column = col
+                    break
+            if filter_column is None and table.columns:
+                filter_column = table.columns[0]
+        if filter_column:
+            val = str(lookup_value).strip().lower()
+            where_clause = (
+                f"WHERE LOWER(TRIM(COALESCE(CAST({_quote_ident(filter_column)} AS VARCHAR), ''))) "
+                f"LIKE {_sql_literal('%' + val + '%')}"
+            )
+
+    order_column = result_columns[0] if result_columns else None
+    select_cols = ", ".join([_quote_ident(col) for col in result_columns if col != "*"]) if result_columns != ["*"] else "*"
+    sql = f"SELECT {select_cols} FROM {_quote_ident(table.table_name)} {where_clause}".strip()
+    if order_column:
+        sql += f" ORDER BY {_quote_ident(order_column)}"
+    limit = 30
+    if any(h in q for h in ("top", "первые", "first")):
+        limit = 20
+    sql += f" LIMIT {int(limit)}"
+    return sql, {
+        "operation": "lookup",
+        "lookup_value": lookup_value,
+        "filter_column": filter_column,
+        "result_columns": result_columns,
+        "matched_columns": matched_columns,
+    }
+
+
 def _select_table_for_query(query: str, dataset: ResolvedTabularDataset) -> Optional[ResolvedTabularTable]:
     if not dataset.tables:
         return None
@@ -247,6 +340,29 @@ def _execute_aggregate_sync(
         run_guarded_query_fn=_run_guarded_query,
         quote_ident_fn=_quote_ident,
         first_int_fn=lambda rows, default: _first_int(rows, default=default),
+        observe_ms_fn=observe_ms,
+        rows_to_result_text_fn=rows_to_result_text,
+    )
+
+
+def _execute_lookup_sync(
+    *,
+    query: str,
+    dataset: ResolvedTabularDataset,
+    table: ResolvedTabularTable,
+    target_file: Any,
+    timeout_seconds: float,
+) -> Dict[str, Any]:
+    return execute_lookup_sync_pipeline(
+        query=query,
+        dataset=dataset,
+        table=table,
+        target_file=target_file,
+        timeout_seconds=timeout_seconds,
+        build_guardrails_fn=_build_guardrails,
+        build_execution_limits_fn=_build_execution_limits,
+        build_sql_fn=lambda q, t: _build_lookup_sql(query=q, table=t),
+        run_guarded_query_fn=_run_guarded_query,
         observe_ms_fn=observe_ms,
         rows_to_result_text_fn=rows_to_result_text,
     )
@@ -347,6 +463,18 @@ async def execute_tabular_sql_path(
             payload = await asyncio.wait_for(
                 asyncio.to_thread(
                     _execute_profile_sync,
+                    dataset=dataset,
+                    table=table,
+                    target_file=target_file,
+                    timeout_seconds=timeout_seconds,
+                ),
+                timeout=timeout_seconds,
+            )
+        elif intent_kind == "lookup":
+            payload = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _execute_lookup_sync,
+                    query=query,
                     dataset=dataset,
                     table=table,
                     target_file=target_file,

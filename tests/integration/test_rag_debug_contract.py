@@ -44,6 +44,9 @@ def test_standard_rag_debug_payload_contains_filters_and_top_chunks():
     assert payload["top_chunks_limit"] == 8
     assert payload["top_chunks_total"] == 1
     assert payload["retrieved_chunks_total"] == 1
+    assert payload["retrieval_path"] == "vector"
+    assert payload["structured_path_used"] is False
+    assert isinstance(payload["top_similarity_scores"], list)
 
 
 def test_sources_and_top_chunks_include_row_ranges():
@@ -76,6 +79,7 @@ def test_sources_and_top_chunks_include_row_ranges():
     assert payload["top_chunks"][0]["row_start"] == 281
     assert payload["top_chunks"][0]["row_end"] == 308
     assert payload["top_chunks"][0]["total_rows"] == 308
+    assert payload["top_chunks"][0]["chunk_type"] is None
 
 
 def test_coverage_sources_merge_row_ranges():
@@ -132,3 +136,15 @@ def test_aihub_prompt_truncation_debug_visible(monkeypatch):
     assert payload["prompt_chars_before"] == 2600
     assert payload["prompt_chars_after"] == 2100
     assert payload["prompt_truncated"] is True
+
+
+def test_structured_retrieval_debug_path_flag():
+    payload = build_standard_rag_debug_payload(
+        rag_debug={"retrieval_mode": "tabular_sql", "returned_count": 0},
+        context_docs=[],
+        rag_sources=[],
+        llm_tokens_used=0,
+        max_items=8,
+    )
+    assert payload["retrieval_path"] == "structured"
+    assert payload["structured_path_used"] is True

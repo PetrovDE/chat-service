@@ -16,6 +16,7 @@ from app.schemas import (
     ConversationResponse,
     ConversationUpdate,
 )
+from app.utils.time import to_utc_iso
 from app.api.dependencies import get_current_user
 from app.crud import crud_conversation, crud_file, crud_message
 from app.rag.vector_store import VectorStoreManager
@@ -85,7 +86,7 @@ async def get_conversation_messages(
             "id": str(msg.id),
             "role": msg.role,
             "content": msg.content,
-            "timestamp": msg.timestamp.isoformat() if msg.timestamp else None
+            "timestamp": to_utc_iso(msg.timestamp),
         }
         for msg in messages
     ]

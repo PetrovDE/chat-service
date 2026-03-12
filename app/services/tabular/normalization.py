@@ -74,6 +74,32 @@ def _read_csv(file_path: Path):
     raise ValueError(f"Failed to read CSV file: {file_path}. Last error: {last_error}")
 
 
+def _read_tsv(file_path: Path):
+    import pandas as pd
+
+    attempts = [
+        {"encoding": "utf-8"},
+        {"encoding": "utf-8-sig"},
+        {"encoding": "cp1251"},
+        {"encoding": "latin-1"},
+    ]
+    last_error: Optional[Exception] = None
+    for attempt in attempts:
+        try:
+            return pd.read_csv(
+                str(file_path),
+                dtype=str,
+                keep_default_na=False,
+                sep="\t",
+                on_bad_lines="skip",
+                **attempt,
+            )
+        except Exception as exc:
+            last_error = exc
+            continue
+    raise ValueError(f"Failed to read TSV file: {file_path}. Last error: {last_error}")
+
+
 def _read_excel_sheet(file_path: Path, sheet_name: str):
     import pandas as pd
 
@@ -85,23 +111,43 @@ def _read_excel_sheet(file_path: Path, sheet_name: str):
     )
 
 
+def _normalize_dataframe(df):
+    import pandas as pd
+
+    if df is None:
+        return pd.DataFrame()
+    work = df.copy()
+    work.columns = [str(col or "").strip() or f"col_{idx + 1}" for idx, col in enumerate(work.columns)]
+    work = work.fillna("")
+    for col in work.columns:
+        work[col] = work[col].astype(str).map(lambda value: value.strip())
+    if not work.empty:
+        work = work.loc[(work != "").any(axis=1)]
+    if not work.empty:
+        non_empty_cols = [col for col in work.columns if bool((work[col] != "").any())]
+        work = work[non_empty_cols]
+    return work.reset_index(drop=True)
+
+
 def load_normalized_tables(file_path: Path, file_type: str) -> List[NormalizedTabularTable]:
     file_type = (file_type or "").lower().strip()
-    if file_type not in {"csv", "xlsx", "xls"}:
+    if file_type not in {"csv", "tsv", "xlsx", "xls"}:
         return []
 
     tables: List[NormalizedTabularTable] = []
 
-    if file_type == "csv":
-        df = _read_csv(file_path)
+    if file_type in {"csv", "tsv"}:
+        df = _read_csv(file_path) if file_type == "csv" else _read_tsv(file_path)
+        df = _normalize_dataframe(df)
         if df is None or df.empty:
             return []
         columns, aliases = normalize_dataframe_columns(df)
-        table_name = safe_sql_identifier("csv_data", fallback="csv_data")
+        table_fallback = "csv_data" if file_type == "csv" else "tsv_data"
+        table_name = safe_sql_identifier(table_fallback, fallback=table_fallback)
         tables.append(
             NormalizedTabularTable(
                 table_name=table_name,
-                sheet_name="CSV",
+                sheet_name="CSV" if file_type == "csv" else "TSV",
                 row_count=int(len(df)),
                 columns=columns,
                 column_aliases=aliases,
@@ -119,6 +165,7 @@ def load_normalized_tables(file_path: Path, file_type: str) -> List[NormalizedTa
         except Exception:
             logger.warning("Tabular runtime: failed to read sheet '%s'", sheet, exc_info=True)
             continue
+        df = _normalize_dataframe(df)
         if df is None or df.empty:
             continue
         columns, aliases = normalize_dataframe_columns(df)
@@ -135,4 +182,3 @@ def load_normalized_tables(file_path: Path, file_type: str) -> List[NormalizedTa
         )
 
     return tables
-

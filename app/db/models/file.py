@@ -22,7 +22,10 @@ class File(Base):
     content_preview = Column(Text)  # First 500 chars for preview
 
     # RAG metadata
-    is_processed = Column(String(20), default="pending")  # pending, processing, completed, failed
+    is_processed = Column(
+        String(20),
+        default="uploaded",
+    )  # uploaded, queued, parsing, parsed, chunking, embedding, indexing, completed, partial_failed, failed
     chunks_count = Column(Integer, default=0)
     embedding_model = Column(String(100))
     processed_at = Column(DateTime)

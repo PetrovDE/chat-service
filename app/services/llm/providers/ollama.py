@@ -7,6 +7,7 @@ import httpx
 
 from app.core.config import settings
 from app.observability.metrics import inc_counter, observe_ms
+from app.services.llm.exceptions import ProviderAuthError, ProviderConfigError, ProviderTransientError
 from app.services.llm.providers.base import BaseLLMProvider
 from app.utils.retry import async_retry
 
@@ -122,11 +123,14 @@ class OllamaProvider(BaseLLMProvider):
             raise
 
     async def generate_embedding(self, text: str, model: Optional[str] = None) -> Optional[List[float]]:
-        embedding_model = model or settings.EMBEDDINGS_MODEL
+        embedding_model = model or settings.OLLAMA_EMBED_MODEL or settings.EMBEDDINGS_MODEL
         if not embedding_model:
-            logger.error("Embedding model is empty. Set EMBEDDINGS_MODEL in .env")
+            logger.error("Embedding model is empty. Set OLLAMA_EMBED_MODEL or EMBEDDINGS_MODEL in .env")
             inc_counter("llm_provider_error_total", provider="ollama", operation="embedding")
-            return None
+            raise ProviderConfigError(
+                "Ollama embedding model is not configured. Set OLLAMA_EMBED_MODEL.",
+                provider="ollama",
+            )
 
         payload = {"model": embedding_model, "input": text}
         started = time.perf_counter()
@@ -168,11 +172,32 @@ class OllamaProvider(BaseLLMProvider):
                 body_preview,
             )
             inc_counter("llm_provider_error_total", provider="ollama", operation="embedding")
-            return None
+            if status in {401, 403}:
+                raise ProviderAuthError(
+                    f"Ollama embedding unauthorized (status={status})",
+                    provider="ollama",
+                    status_code=status,
+                ) from e
+            if status in {408, 425, 429} or 500 <= status <= 599:
+                raise ProviderTransientError(
+                    f"Ollama embedding transient HTTP error (status={status})",
+                    provider="ollama",
+                    status_code=status,
+                ) from e
+            raise ProviderConfigError(
+                f"Ollama embedding request failed (status={status}, model={embedding_model})",
+                provider="ollama",
+                status_code=status,
+            ) from e
         except Exception as e:
             logger.error("Ollama embedding error: %s", e, exc_info=True)
             inc_counter("llm_provider_error_total", provider="ollama", operation="embedding")
-            return None
+            if isinstance(e, (httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError, httpx.ReadError)):
+                raise ProviderTransientError(
+                    "Ollama embedding network/timeout failure",
+                    provider="ollama",
+                ) from e
+            raise
 
 
 ollama_provider = OllamaProvider()

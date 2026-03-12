@@ -41,7 +41,7 @@ class FileInfo(BaseModel):
 class FileProcessingStatus(BaseModel):
     """Schema for file processing status"""
     file_id: uuid.UUID
-    status: str  # pending, processing, completed, partial_success, failed
+    status: str  # uploaded, queued, parsing, parsed, chunking, embedding, indexing, completed, partial_failed, failed
     chunks_count: int
     total_chunks_expected: int = 0
     chunks_processed: int = 0

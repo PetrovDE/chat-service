@@ -104,11 +104,21 @@ class RAGRetriever:
         conversation_id: Optional[str],
         user_id: Optional[str],
         file_ids: Optional[List[str]],
+        sheet_names: Optional[List[str]] = None,
+        chunk_types: Optional[List[str]] = None,
+        namespace: Optional[str] = None,
+        embedding_mode: Optional[str] = None,
+        embedding_model: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         return build_where_helper(
             conversation_id=conversation_id,
             user_id=user_id,
             file_ids=file_ids,
+            sheet_names=sheet_names,
+            chunk_types=chunk_types,
+            namespace=namespace,
+            embedding_mode=embedding_mode,
+            embedding_model=embedding_model,
         )
 
     def _lexical_scores(self, query: str, rows: List[Dict[str, Any]]) -> Dict[str, float]:
@@ -152,6 +162,95 @@ class RAGRetriever:
     def _select_with_coverage(self, rows: List[Dict[str, Any]], top_k: int, per_file_min: int = 1) -> List[Dict[str, Any]]:
         return select_with_coverage_helper(rows, top_k=top_k, per_file_min=per_file_min)
 
+    @staticmethod
+    def _is_tabular_row(row: Dict[str, Any]) -> bool:
+        meta = row.get("metadata") or {}
+        file_type = str(meta.get("file_type") or "").lower()
+        chunk_type = str(meta.get("chunk_type") or "").lower()
+        return file_type in {"xlsx", "xls", "csv", "tsv"} or chunk_type in {"file_summary", "sheet_summary", "row_group"}
+
+    def _staged_tabular_selection(self, rows: List[Dict[str, Any]], *, top_k: int) -> List[Dict[str, Any]]:
+        if not rows:
+            return []
+        if not any(self._is_tabular_row(r) for r in rows):
+            return rows
+
+        file_summaries: List[Dict[str, Any]] = []
+        sheet_summaries: List[Dict[str, Any]] = []
+        row_groups: List[Dict[str, Any]] = []
+        others: List[Dict[str, Any]] = []
+        for row in rows:
+            meta = row.get("metadata") or {}
+            chunk_type = str(meta.get("chunk_type") or "").lower()
+            if chunk_type == "file_summary":
+                file_summaries.append(row)
+            elif chunk_type == "sheet_summary":
+                sheet_summaries.append(row)
+            elif chunk_type == "row_group":
+                row_groups.append(row)
+            else:
+                others.append(row)
+
+        out: List[Dict[str, Any]] = []
+        seen_ids = set()
+        seen_ranges = set()
+        sheet_buckets: Dict[Tuple[str, str], int] = {}
+
+        def append_row(item: Dict[str, Any], *, max_per_sheet: Optional[int] = None) -> bool:
+            row_id = str(item.get("id") or "")
+            if row_id in seen_ids:
+                return False
+            meta = item.get("metadata") or {}
+            chunk_type = str(meta.get("chunk_type") or "").lower()
+            file_key = str(meta.get("file_id") or meta.get("source") or "")
+            sheet_key = str(meta.get("sheet_name") or "")
+            row_start = meta.get("row_start")
+            row_end = meta.get("row_end")
+            if chunk_type == "row_group" and row_start is not None and row_end is not None:
+                range_key = (file_key, sheet_key, int(row_start), int(row_end))
+                if range_key in seen_ranges:
+                    return False
+            if max_per_sheet is None and chunk_type == "row_group":
+                max_per_sheet = 2
+            if max_per_sheet is not None:
+                sheet_bucket_key = (file_key, sheet_key)
+                count = int(sheet_buckets.get(sheet_bucket_key, 0) or 0)
+                if count >= max_per_sheet:
+                    return False
+                sheet_buckets[sheet_bucket_key] = count + 1
+            if chunk_type == "row_group" and row_start is not None and row_end is not None:
+                seen_ranges.add((file_key, sheet_key, int(row_start), int(row_end)))
+            seen_ids.add(row_id)
+            out.append(item)
+            return True
+
+        for item in file_summaries[: max(2, top_k // 4)]:
+            if len(out) >= top_k:
+                break
+            append_row(item)
+
+        for item in sheet_summaries[: max(4, top_k // 2)]:
+            if len(out) >= top_k:
+                break
+            append_row(item, max_per_sheet=1)
+
+        for item in row_groups:
+            if len(out) >= top_k:
+                break
+            append_row(item, max_per_sheet=2)
+
+        for item in others:
+            if len(out) >= top_k:
+                break
+            append_row(item)
+
+        if len(out) < top_k:
+            for item in rows:
+                if len(out) >= top_k:
+                    break
+                append_row(item)
+        return out
+
     async def retrieve(
         self,
         query: str,
@@ -168,6 +267,9 @@ class RAGRetriever:
         query_intent: Optional[str] = None,
         rag_mode: Optional[str] = None,
         full_file_max_chunks: Optional[int] = None,
+        sheet_names: Optional[List[str]] = None,
+        chunk_types: Optional[List[str]] = None,
+        namespace: Optional[str] = None,
     ) -> Union[List[Document], Tuple[List[Document], RetrievalDebug]]:
         t0 = time.perf_counter()
         query = (query or "").strip()
@@ -182,7 +284,18 @@ class RAGRetriever:
             rag_mode=rag_mode,
             file_ids=file_ids,
         )
-        where = self._build_where(conversation_id=conversation_id, user_id=user_id, file_ids=file_ids)
+        where = self._build_where(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            file_ids=file_ids,
+            sheet_names=sheet_names,
+            chunk_types=chunk_types,
+            namespace=namespace,
+            embedding_mode=embedding_mode,
+            embedding_model=embedding_model,
+        )
+        if score_threshold is None:
+            score_threshold = float(getattr(settings, "RAG_SCORE_THRESHOLD", 0.0) or 0.0)
 
         if intent == "analyze_full_file":
             docs = await self.retrieve_full_file(
@@ -190,6 +303,8 @@ class RAGRetriever:
                 conversation_id=conversation_id,
                 user_id=user_id,
                 file_ids=file_ids,
+                embedding_mode=embedding_mode,
+                embedding_model=embedding_model,
                 max_chunks=full_file_max_chunks,
             )
             inc_counter("rag_retrieve_total", intent=intent, mode="full_file")
@@ -269,6 +384,7 @@ class RAGRetriever:
                     }
                 )
             selected = self._select_with_coverage(ranked_rows, top_k=top_k, per_file_min=1)
+            selected = self._staged_tabular_selection(selected, top_k=top_k)
             docs = self._rows_to_documents(selected, score_key="hybrid_score")
             merged_count = len(ranked_rows)
         else:
@@ -282,7 +398,8 @@ class RAGRetriever:
             if score_threshold is not None:
                 merged = [r for r in merged if float(r.get("hybrid_score", 0.0)) >= float(score_threshold)]
 
-            selected = self._select_with_coverage(merged, top_k=top_k, per_file_min=1)
+            staged = self._staged_tabular_selection(merged, top_k=max(top_k * 3, 12))
+            selected = self._select_with_coverage(staged, top_k=top_k, per_file_min=1)
             docs = self._rows_to_documents(selected, score_key="hybrid_score")
             merged_count = len(merged)
 
@@ -305,12 +422,26 @@ class RAGRetriever:
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         file_ids: Optional[List[str]] = None,
+        embedding_mode: Optional[str] = None,
+        embedding_model: Optional[str] = None,
         max_chunks: Optional[int] = None,
+        sheet_names: Optional[List[str]] = None,
+        chunk_types: Optional[List[str]] = None,
+        namespace: Optional[str] = None,
     ) -> List[Document]:
         t0 = time.perf_counter()
         _ = query
         max_chunks = int(max_chunks or settings.RAG_FULL_FILE_MAX_CHUNKS)
-        where = self._build_where(conversation_id=conversation_id, user_id=user_id, file_ids=file_ids)
+        where = self._build_where(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            file_ids=file_ids,
+            sheet_names=sheet_names,
+            chunk_types=chunk_types,
+            namespace=namespace,
+            embedding_mode=embedding_mode,
+            embedding_model=embedding_model,
+        )
         rows = await asyncio.to_thread(
             self.vectorstore.get_by_filter,
             filter_dict=where,
@@ -370,6 +501,9 @@ class RAGRetriever:
         debug_return: bool = False,
         rag_mode: Optional[str] = None,
         full_file_max_chunks: Optional[int] = None,
+        sheet_names: Optional[List[str]] = None,
+        chunk_types: Optional[List[str]] = None,
+        namespace: Optional[str] = None,
     ) -> Any:
         intent = self._resolve_intent(
             query=query,
@@ -393,6 +527,9 @@ class RAGRetriever:
                 query_intent=intent,
                 rag_mode=rag_mode,
                 full_file_max_chunks=full_file_max_chunks,
+                sheet_names=sheet_names,
+                chunk_types=chunk_types,
+                namespace=namespace,
             )
             return [
                 {
@@ -418,6 +555,9 @@ class RAGRetriever:
             query_intent=intent,
             rag_mode=rag_mode,
             full_file_max_chunks=full_file_max_chunks,
+            sheet_names=sheet_names,
+            chunk_types=chunk_types,
+            namespace=namespace,
         )
         full_file_limit_hit = False
         full_file_max_chunks = None

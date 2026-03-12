@@ -86,6 +86,15 @@ def _model_rows(
     return rows
 
 
+def _aihub_type_matches(capability: str, model_type: Any) -> bool:
+    raw = str(model_type or "").strip().lower()
+    if capability == CAP_EMBEDDING:
+        return raw == "embedding"
+    if capability == CAP_CHAT:
+        return raw in {"chatbot", "chat"}
+    return False
+
+
 @router.get("/list", response_model=ModelsListResponse)
 async def list_models(
     mode: str = Query("local"),
@@ -100,7 +109,28 @@ async def list_models(
         else:
             decision = llm_manager.provider_registry.resolve_embedding_model_decision(selected_mode, None)
 
-        provider_models = await llm_manager.get_available_models(source=selected_mode)
+        provider_models: List[str] = []
+        if selected_mode == "aihub":
+            detailed = await llm_manager.get_available_models_detailed(
+                source=selected_mode,
+                capability=selected_capability,
+            )
+            for row in detailed:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name") or "").strip()
+                if not name:
+                    continue
+                # Trust AI HUB model type as source of truth for capabilities.
+                if selected_capability and not _aihub_type_matches(selected_capability, row.get("type")):
+                    continue
+                if name not in provider_models:
+                    provider_models.append(name)
+        else:
+            provider_models = await llm_manager.get_available_models(
+                source=selected_mode,
+                capability=selected_capability,
+            )
 
         catalog_models: List[str] = []
         if selected_mode == "aihub":
@@ -118,10 +148,10 @@ async def list_models(
                 catalog_models = [settings.OPENAI_EMBEDDING_MODEL]
 
         # Provider-aware candidate policy:
-        # - AI HUB embedding list must be catalog-driven to avoid leaking chat-only model names.
-        # - Other paths may merge provider discovery with configured catalog.
-        strict_catalog = bool(selected_mode == "aihub" and selected_capability == CAP_EMBEDDING and catalog_models)
-        candidates = catalog_models if strict_catalog else (provider_models + catalog_models)
+        # - For AI HUB, prefer typed provider discovery (`type=embedding|chatbot`).
+        # - If discovery is empty/unavailable, fallback to configured catalog defaults.
+        use_catalog_fallback = bool(selected_mode == "aihub" and not provider_models)
+        candidates = catalog_models if use_catalog_fallback else (provider_models + catalog_models)
 
         merged_names: List[str] = []
         for name in candidates:
@@ -137,14 +167,14 @@ async def list_models(
         logger.info(
             (
                 "Models listed: mode=%s capability=%s provider=%s default_model=%s "
-                "resolution_source=%s strict_catalog=%s count=%d"
+                "resolution_source=%s catalog_fallback=%s count=%d"
             ),
             mode,
             selected_capability,
             selected_mode,
             decision.resolved_model,
             decision.source,
-            strict_catalog,
+            use_catalog_fallback,
             len(models),
         )
         return {

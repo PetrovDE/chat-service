@@ -89,8 +89,8 @@ Browser SPA (frontend/index.html + static/js)
 ## Актуальные UI-изменения (frontend)
 - В sidebar чатов удаление вынесено в отдельную кнопку-корзину справа от каждого чата.
 - В `Settings` кнопка `Logout` расположена в футере рядом с `Save` и оформлена как danger-кнопка.
-- В composer поле ввода оставлено сверху, а ниже расположен единый ряд контролов: `File + provider + model + RAG mode + Send`.
-- Под селектами `provider/model/rag mode` показываются inline-подсказки.
+- В composer поле ввода оставлено сверху, а ниже расположен единый ряд контролов: `File + provider + chat model + embedding model + RAG mode + Send`.
+- Под селектами `provider/chat model/embedding model/rag mode` показываются inline-подсказки.
 - `RAG debug` показывается под assistant-сообщением только когда пользователь включил этот флаг в `Settings`.
 
 ## Troubleshooting (топ-5)
@@ -112,6 +112,7 @@ Browser SPA (frontend/index.html + static/js)
 
 5. Модели недоступны/медленные ответы.
 Где смотреть: `GET /api/v1/models/status`, `GET /api/v1/models/list?mode=...&capability=chat|embedding`, логи провайдера в backend (`app/services/llm/providers/*`), общие метрики задержек в `/metrics`.
+Для AI HUB список capability-моделей определяется по `type` из ответа провайдера (`chatbot`/`embedding`), а catalog используется как fallback если discovery недоступен.
 
 ## XLSX / CSV Settings (LangChain-first)
 - `XLSX_CHUNK_MAX_CHARS`: adaptive char-budget для row-dense чанков.
@@ -181,8 +182,18 @@ This keeps HTTP/SSE behavior stable while reducing file size and improving testa
   - no hidden cross-provider fallback.
 - Upload/reprocess performs embedding preflight validation and returns `422` for auth/config/model-availability errors.
 - New vectors are written into model-scoped collections (`<base>_<dim>d_<mode>_<model>_<hash>`), so different embedding spaces (provider/model) are not mixed.
+- `GET /api/v1/models/list` provider-aware behavior:
+  - `capability=chat` and `capability=embedding` are resolved independently,
+  - AI HUB capability filtering uses provider model `type` (`chatbot` vs `embedding`),
+  - if AI HUB discovery is unavailable, configured catalog is used as fallback.
 
 ## Time Rendering Consistency (2026-03-12)
 - File timestamps and message timestamps now use the same frontend time parsing/formatting path (`frontend/static/js/time-format.js`).
 - Backend serialization for conversation messages and file timestamps is normalized to UTC-aware ISO (`+00:00`), then rendered in client local timezone.
 - This removes file-menu UTC/GMT-like drift relative to message timestamps.
+
+## Prompt Max Chars Behavior (2026-03-12)
+- Chat API request field `prompt_max_chars` now accepts `1000..500000`.
+- AI HUB still applies provider-side cap `AIHUB_MAX_PROMPT_CHARS` (default `50000`), so request values above this are clamped for AI HUB calls.
+- To effectively raise AI HUB prompt size, increase server setting `AIHUB_MAX_PROMPT_CHARS` (not only UI request value).
+- RAG/provider debug now includes `prompt_chars_requested`, `prompt_chars_configured`, `prompt_chars_limit`, `prompt_chars_before`, `prompt_chars_after`, `prompt_truncated`.

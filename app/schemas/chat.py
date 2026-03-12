@@ -12,7 +12,7 @@ class ChatMessage(BaseModel):
     model_name: Optional[str] = None
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(None, ge=1, le=8192)
-    prompt_max_chars: Optional[int] = Field(None, ge=1000, le=200000)
+    prompt_max_chars: Optional[int] = Field(None, ge=1000, le=500000)
     file_ids: Optional[List[str]] = None
     rag_mode: Optional[str] = Field(None, pattern=r"^(auto|hybrid|full_file)$")
     summarize: bool = False

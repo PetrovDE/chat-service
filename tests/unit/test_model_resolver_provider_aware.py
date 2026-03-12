@@ -1,6 +1,6 @@
 ﻿import pytest
 
-from app.services.llm.model_resolver import ProviderModelResolver
+from app.services.llm.model_resolver import CAP_EMBEDDING, ProviderModelResolver, infer_model_capability
 
 
 def test_aihub_embedding_default_is_qwen3_emb():
@@ -24,6 +24,10 @@ def test_local_model_tag_not_misparsed_as_provider_prefix():
     decision = resolver.resolve_embedding("local", "nomic-embed-text:latest")
     assert decision.source == "override"
     assert decision.resolved_model == "nomic-embed-text:latest"
+
+
+def test_qwen3_emb_is_detected_as_embedding_capability():
+    assert infer_model_capability("qwen3-emb") == CAP_EMBEDDING
 
 
 def test_cross_provider_override_is_rejected():

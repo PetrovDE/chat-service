@@ -1,4 +1,14 @@
 // frontend/static/js/settings-manager.js
+const PROMPT_MAX_CHARS_DEFAULT = 50000;
+const PROMPT_MAX_CHARS_MIN = 2000;
+const PROMPT_MAX_CHARS_MAX = 500000;
+
+function clampPromptMaxChars(value) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return PROMPT_MAX_CHARS_DEFAULT;
+    return Math.max(PROMPT_MAX_CHARS_MIN, Math.min(PROMPT_MAX_CHARS_MAX, parsed));
+}
+
 class SettingsManager {
     constructor(apiService, uiController) {
         this.apiService = apiService;
@@ -9,7 +19,7 @@ class SettingsManager {
             embedding_model: null,
             temperature: 0.7,
             max_tokens: 2048,
-            prompt_max_chars: 50000,
+            prompt_max_chars: PROMPT_MAX_CHARS_DEFAULT,
             rag_debug: false,
         };
         this.modelCapabilities = {};
@@ -173,8 +183,8 @@ class SettingsManager {
     }
 
     setPromptMaxChars(chars) {
-        this.settings.prompt_max_chars = parseInt(chars);
-        console.log('Prompt max chars set to:', chars);
+        this.settings.prompt_max_chars = clampPromptMaxChars(chars);
+        console.log('Prompt max chars set to:', this.settings.prompt_max_chars);
     }
 
     updateModelCapsHint(modelName) {
@@ -207,8 +217,8 @@ class SettingsManager {
         }
 
         if (promptMaxCharsInput && caps.context_window) {
-            const suggested = Math.max(8000, Math.min(200000, Math.floor(Number(caps.context_window) * 3)));
-            if (!this.settings.prompt_max_chars || this.settings.prompt_max_chars === 50000) {
+            const suggested = Math.max(8000, Math.min(PROMPT_MAX_CHARS_MAX, Math.floor(Number(caps.context_window) * 3)));
+            if (!this.settings.prompt_max_chars || this.settings.prompt_max_chars === PROMPT_MAX_CHARS_DEFAULT) {
                 this.settings.prompt_max_chars = suggested;
                 promptMaxCharsInput.value = String(suggested);
             }
@@ -249,7 +259,8 @@ class SettingsManager {
         }
 
         if (promptMaxCharsInput) {
-            this.settings.prompt_max_chars = parseInt(promptMaxCharsInput.value);
+            this.settings.prompt_max_chars = clampPromptMaxChars(promptMaxCharsInput.value);
+            promptMaxCharsInput.value = String(this.settings.prompt_max_chars);
         }
 
         if (ragDebugToggle) {
@@ -297,8 +308,11 @@ class SettingsManager {
         }
 
         if (promptMaxCharsInput) {
+            promptMaxCharsInput.min = String(PROMPT_MAX_CHARS_MIN);
+            promptMaxCharsInput.max = String(PROMPT_MAX_CHARS_MAX);
             promptMaxCharsInput.addEventListener('change', (e) => {
                 this.setPromptMaxChars(e.target.value);
+                e.target.value = String(this.settings.prompt_max_chars);
                 this.updateModelCapsHint(this.settings.model);
             });
         }

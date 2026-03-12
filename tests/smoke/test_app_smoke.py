@@ -104,6 +104,35 @@ def test_chat_stream_generates_request_id_when_missing(monkeypatch):
         app.dependency_overrides.pop(chat_endpoint.get_current_user_optional, None)
 
 
+def test_chat_stream_accepts_prompt_max_chars_500000(monkeypatch):
+    async def fake_get_db():
+        yield None
+
+    async def fake_chat_stream(*, chat_data, db, current_user):  # noqa: ARG001
+        assert chat_data.prompt_max_chars == 500000
+
+        async def event_stream():
+            yield f"data: {json.dumps({'type': 'done', 'content': 'ok'})}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    app.dependency_overrides[chat_endpoint.get_db] = fake_get_db
+    app.dependency_overrides[chat_endpoint.get_current_user_optional] = lambda: None
+    monkeypatch.setattr(chat_endpoint.chat_orchestrator, "chat_stream", fake_chat_stream)
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/chat/stream",
+                json={"message": "hello", "prompt_max_chars": 500000},
+            )
+            assert response.status_code == 200
+            assert "text/event-stream" in str(response.headers.get("content-type", ""))
+    finally:
+        app.dependency_overrides.pop(chat_endpoint.get_db, None)
+        app.dependency_overrides.pop(chat_endpoint.get_current_user_optional, None)
+
+
 def test_models_status_endpoint():
     with TestClient(app) as client:
         response = client.get("/api/v1/models/status")

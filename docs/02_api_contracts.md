@@ -64,7 +64,7 @@
 | GET | `/api/v1/files/{file_id}` | Детали файла | auth Bearer, path `file_id` | `200 FileInfo` | `401`, `403`, `404`, `422` |
 | GET | `/api/v1/files/status/{file_id}` | Статус ingestion + counters | auth Bearer, path `file_id` | `200 FileProcessingStatus` | `401`, `403`, `404`, `422` |
 | DELETE | `/api/v1/files/{file_id}` | Удаление файла + cleanup индекса | auth Bearer, path `file_id` | `200 FileDeleteResponse` | `401`, `403`, `404`, `422`, `500` |
-| GET | `/api/v1/models/list` | Список моделей по mode/capability | query `mode` (`local|ollama|aihub|corporate|openai`), `capability` (`chat|embedding`) | `200 ModelsListResponse` | `422` |
+| GET | `/api/v1/models/list` | Список моделей по mode/capability | query `mode` (`local|ollama|aihub|corporate|openai`), `capability` (`chat|embedding`) | `200 ModelsListResponse` (`mode`, `capability`, `default_model`, `models[]`) | `422` |
 | GET | `/api/v1/models/status` | Доступность провайдеров/моделей | body: none | `200 ModelsStatusResponse` | - |
 | GET | `/api/v1/stats/user` | Пользовательская статистика | auth Bearer | `200 UserStatsResponse` | `401`, `403` |
 | GET | `/api/v1/stats/system` | Системная статистика (admin) | auth Bearer (admin) | `200 SystemStatsResponse` | `401`, `403` |
@@ -73,6 +73,10 @@
 ## Notes
 
 - `/metrics` не включается в OpenAPI (`include_in_schema=False`), но доступен как endpoint Prometheus.
+- `/api/v1/models/list`:
+  - `capability=chat|embedding` выбирает независимые capability-листы и default-модель.
+  - Для `mode=aihub` backend запрашивает провайдер `/models` с `type=chatbot|embedding` и фильтрует по `type` как source-of-truth.
+  - Если discovery AI HUB недоступен/пустой, используется configured catalog fallback (`AIHUB_*_MODEL_CATALOG`).
 - `FileProcessingStatus.status`: `uploaded | queued | parsing | parsed | chunking | embedding | indexing | completed | partial_failed | failed`.
 - `FileProcessingStatus.stage`: mirrors ingestion stage and ends with terminal stage (`completed|partial_failed|failed`).
 - В статусе файла возвращаются counters: `total_chunks_expected`, `chunks_processed`, `chunks_failed`, `chunks_indexed`.
@@ -298,5 +302,7 @@ This change is internal and does not modify HTTP/SSE contracts listed above.
 - `arctic` remains available as explicit AI HUB override (`embedding_model=arctic`).
 - `chat model` and `embedding model` are resolved independently; chat-only overrides are not used for embeddings.
 - `/api/v1/models/list` accepts `capability=chat|embedding` and returns capability-specific defaults.
+- For AI HUB, `/api/v1/models/list` uses provider model `type` (`chatbot` / `embedding`) for capability filtering.
+- Catalog (`AIHUB_CHAT_MODEL_CATALOG`, `AIHUB_EMBED_MODEL_CATALOG`) is used as fallback when AI HUB model discovery is unavailable.
 - New vectors are written into model-scoped collections to avoid mixing embedding spaces.
 - File/message timestamps are serialized as UTC-aware ISO values (`+00:00`).

@@ -13,6 +13,7 @@ CAP_EMBEDDING = "embedding"
 _EMBED_TOKENS = (
     "embed",
     "embedding",
+    "-emb",
     "nomic",
     "bge",
     "e5",

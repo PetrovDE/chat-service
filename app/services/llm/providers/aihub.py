@@ -84,6 +84,13 @@ class AIHubProvider(BaseLLMProvider):
         configured_prompt_chars = int(getattr(settings, "AIHUB_MAX_PROMPT_CHARS", 50000) or 50000)
         req_chars = int(prompt_max_chars or 0)
         max_prompt_chars = max(2000, min(configured_prompt_chars, req_chars)) if req_chars > 0 else max(2000, configured_prompt_chars)
+        if req_chars > configured_prompt_chars:
+            logger.info(
+                "AI HUB prompt limit clamped by provider settings: requested=%d configured=%d effective=%d",
+                req_chars,
+                configured_prompt_chars,
+                max_prompt_chars,
+            )
 
         if conversation_history:
             for msg in conversation_history:
@@ -106,23 +113,32 @@ class AIHubProvider(BaseLLMProvider):
             messages = messages[-10:]
         return messages, {
             "provider": "aihub",
+            "prompt_chars_requested": int(req_chars if req_chars > 0 else configured_prompt_chars),
+            "prompt_chars_configured": int(configured_prompt_chars),
             "prompt_chars_before": int(prompt_chars_before),
             "prompt_chars_after": int(prompt_chars_after),
             "prompt_truncated": bool(prompt_truncated),
             "prompt_chars_limit": int(max_prompt_chars),
         }
 
-    async def get_available_models(self) -> List[str]:
-        detailed = await self.get_available_models_detailed()
+    async def get_available_models(self, capability: Optional[str] = None) -> List[str]:
+        detailed = await self.get_available_models_detailed(capability=capability)
         return [str(m.get("name")) for m in detailed if m.get("name")]
 
-    async def get_available_models_detailed(self) -> List[Dict[str, Any]]:
+    async def get_available_models_detailed(self, capability: Optional[str] = None) -> List[Dict[str, Any]]:
         started = time.perf_counter()
         try:
             headers = await self._get_headers()
+            cap = str(capability or "").strip().lower()
+            model_type = "chatbot"
+            if cap == "embedding":
+                model_type = "embedding"
+            elif cap == "chat":
+                model_type = "chatbot"
+
             async def _call() -> httpx.Response:
                 async with httpx.AsyncClient(verify=self.verify_ssl, timeout=self.timeout) as client:
-                    response = await client.get(f"{self.base_url}/models", headers=headers, params={"type": "chatbot"})
+                    response = await client.get(f"{self.base_url}/models", headers=headers, params={"type": model_type})
                     response.raise_for_status()
                     return response
 
@@ -139,6 +155,8 @@ class AIHubProvider(BaseLLMProvider):
                 name = item.get("id") or item.get("name") or item.get("model") or item.get("slug")
                 if not name:
                     continue
+                raw_type = item.get("type")
+                model_kind = str(raw_type).strip().lower() if raw_type is not None else None
                 cw = item.get("contextWindow") or item.get("context_window") or item.get("maxContextTokens") or item.get("maxInputTokens") or item.get("inputTokenLimit")
                 mo = item.get("maxOutputTokens") or item.get("outputTokenLimit") or item.get("max_new_tokens")
                 try:
@@ -149,7 +167,14 @@ class AIHubProvider(BaseLLMProvider):
                     mo = int(mo) if mo is not None else None
                 except Exception:
                     mo = None
-                out.append({"name": str(name), "context_window": cw, "max_output_tokens": mo})
+                out.append(
+                    {
+                        "name": str(name),
+                        "context_window": cw,
+                        "max_output_tokens": mo,
+                        "type": model_kind,
+                    }
+                )
             observe_ms("llm_provider_duration_ms", (time.perf_counter() - started) * 1000.0, provider="aihub", operation="models")
             inc_counter("llm_provider_success_total", provider="aihub", operation="models")
             return out

@@ -136,6 +136,35 @@ def test_aihub_prompt_truncation_debug_visible(monkeypatch):
     assert payload["prompt_chars_before"] == 2600
     assert payload["prompt_chars_after"] == 2100
     assert payload["prompt_truncated"] is True
+    assert payload["prompt_chars_requested"] == 2100
+    assert payload["prompt_chars_configured"] == 2100
+    assert payload["prompt_chars_limit"] == 2100
+
+
+def test_aihub_prompt_debug_exposes_requested_and_effective_limits(monkeypatch):
+    monkeypatch.setattr(aihub_module.settings, "AIHUB_MAX_PROMPT_CHARS", 50000)
+    prompt = "x" * 64000
+    _messages, provider_debug = aihub_module.aihub_provider._prepare_messages(
+        conversation_history=None,
+        prompt=prompt,
+        prompt_max_chars=500000,
+    )
+
+    payload = build_standard_rag_debug_payload(
+        rag_debug={"retrieval_mode": "full_file"},
+        context_docs=[],
+        rag_sources=[],
+        llm_tokens_used=0,
+        provider_debug=provider_debug,
+        max_items=8,
+    )
+
+    assert payload["prompt_chars_requested"] == 500000
+    assert payload["prompt_chars_configured"] == 50000
+    assert payload["prompt_chars_limit"] == 50000
+    assert payload["prompt_chars_before"] == 64000
+    assert payload["prompt_chars_after"] == 50000
+    assert payload["prompt_truncated"] is True
 
 
 def test_structured_retrieval_debug_path_flag():

@@ -70,11 +70,17 @@ class LLMManager:
     def _get_provider(self, source: str) -> BaseLLMProvider:
         return self.provider_registry.get(source)
 
-    async def get_available_models(self, source: str = "aihub") -> List[str]:
+    async def get_available_models(self, source: str = "aihub", capability: Optional[str] = None) -> List[str]:
         try:
             normalized = self._normalize_source(source)
             provider = self._get_provider(normalized)
-            models = await provider.get_available_models()
+            if capability is None:
+                models = await provider.get_available_models()
+            else:
+                try:
+                    models = await provider.get_available_models(capability=capability)
+                except TypeError:
+                    models = await provider.get_available_models()
             logger.info("Models from %s: %s", normalized, models)
             return models
         except Exception as e:
@@ -188,20 +194,30 @@ class LLMManager:
         async for chunk in routed_stream.stream:
             yield chunk
 
-    async def get_available_models_detailed(self, source: str = "aihub") -> List[Dict[str, Any]]:
+    async def get_available_models_detailed(
+        self,
+        source: str = "aihub",
+        capability: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         normalized = self._normalize_source(source)
         provider = self._get_provider(normalized)
 
         detailed_fn = getattr(provider, "get_available_models_detailed", None)
         if callable(detailed_fn):
             try:
-                result = await detailed_fn()
+                if capability is None:
+                    result = await detailed_fn()
+                else:
+                    try:
+                        result = await detailed_fn(capability=capability)
+                    except TypeError:
+                        result = await detailed_fn()
                 if isinstance(result, list):
                     return result
             except Exception as e:
                 logger.warning("Detailed models fetch failed for %s: %s", normalized, e)
 
-        names = await provider.get_available_models()
+        names = await self.get_available_models(source=normalized, capability=capability)
         return [{"name": n} for n in names]
 
     async def generate_embedding(

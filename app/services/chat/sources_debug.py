@@ -259,6 +259,12 @@ def build_standard_rag_debug_payload(
         payload["prompt_chars_before"] = int(debug_info.get("prompt_chars_before", 0) or 0)
         payload["prompt_chars_after"] = int(debug_info.get("prompt_chars_after", 0) or 0)
         payload["prompt_truncated"] = bool(debug_info.get("prompt_truncated", False))
+        if "prompt_chars_requested" in debug_info:
+            payload["prompt_chars_requested"] = int(debug_info.get("prompt_chars_requested", 0) or 0)
+        if "prompt_chars_configured" in debug_info:
+            payload["prompt_chars_configured"] = int(debug_info.get("prompt_chars_configured", 0) or 0)
+        if "prompt_chars_limit" in debug_info:
+            payload["prompt_chars_limit"] = int(debug_info.get("prompt_chars_limit", 0) or 0)
     return payload
 
 

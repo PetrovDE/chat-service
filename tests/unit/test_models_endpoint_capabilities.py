@@ -27,6 +27,9 @@ def test_models_list_aihub_embedding_default_is_qwen(monkeypatch):
     monkeypatch.setattr("app.api.v1.endpoints.models.llm_manager.get_available_models", _available)
 
     payload = asyncio.run(list_models(mode="aihub", capability="embedding"))
+    names = [row["name"] for row in payload["models"]]
     assert payload["capability"] == "embedding"
     assert payload["default_model"] == "qwen3-emb"
-    assert any(row["name"] == "qwen3-emb" for row in payload["models"])
+    assert "qwen3-emb" in names
+    assert "arctic" in names
+    assert "vikhr" not in names

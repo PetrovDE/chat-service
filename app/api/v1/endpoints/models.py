@@ -117,8 +117,14 @@ async def list_models(
             if selected_capability == CAP_EMBEDDING and settings.OPENAI_EMBEDDING_MODEL:
                 catalog_models = [settings.OPENAI_EMBEDDING_MODEL]
 
+        # Provider-aware candidate policy:
+        # - AI HUB embedding list must be catalog-driven to avoid leaking chat-only model names.
+        # - Other paths may merge provider discovery with configured catalog.
+        strict_catalog = bool(selected_mode == "aihub" and selected_capability == CAP_EMBEDDING and catalog_models)
+        candidates = catalog_models if strict_catalog else (provider_models + catalog_models)
+
         merged_names: List[str] = []
-        for name in provider_models + catalog_models:
+        for name in candidates:
             normalized = str(name or "").strip()
             if normalized and normalized not in merged_names:
                 merged_names.append(normalized)
@@ -131,13 +137,14 @@ async def list_models(
         logger.info(
             (
                 "Models listed: mode=%s capability=%s provider=%s default_model=%s "
-                "resolution_source=%s count=%d"
+                "resolution_source=%s strict_catalog=%s count=%d"
             ),
             mode,
             selected_capability,
             selected_mode,
             decision.resolved_model,
             decision.source,
+            strict_catalog,
             len(models),
         )
         return {

@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     EMBEDDING_PREFLIGHT_VALIDATE: bool = Field(default=True)
     OLLAMA_EMBED_MAX_INPUT_CHARS: int = Field(default=3500, ge=500, le=50000)
     OLLAMA_EMBED_SEGMENT_OVERLAP_CHARS: int = Field(default=250, ge=0, le=10000)
+    EMBEDDING_MODEL_DIMENSIONS: str = Field(default="aihub:qwen3-emb=4096")
     EMBEDDINGS_DIM: int = Field(default=0, ge=0)
 
     EMBEDDINGS_BASEURL: AnyUrl = Field(default="http://localhost:11434")

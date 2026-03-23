@@ -301,6 +301,11 @@ This change is internal and does not modify HTTP/SSE contracts listed above.
   - `local/ollama` default embedding model: `OLLAMA_EMBED_MODEL` (default `nomic-embed-text:latest`).
 - `arctic` remains available as explicit AI HUB override (`embedding_model=arctic`).
 - `chat model` and `embedding model` are resolved independently; chat-only overrides are not used for embeddings.
+- Embedding dimension is resolved per active `(provider, embedding_model)`:
+  - configured metadata map: `EMBEDDING_MODEL_DIMENSIONS` (for example `aihub:qwen3-emb=4096`),
+  - runtime-observed cache per model when metadata is absent,
+  - legacy fallback `EMBEDDINGS_DIM` only when model-aware metadata is missing.
+- Dimension mismatch (`expected != actual`) is treated as runtime error with explicit diagnostics.
 - `/api/v1/models/list` accepts `capability=chat|embedding` and returns capability-specific defaults.
 - For AI HUB, `/api/v1/models/list` uses provider model `type` (`chatbot` / `embedding`) for capability filtering.
 - Catalog (`AIHUB_CHAT_MODEL_CATALOG`, `AIHUB_EMBED_MODEL_CATALOG`) is used as fallback when AI HUB model discovery is unavailable.

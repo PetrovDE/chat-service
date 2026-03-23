@@ -15,12 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingsManager:
-    DEFAULT_DIMENSIONS = {
-        "local": 0,
-        "aihub": 1024,
-        "openai": 0,
-    }
-
     def __init__(
         self,
         mode: str = "local",
@@ -86,9 +80,6 @@ class EmbeddingsManager:
             logger.error("Failed to get embedding models mode=%s error=%s", self.mode, exc, exc_info=True)
             return []
 
-    def get_embedding_dimension(self) -> int:
-        return self.DEFAULT_DIMENSIONS.get(self.mode, 0)
-
     def embedd_documents(self, texts: List[str]) -> List[List[float]]:
         try:
             asyncio.get_running_loop()
@@ -114,11 +105,17 @@ class EmbeddingsManager:
         if not str(embedding_model or "").strip():
             raise ValueError(f"Embedding model is not configured for mode '{self.mode}'")
 
-        expected_dim = settings.EMBEDDINGS_DIM or self.get_embedding_dimension()
+        dim_decision = llm_manager.provider_registry.resolve_embedding_dimension_decision(
+            provider_source,
+            embedding_model,
+        )
+        expected_dim: Optional[int] = dim_decision.dimension if int(dim_decision.dimension or 0) > 0 else None
+        expected_dim_source = dim_decision.source
+        expected_dim_reason = dim_decision.reason
         logger.info(
             (
                 "Embedding batch started: mode=%s provider=%s requested_model=%s resolved_model=%s "
-                "resolution_source=%s reason=%s texts=%d expected_dim=%s"
+                "resolution_source=%s reason=%s texts=%d expected_dim=%s expected_dim_source=%s expected_dim_reason=%s"
             ),
             self.mode,
             provider_source,
@@ -128,6 +125,8 @@ class EmbeddingsManager:
             decision.reason,
             len(texts),
             expected_dim,
+            expected_dim_source,
+            expected_dim_reason,
         )
 
         local_max_chars = int(getattr(settings, "OLLAMA_EMBED_MAX_INPUT_CHARS", 3500) or 3500)
@@ -169,9 +168,10 @@ class EmbeddingsManager:
         segment_calls_total = 0
         concurrency = settings.AIHUB_EMBEDDING_CONCURRENCY if self.mode == "aihub" else settings.EMBEDDING_CONCURRENCY
         semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+        expected_dim_lock = asyncio.Lock()
 
         async def _embed_one(idx: int, text: str) -> None:
-            nonlocal segmented_inputs, segment_calls_total
+            nonlocal segmented_inputs, segment_calls_total, expected_dim, expected_dim_source, expected_dim_reason
             source_text = str(text or "")
             segments = [source_text]
             if self.mode == "local":
@@ -203,14 +203,43 @@ class EmbeddingsManager:
                     raise RuntimeError(f"Empty embedding returned for text index={idx}")
 
             actual_dim = len(embedding)
-            if expected_dim and actual_dim != expected_dim:
-                logger.warning(
-                    "Unexpected embedding dimension: mode=%s expected=%d actual=%d idx=%d",
-                    self.mode,
-                    expected_dim,
-                    actual_dim,
-                    idx,
-                )
+            if actual_dim <= 0:
+                raise RuntimeError(f"Invalid embedding dimension: provider={provider_source} model={embedding_model} idx={idx}")
+
+            mismatch_error: Optional[str] = None
+            async with expected_dim_lock:
+                if expected_dim is None:
+                    runtime_dim = llm_manager.provider_registry.register_runtime_embedding_dimension(
+                        provider_source,
+                        embedding_model,
+                        actual_dim,
+                    )
+                    expected_dim = int(runtime_dim.dimension or actual_dim)
+                    expected_dim_source = runtime_dim.source
+                    expected_dim_reason = runtime_dim.reason
+                    logger.info(
+                        (
+                            "Embedding dimension learned at runtime: mode=%s provider=%s model=%s "
+                            "expected_dim=%d source=%s reason=%s idx=%d"
+                        ),
+                        self.mode,
+                        provider_source,
+                        embedding_model,
+                        expected_dim,
+                        expected_dim_source,
+                        expected_dim_reason,
+                        idx,
+                    )
+                elif actual_dim != expected_dim:
+                    mismatch_error = (
+                        "Embedding dimension mismatch: "
+                        f"mode={self.mode} provider={provider_source} model={embedding_model} "
+                        f"expected={expected_dim} actual={actual_dim} idx={idx} "
+                        f"source={expected_dim_source} reason={expected_dim_reason}"
+                    )
+            if mismatch_error is not None:
+                logger.error(mismatch_error)
+                raise RuntimeError(mismatch_error)
             results[idx] = embedding
 
         try:
@@ -247,11 +276,14 @@ class EmbeddingsManager:
             output.append(emb)
 
         logger.info(
-            "Embedding batch completed: mode=%s model=%s texts=%d dim=%d",
+            "Embedding batch completed: mode=%s provider=%s model=%s texts=%d dim=%d expected_dim=%s expected_dim_source=%s",
             self.mode,
+            provider_source,
             embedding_model,
             len(output),
             len(output[0]) if output else 0,
+            expected_dim,
+            expected_dim_source,
         )
         return output
 

@@ -122,3 +122,29 @@ def test_model_scoped_collections_prevent_embedding_mix(monkeypatch, tmp_path):
     assert qwen_rows[0]["metadata"]["file_id"] == "file-qwen"
     assert qwen_rows[0]["metadata"]["embedding_model"] == "qwen3-emb"
     assert "qwen3-emb" in str(qwen_rows[0]["metadata"].get("collection") or "")
+
+
+def test_collection_dimension_follows_embedding_vector_size(monkeypatch, tmp_path):
+    monkeypatch.setattr(vector_store_module, "PersistentClient", _FakePersistentClient)
+    store = VectorStoreManager(base_collection_name="documents", persist_directory=str(tmp_path))
+
+    metadata = {
+        "file_id": "file-4096",
+        "user_id": "u1",
+        "embedding_mode": "aihub",
+        "embedding_model": "qwen3-emb",
+    }
+    vector = [0.01] * 4096
+
+    assert store.add_document(content="row-4096", metadata=metadata, embedding=vector, doc_id="doc-4096")
+    collections = list(store.client.collections.keys())
+    assert len(collections) == 1
+    assert "_4096d_" in collections[0]
+
+    rows = store.query(
+        embedding_query=vector,
+        top_k=5,
+        filter_dict={"embedding_mode": "aihub", "embedding_model": "qwen3-emb"},
+    )
+    assert len(rows) == 1
+    assert rows[0]["metadata"]["embedding_dimension"] == 4096

@@ -170,11 +170,16 @@ This keeps HTTP/SSE behavior stable while reducing file size and improving testa
 - Use [`docs/11_llm_file_chat_best_practices_architecture.md`](docs/11_llm_file_chat_best_practices_architecture.md) as the architecture baseline.
 - Use [`docs/12_codex_cursor_prompts_offline_architecture.md`](docs/12_codex_cursor_prompts_offline_architecture.md) as implementation prompt pack for Cursor/Codex.
 
-## Embedding Defaults (2026-03-12)
+## Embedding Defaults (2026-03-23)
 - Embedding model resolution is provider-aware and capability-aware (chat and embedding are resolved independently).
 - AI HUB default embedding model: `qwen3-emb`.
 - Local/Ollama default embedding model: `OLLAMA_EMBED_MODEL` (by default `nomic-embed-text:latest`), with optional capability-based runtime match from available local models.
 - `arctic` remains available as explicit AI HUB embedding override (`embedding_model=arctic`).
+- Embedding dimension source-of-truth is model-aware (not provider-wide):
+  - configured metadata map: `EMBEDDING_MODEL_DIMENSIONS` (for example `aihub:qwen3-emb=4096`),
+  - runtime observed cache per `(provider, embedding_model)` when metadata is absent,
+  - deprecated global fallback: `EMBEDDINGS_DIM` (used only when model metadata is unavailable).
+- Dimension validation now compares `actual` against expected dimension resolved for the active embedding model; mismatch raises a clear runtime error with provider/model/source details.
 - Invalid embedding overrides that point to chat-only models (for example `llama3.2:latest`) do not trigger cross-provider fallback and are resolved only within the selected provider policy.
 - Provider routing for embeddings is strict:
   - `local/ollama` -> Ollama only,

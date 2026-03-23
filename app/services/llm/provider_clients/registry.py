@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-from app.services.llm.model_resolver import ModelResolution, ProviderModelResolver, normalize_provider
+from app.services.llm.model_resolver import (
+    EmbeddingDimensionResolution,
+    ModelResolution,
+    ProviderModelResolver,
+    normalize_provider,
+)
 from app.services.llm.providers.base import BaseLLMProvider
 
 
@@ -35,6 +40,27 @@ class ProviderRegistry:
 
     def resolve_embedding_model(self, source: str, requested_model: Optional[str]) -> Optional[str]:
         return self.resolve_embedding_model_decision(source, requested_model).resolved_model
+
+    def resolve_embedding_dimension_decision(
+        self,
+        source: str,
+        model_name: Optional[str],
+    ) -> EmbeddingDimensionResolution:
+        normalized = ProviderRegistry.normalize_source(source)
+        return self._resolver.resolve_embedding_dimension(provider=normalized, model_name=model_name)
+
+    def register_runtime_embedding_dimension(
+        self,
+        source: str,
+        model_name: Optional[str],
+        dimension: int,
+    ) -> EmbeddingDimensionResolution:
+        normalized = ProviderRegistry.normalize_source(source)
+        return self._resolver.register_runtime_embedding_dimension(
+            provider=normalized,
+            model_name=model_name,
+            dimension=dimension,
+        )
 
     @property
     def model_resolver(self) -> ProviderModelResolver:

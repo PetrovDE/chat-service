@@ -48,6 +48,15 @@ class ModelResolution:
     reason: str
 
 
+@dataclass(frozen=True)
+class EmbeddingDimensionResolution:
+    provider: str
+    model: str
+    dimension: Optional[int]
+    source: str
+    reason: str
+
+
 def normalize_provider(source: Optional[str]) -> str:
     src = str(source or "").strip().lower()
     if not src:
@@ -106,6 +115,13 @@ def _parse_catalog(raw_catalog: str) -> set[str]:
 class ProviderModelResolver:
     def __init__(self):
         self._policy = str(settings.MODEL_INVALID_OVERRIDE_POLICY or "fallback_default").strip().lower()
+        (
+            self._embedding_dimension_provider_map,
+            self._embedding_dimension_generic_map,
+        ) = self._parse_embedding_dimension_catalog(
+            str(getattr(settings, "EMBEDDING_MODEL_DIMENSIONS", "") or "")
+        )
+        self._embedding_dimension_runtime_map: dict[tuple[str, str], int] = {}
 
     @staticmethod
     def _provider_defaults(provider: str) -> dict[str, Optional[str]]:
@@ -231,6 +247,136 @@ class ProviderModelResolver:
 
     def resolve_embedding(self, provider: str, requested_model: Optional[str]) -> ModelResolution:
         return self.resolve(provider=provider, capability=CAP_EMBEDDING, requested_model=requested_model)
+
+    @staticmethod
+    def _parse_embedding_dimension_catalog(
+        raw_catalog: str,
+    ) -> tuple[dict[tuple[str, str], int], dict[str, int]]:
+        provider_map: dict[tuple[str, str], int] = {}
+        generic_map: dict[str, int] = {}
+        for item in str(raw_catalog or "").split(","):
+            raw = str(item or "").strip()
+            if not raw or "=" not in raw:
+                continue
+            lhs, rhs = raw.split("=", 1)
+            model_ref = str(lhs or "").strip()
+            try:
+                dimension = int(str(rhs or "").strip())
+            except Exception:
+                continue
+            if not model_ref or dimension <= 0:
+                continue
+
+            pref_provider, plain_model = split_model_prefix(model_ref)
+            if pref_provider and plain_model:
+                provider_map[(normalize_provider(pref_provider), plain_model)] = dimension
+                continue
+
+            generic_map[model_ref] = dimension
+        return provider_map, generic_map
+
+    def resolve_embedding_dimension(
+        self,
+        *,
+        provider: str,
+        model_name: Optional[str],
+    ) -> EmbeddingDimensionResolution:
+        normalized_provider = normalize_provider(provider)
+        pref_provider, plain_model = split_model_prefix(model_name)
+        model = str((plain_model if pref_provider else model_name) or "").strip()
+        lookup_provider = pref_provider or normalized_provider
+
+        if not model:
+            return EmbeddingDimensionResolution(
+                provider=lookup_provider,
+                model=model,
+                dimension=None,
+                source="unknown",
+                reason="empty_model",
+            )
+
+        provider_dim = self._embedding_dimension_provider_map.get((lookup_provider, model))
+        if provider_dim and provider_dim > 0:
+            return EmbeddingDimensionResolution(
+                provider=lookup_provider,
+                model=model,
+                dimension=int(provider_dim),
+                source="model_metadata",
+                reason="provider_config",
+            )
+
+        generic_dim = self._embedding_dimension_generic_map.get(model)
+        if generic_dim and generic_dim > 0:
+            return EmbeddingDimensionResolution(
+                provider=lookup_provider,
+                model=model,
+                dimension=int(generic_dim),
+                source="model_metadata",
+                reason="generic_config",
+            )
+
+        runtime_dim = self._embedding_dimension_runtime_map.get((lookup_provider, model))
+        if runtime_dim and runtime_dim > 0:
+            return EmbeddingDimensionResolution(
+                provider=lookup_provider,
+                model=model,
+                dimension=int(runtime_dim),
+                source="runtime_observed",
+                reason="cached",
+            )
+
+        legacy_dim = int(getattr(settings, "EMBEDDINGS_DIM", 0) or 0)
+        if legacy_dim > 0:
+            return EmbeddingDimensionResolution(
+                provider=lookup_provider,
+                model=model,
+                dimension=legacy_dim,
+                source="legacy_global",
+                reason="EMBEDDINGS_DIM",
+            )
+
+        return EmbeddingDimensionResolution(
+            provider=lookup_provider,
+            model=model,
+            dimension=None,
+            source="unknown",
+            reason="not_configured",
+        )
+
+    def register_runtime_embedding_dimension(
+        self,
+        *,
+        provider: str,
+        model_name: Optional[str],
+        dimension: int,
+    ) -> EmbeddingDimensionResolution:
+        normalized_provider = normalize_provider(provider)
+        pref_provider, plain_model = split_model_prefix(model_name)
+        model = str((plain_model if pref_provider else model_name) or "").strip()
+        lookup_provider = pref_provider or normalized_provider
+        resolved_dim = int(dimension or 0)
+        if not model or resolved_dim <= 0:
+            return EmbeddingDimensionResolution(
+                provider=lookup_provider,
+                model=model,
+                dimension=None,
+                source="unknown",
+                reason="invalid_runtime_value",
+            )
+
+        key = (lookup_provider, model)
+        cached = self._embedding_dimension_runtime_map.get(key)
+        if cached is None:
+            self._embedding_dimension_runtime_map[key] = resolved_dim
+            cached = resolved_dim
+
+        return EmbeddingDimensionResolution(
+            provider=lookup_provider,
+            model=model,
+            dimension=int(cached),
+            source="runtime_observed",
+            reason="cached" if cached == resolved_dim else "existing_runtime",
+        )
 
     def pick_first_embedding_candidate(
         self,

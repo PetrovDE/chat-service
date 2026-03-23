@@ -25,15 +25,23 @@ def test_to_utc_iso_converts_offset_and_keeps_explicit_timezone():
 def test_file_info_mapping_serializes_uploaded_at_as_utc_aware():
     file_obj = SimpleNamespace(
         id=uuid4(),
-        filename="f",
+        user_id=uuid4(),
         original_filename="f.txt",
-        file_type="txt",
-        file_size=123,
-        is_processed="uploaded",
+        stored_filename="f",
+        storage_key="raw/u/f",
+        storage_path="/tmp/f",
+        mime_type="text/plain",
+        extension="txt",
+        size_bytes=123,
+        checksum=None,
+        visibility="private",
+        status="uploaded",
+        source_kind="upload",
         chunks_count=0,
-        uploaded_at=datetime(2026, 3, 12, 12, 0, 0),
-        processed_at=None,
+        created_at=datetime(2026, 3, 12, 12, 0, 0),
+        updated_at=datetime(2026, 3, 12, 12, 0, 0),
+        deleted_at=None,
     )
-    info = _to_file_info(file_obj, [])
-    assert info.uploaded_at.tzinfo is not None
-    assert info.uploaded_at.utcoffset() == timedelta(0)
+    info = _to_file_info(file_obj, chat_ids=[], active_processing=None)
+    assert info.created_at.tzinfo is not None
+    assert info.created_at.utcoffset() == timedelta(0)

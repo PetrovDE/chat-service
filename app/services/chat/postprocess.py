@@ -72,15 +72,14 @@ def build_rag_caveats(
     caveats: List[str] = []
     partial_files = []
     for file_obj in files:
-        status = str(getattr(file_obj, "is_processed", "") or "")
-        if status in {"partial_success", "partial_failed"}:
+        active_processing = getattr(file_obj, "active_processing", None)
+        active_status = str(getattr(active_processing, "status", "") or "").lower()
+        if active_status in {"partial_success", "partial_failed"}:
             progress = {}
-            custom_meta = getattr(file_obj, "custom_metadata", None)
+            custom_meta = getattr(active_processing, "ingestion_progress", None)
             if isinstance(custom_meta, dict):
                 progress = (
-                    custom_meta.get("ingestion_progress")
-                    if isinstance(custom_meta.get("ingestion_progress"), dict)
-                    else {}
+                    custom_meta
                 )
             expected = int(progress.get("total_chunks_expected", 0) or 0)
             failed = int(progress.get("chunks_failed", 0) or 0)

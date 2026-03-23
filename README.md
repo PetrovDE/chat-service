@@ -1,54 +1,54 @@
-# llama-service
+﻿# llama-service
 
-Сервис для диалогов с LLM (SSE/обычный ответ), RAG по загруженным файлам и управлением чатами/файлами через API и встроенный web-frontend.
+Ð¡ÐµÑ€Ð²Ð¸Ñ Ð´Ð»Ñ Ð´Ð¸Ð°Ð»Ð¾Ð³Ð¾Ð² Ñ LLM (SSE/Ð¾Ð±Ñ‹Ñ‡Ð½Ñ‹Ð¹ Ð¾Ñ‚Ð²ÐµÑ‚), RAG Ð¿Ð¾ Ð·Ð°Ð³Ñ€ÑƒÐ¶ÐµÐ½Ð½Ñ‹Ð¼ Ñ„Ð°Ð¹Ð»Ð°Ð¼ Ð¸ ÑƒÐ¿Ñ€Ð°Ð²Ð»ÐµÐ½Ð¸ÐµÐ¼ Ñ‡Ð°Ñ‚Ð°Ð¼Ð¸/Ñ„Ð°Ð¹Ð»Ð°Ð¼Ð¸ Ñ‡ÐµÑ€ÐµÐ· API Ð¸ Ð²ÑÑ‚Ñ€Ð¾ÐµÐ½Ð½Ñ‹Ð¹ web-frontend.
 
-## Что делает сервис
-- Принимает сообщения в чат (`/api/v1/chat`, `/api/v1/chat/stream`).
-- Поддерживает провайдеры моделей: `ollama/local`, `aihub` (`corporate` alias), `openai`.
-- Загружает файлы, асинхронно индексирует их в ChromaDB и использует в RAG (`/api/v1/files/*`).
-- Для `xlsx/xls/csv/tsv` поддерживает table-aware ingestion (file/sheet summaries + row-groups) и deterministic `tabular_sql` path для aggregate/profile/lookup вопросов.
-- Для аналитических запросов по файлу поддерживает deterministic `tabular_profile` (per-column SQL stats).
-- Хранит пользователей, чаты, сообщения и файлы в PostgreSQL.
-- Отдаёт встроенный frontend из `frontend/` (SPA монтируется на `/`).
+## Ð§Ñ‚Ð¾ Ð´ÐµÐ»Ð°ÐµÑ‚ ÑÐµÑ€Ð²Ð¸Ñ
+- ÐŸÑ€Ð¸Ð½Ð¸Ð¼Ð°ÐµÑ‚ ÑÐ¾Ð¾Ð±Ñ‰ÐµÐ½Ð¸Ñ Ð² Ñ‡Ð°Ñ‚ (`/api/v1/chat`, `/api/v1/chat/stream`).
+- ÐŸÐ¾Ð´Ð´ÐµÑ€Ð¶Ð¸Ð²Ð°ÐµÑ‚ Ð¿Ñ€Ð¾Ð²Ð°Ð¹Ð´ÐµÑ€Ñ‹ Ð¼Ð¾Ð´ÐµÐ»ÐµÐ¹: `ollama/local`, `aihub` (`corporate` alias), `openai`.
+- Ð—Ð°Ð³Ñ€ÑƒÐ¶Ð°ÐµÑ‚ Ñ„Ð°Ð¹Ð»Ñ‹, Ð°ÑÐ¸Ð½Ñ…Ñ€Ð¾Ð½Ð½Ð¾ Ð¸Ð½Ð´ÐµÐºÑÐ¸Ñ€ÑƒÐµÑ‚ Ð¸Ñ… Ð² ChromaDB Ð¸ Ð¸ÑÐ¿Ð¾Ð»ÑŒÐ·ÑƒÐµÑ‚ Ð² RAG (`/api/v1/files/*`).
+- Ð”Ð»Ñ `xlsx/xls/csv/tsv` Ð¿Ð¾Ð´Ð´ÐµÑ€Ð¶Ð¸Ð²Ð°ÐµÑ‚ table-aware ingestion (file/sheet summaries + row-groups) Ð¸ deterministic `tabular_sql` path Ð´Ð»Ñ aggregate/profile/lookup Ð²Ð¾Ð¿Ñ€Ð¾ÑÐ¾Ð².
+- Ð”Ð»Ñ Ð°Ð½Ð°Ð»Ð¸Ñ‚Ð¸Ñ‡ÐµÑÐºÐ¸Ñ… Ð·Ð°Ð¿Ñ€Ð¾ÑÐ¾Ð² Ð¿Ð¾ Ñ„Ð°Ð¹Ð»Ñƒ Ð¿Ð¾Ð´Ð´ÐµÑ€Ð¶Ð¸Ð²Ð°ÐµÑ‚ deterministic `tabular_profile` (per-column SQL stats).
+- Ð¥Ñ€Ð°Ð½Ð¸Ñ‚ Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»ÐµÐ¹, Ñ‡Ð°Ñ‚Ñ‹, ÑÐ¾Ð¾Ð±Ñ‰ÐµÐ½Ð¸Ñ Ð¸ Ñ„Ð°Ð¹Ð»Ñ‹ Ð² PostgreSQL.
+- ÐžÑ‚Ð´Ð°Ñ‘Ñ‚ Ð²ÑÑ‚Ñ€Ð¾ÐµÐ½Ð½Ñ‹Ð¹ frontend Ð¸Ð· `frontend/` (SPA Ð¼Ð¾Ð½Ñ‚Ð¸Ñ€ÑƒÐµÑ‚ÑÑ Ð½Ð° `/`).
 
-## Быстрый старт
+## Ð‘Ñ‹ÑÑ‚Ñ€Ñ‹Ð¹ ÑÑ‚Ð°Ñ€Ñ‚
 ### 1) Backend
-1. Установить зависимости:
+1. Ð£ÑÑ‚Ð°Ð½Ð¾Ð²Ð¸Ñ‚ÑŒ Ð·Ð°Ð²Ð¸ÑÐ¸Ð¼Ð¾ÑÑ‚Ð¸:
 ```bash
 pip install -r requirements.txt
 ```
-2. Поднять PostgreSQL (локально через compose):
+2. ÐŸÐ¾Ð´Ð½ÑÑ‚ÑŒ PostgreSQL (Ð»Ð¾ÐºÐ°Ð»ÑŒÐ½Ð¾ Ñ‡ÐµÑ€ÐµÐ· compose):
 ```bash
 docker compose -f docker-compose.db.yml up -d
 ```
-3. Заполнить `.env` минимумом:
+3. Ð—Ð°Ð¿Ð¾Ð»Ð½Ð¸Ñ‚ÑŒ `.env` Ð¼Ð¸Ð½Ð¸Ð¼ÑƒÐ¼Ð¾Ð¼:
 ```env
 DATABASE_URL=postgresql+asyncpg://llama_chat_user:5432@localhost:5432/llama_chat_db
 ALEMBIC_DATABASE_URL=postgresql://llama_chat_user:5432@localhost:5432/llama_chat_db
 JWT_SECRET_KEY=change-me
 ```
-4. Применить миграции:
+4. ÐŸÑ€Ð¸Ð¼ÐµÐ½Ð¸Ñ‚ÑŒ Ð¼Ð¸Ð³Ñ€Ð°Ñ†Ð¸Ð¸:
 ```bash
 alembic upgrade head
 ```
-5. (Опционально) создать администратора:
+5. (ÐžÐ¿Ñ†Ð¸Ð¾Ð½Ð°Ð»ÑŒÐ½Ð¾) ÑÐ¾Ð·Ð´Ð°Ñ‚ÑŒ Ð°Ð´Ð¼Ð¸Ð½Ð¸ÑÑ‚Ñ€Ð°Ñ‚Ð¾Ñ€Ð°:
 ```bash
 python scripts/create_admin.py
 ```
-По умолчанию создаётся `admin / admin123456`.
-6. Запустить API:
+ÐŸÐ¾ ÑƒÐ¼Ð¾Ð»Ñ‡Ð°Ð½Ð¸ÑŽ ÑÐ¾Ð·Ð´Ð°Ñ‘Ñ‚ÑÑ `admin / admin123456`.
+6. Ð—Ð°Ð¿ÑƒÑÑ‚Ð¸Ñ‚ÑŒ API:
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### 2) Frontend
-Frontend отдельной сборки не требует.
-- Открыть: `http://localhost:8000/`
+Frontend Ð¾Ñ‚Ð´ÐµÐ»ÑŒÐ½Ð¾Ð¹ ÑÐ±Ð¾Ñ€ÐºÐ¸ Ð½Ðµ Ñ‚Ñ€ÐµÐ±ÑƒÐµÑ‚.
+- ÐžÑ‚ÐºÑ€Ñ‹Ñ‚ÑŒ: `http://localhost:8000/`
 - API/Swagger: `http://localhost:8000/docs`
 - Health: `http://localhost:8000/health`
 - Prometheus metrics: `http://localhost:8000/metrics`
 
-## Краткая схема компонентов
+## ÐšÑ€Ð°Ñ‚ÐºÐ°Ñ ÑÑ…ÐµÐ¼Ð° ÐºÐ¾Ð¼Ð¿Ð¾Ð½ÐµÐ½Ñ‚Ð¾Ð²
 ```text
 Browser SPA (frontend/index.html + static/js)
     -> FastAPI (app/main.py, /api/v1/*)
@@ -64,7 +64,7 @@ Browser SPA (frontend/index.html + static/js)
             -> PostgreSQL
 ```
 
-## Документация (`docs/*`)
+## Ð”Ð¾ÐºÑƒÐ¼ÐµÐ½Ñ‚Ð°Ñ†Ð¸Ñ (`docs/*`)
 1. [`docs/00_project_map.md`](docs/00_project_map.md)
 2. [`docs/01_service_spec.md`](docs/01_service_spec.md)
 3. [`docs/02_api_contracts.md`](docs/02_api_contracts.md)
@@ -85,61 +85,62 @@ Browser SPA (frontend/index.html + static/js)
 18. [`docs/ux/chat_states.md`](docs/ux/chat_states.md)
 19. [`docs/ux/file_ingestion_progress.md`](docs/ux/file_ingestion_progress.md)
 20. [`docs/09_dynamic_rag_budget_plan.md`](docs/09_dynamic_rag_budget_plan.md)
+21. [`docs/13_persistent_user_files_architecture.md`](docs/13_persistent_user_files_architecture.md)
 
-## Актуальные UI-изменения (frontend)
-- В sidebar чатов удаление вынесено в отдельную кнопку-корзину справа от каждого чата.
-- В `Settings` кнопка `Logout` расположена в футере рядом с `Save` и оформлена как danger-кнопка.
-- В composer поле ввода оставлено сверху, а ниже расположен единый ряд контролов: `File + provider + chat model + embedding model + RAG mode + Send`.
-- Под селектами `provider/chat model/embedding model/rag mode` показываются inline-подсказки.
-- `RAG debug` показывается под assistant-сообщением только когда пользователь включил этот флаг в `Settings`.
+## ÐÐºÑ‚ÑƒÐ°Ð»ÑŒÐ½Ñ‹Ðµ UI-Ð¸Ð·Ð¼ÐµÐ½ÐµÐ½Ð¸Ñ (frontend)
+- Ð’ sidebar Ñ‡Ð°Ñ‚Ð¾Ð² ÑƒÐ´Ð°Ð»ÐµÐ½Ð¸Ðµ Ð²Ñ‹Ð½ÐµÑÐµÐ½Ð¾ Ð² Ð¾Ñ‚Ð´ÐµÐ»ÑŒÐ½ÑƒÑŽ ÐºÐ½Ð¾Ð¿ÐºÑƒ-ÐºÐ¾Ñ€Ð·Ð¸Ð½Ñƒ ÑÐ¿Ñ€Ð°Ð²Ð° Ð¾Ñ‚ ÐºÐ°Ð¶Ð´Ð¾Ð³Ð¾ Ñ‡Ð°Ñ‚Ð°.
+- Ð’ `Settings` ÐºÐ½Ð¾Ð¿ÐºÐ° `Logout` Ñ€Ð°ÑÐ¿Ð¾Ð»Ð¾Ð¶ÐµÐ½Ð° Ð² Ñ„ÑƒÑ‚ÐµÑ€Ðµ Ñ€ÑÐ´Ð¾Ð¼ Ñ `Save` Ð¸ Ð¾Ñ„Ð¾Ñ€Ð¼Ð»ÐµÐ½Ð° ÐºÐ°Ðº danger-ÐºÐ½Ð¾Ð¿ÐºÐ°.
+- Ð’ composer Ð¿Ð¾Ð»Ðµ Ð²Ð²Ð¾Ð´Ð° Ð¾ÑÑ‚Ð°Ð²Ð»ÐµÐ½Ð¾ ÑÐ²ÐµÑ€Ñ…Ñƒ, Ð° Ð½Ð¸Ð¶Ðµ Ñ€Ð°ÑÐ¿Ð¾Ð»Ð¾Ð¶ÐµÐ½ ÐµÐ´Ð¸Ð½Ñ‹Ð¹ Ñ€ÑÐ´ ÐºÐ¾Ð½Ñ‚Ñ€Ð¾Ð»Ð¾Ð²: `File + provider + chat model + embedding model + RAG mode + Send`.
+- ÐŸÐ¾Ð´ ÑÐµÐ»ÐµÐºÑ‚Ð°Ð¼Ð¸ `provider/chat model/embedding model/rag mode` Ð¿Ð¾ÐºÐ°Ð·Ñ‹Ð²Ð°ÑŽÑ‚ÑÑ inline-Ð¿Ð¾Ð´ÑÐºÐ°Ð·ÐºÐ¸.
+- `RAG debug` Ð¿Ð¾ÐºÐ°Ð·Ñ‹Ð²Ð°ÐµÑ‚ÑÑ Ð¿Ð¾Ð´ assistant-ÑÐ¾Ð¾Ð±Ñ‰ÐµÐ½Ð¸ÐµÐ¼ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ ÐºÐ¾Ð³Ð´Ð° Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»ÑŒ Ð²ÐºÐ»ÑŽÑ‡Ð¸Ð» ÑÑ‚Ð¾Ñ‚ Ñ„Ð»Ð°Ð³ Ð² `Settings`.
 
-## Troubleshooting (топ-5)
-1. `401/403` на защищённых endpoint'ах (`/api/v1/files/*`, `/api/v1/conversations/*`, `/api/v1/stats/*`).
-Где смотреть: DevTools Network (заголовок `Authorization`), backend-логи с `rid/uid` (stdout, формат из `app/core/logging.py`).
+## Troubleshooting (Ñ‚Ð¾Ð¿-5)
+1. `401/403` Ð½Ð° Ð·Ð°Ñ‰Ð¸Ñ‰Ñ‘Ð½Ð½Ñ‹Ñ… endpoint'Ð°Ñ… (`/api/v1/files/*`, `/api/v1/conversations/*`, `/api/v1/stats/*`).
+Ð“Ð´Ðµ ÑÐ¼Ð¾Ñ‚Ñ€ÐµÑ‚ÑŒ: DevTools Network (Ð·Ð°Ð³Ð¾Ð»Ð¾Ð²Ð¾Ðº `Authorization`), backend-Ð»Ð¾Ð³Ð¸ Ñ `rid/uid` (stdout, Ñ„Ð¾Ñ€Ð¼Ð°Ñ‚ Ð¸Ð· `app/core/logging.py`).
 
-2. Файл завис в `processing` или ушёл в `failed`.
-Где смотреть: `GET /api/v1/files/status/{file_id}` (stage/counters/error), `GET /api/v1/stats/observability` (admin), backend-логи `app/services/file.py`.
+2. Ð¤Ð°Ð¹Ð» Ð·Ð°Ð²Ð¸Ñ Ð² `processing` Ð¸Ð»Ð¸ ÑƒÑˆÑ‘Ð» Ð² `failed`.
+Ð“Ð´Ðµ ÑÐ¼Ð¾Ñ‚Ñ€ÐµÑ‚ÑŒ: `GET /api/v1/files/{file_id}/status` (stage/counters/error), `GET /api/v1/stats/observability` (admin), backend-Ð»Ð¾Ð³Ð¸ `app/services/file.py`.
 
-3. Пустой/слабый RAG-ответ.
-Где смотреть: отправить chat с `rag_debug=true` (или `?debug=true`), проверить `rag_debug.top_chunks`, `filters/where`, `retrieval_mode`; сравнить с `docs/examples/retrieve_debug.*.json`.
-Если файл табличный (`xlsx/xls/csv/tsv`) и в debug видно аномально малое `retrieved_chunks_total` при нормальном `chunks_count`, проверьте metadata chunk identity:
-`chunk_id`, `chunk_index` (dedup контекста выполняется по `chunk_id`, fallback: `file_id + chunk_index`).
-Для `full_file` дополнительно проверьте row-level поля:
+3. ÐŸÑƒÑÑ‚Ð¾Ð¹/ÑÐ»Ð°Ð±Ñ‹Ð¹ RAG-Ð¾Ñ‚Ð²ÐµÑ‚.
+Ð“Ð´Ðµ ÑÐ¼Ð¾Ñ‚Ñ€ÐµÑ‚ÑŒ: Ð¾Ñ‚Ð¿Ñ€Ð°Ð²Ð¸Ñ‚ÑŒ chat Ñ `rag_debug=true` (Ð¸Ð»Ð¸ `?debug=true`), Ð¿Ñ€Ð¾Ð²ÐµÑ€Ð¸Ñ‚ÑŒ `rag_debug.top_chunks`, `filters/where`, `retrieval_mode`; ÑÑ€Ð°Ð²Ð½Ð¸Ñ‚ÑŒ Ñ `docs/examples/retrieve_debug.*.json`.
+Ð•ÑÐ»Ð¸ Ñ„Ð°Ð¹Ð» Ñ‚Ð°Ð±Ð»Ð¸Ñ‡Ð½Ñ‹Ð¹ (`xlsx/xls/csv/tsv`) Ð¸ Ð² debug Ð²Ð¸Ð´Ð½Ð¾ Ð°Ð½Ð¾Ð¼Ð°Ð»ÑŒÐ½Ð¾ Ð¼Ð°Ð»Ð¾Ðµ `retrieved_chunks_total` Ð¿Ñ€Ð¸ Ð½Ð¾Ñ€Ð¼Ð°Ð»ÑŒÐ½Ð¾Ð¼ `chunks_count`, Ð¿Ñ€Ð¾Ð²ÐµÑ€ÑŒÑ‚Ðµ metadata chunk identity:
+`chunk_id`, `chunk_index` (dedup ÐºÐ¾Ð½Ñ‚ÐµÐºÑÑ‚Ð° Ð²Ñ‹Ð¿Ð¾Ð»Ð½ÑÐµÑ‚ÑÑ Ð¿Ð¾ `chunk_id`, fallback: `file_id + chunk_index`).
+Ð”Ð»Ñ `full_file` Ð´Ð¾Ð¿Ð¾Ð»Ð½Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ð¾ Ð¿Ñ€Ð¾Ð²ÐµÑ€ÑŒÑ‚Ðµ row-level Ð¿Ð¾Ð»Ñ:
 `rows_expected_total`, `rows_retrieved_total`, `rows_used_map_total`, `rows_used_reduce_total`, `row_coverage_ratio`.
 
-4. Не поднимается приложение из-за настроек.
-Где смотреть: значения в `.env` (`DATABASE_URL`, `ALEMBIC_DATABASE_URL`, `JWT_SECRET_KEY`), ошибки старта в логах uvicorn/FastAPI, проверка БД через `docker compose -f docker-compose.db.yml ps`.
+4. ÐÐµ Ð¿Ð¾Ð´Ð½Ð¸Ð¼Ð°ÐµÑ‚ÑÑ Ð¿Ñ€Ð¸Ð»Ð¾Ð¶ÐµÐ½Ð¸Ðµ Ð¸Ð·-Ð·Ð° Ð½Ð°ÑÑ‚Ñ€Ð¾ÐµÐº.
+Ð“Ð´Ðµ ÑÐ¼Ð¾Ñ‚Ñ€ÐµÑ‚ÑŒ: Ð·Ð½Ð°Ñ‡ÐµÐ½Ð¸Ñ Ð² `.env` (`DATABASE_URL`, `ALEMBIC_DATABASE_URL`, `JWT_SECRET_KEY`), Ð¾ÑˆÐ¸Ð±ÐºÐ¸ ÑÑ‚Ð°Ñ€Ñ‚Ð° Ð² Ð»Ð¾Ð³Ð°Ñ… uvicorn/FastAPI, Ð¿Ñ€Ð¾Ð²ÐµÑ€ÐºÐ° Ð‘Ð” Ñ‡ÐµÑ€ÐµÐ· `docker compose -f docker-compose.db.yml ps`.
 
-5. Модели недоступны/медленные ответы.
-Где смотреть: `GET /api/v1/models/status`, `GET /api/v1/models/list?mode=...&capability=chat|embedding`, логи провайдера в backend (`app/services/llm/providers/*`), общие метрики задержек в `/metrics`.
-Для AI HUB список capability-моделей определяется по `type` из ответа провайдера (`chatbot`/`embedding`), а catalog используется как fallback если discovery недоступен.
+5. ÐœÐ¾Ð´ÐµÐ»Ð¸ Ð½ÐµÐ´Ð¾ÑÑ‚ÑƒÐ¿Ð½Ñ‹/Ð¼ÐµÐ´Ð»ÐµÐ½Ð½Ñ‹Ðµ Ð¾Ñ‚Ð²ÐµÑ‚Ñ‹.
+Ð“Ð´Ðµ ÑÐ¼Ð¾Ñ‚Ñ€ÐµÑ‚ÑŒ: `GET /api/v1/models/status`, `GET /api/v1/models/list?mode=...&capability=chat|embedding`, Ð»Ð¾Ð³Ð¸ Ð¿Ñ€Ð¾Ð²Ð°Ð¹Ð´ÐµÑ€Ð° Ð² backend (`app/services/llm/providers/*`), Ð¾Ð±Ñ‰Ð¸Ðµ Ð¼ÐµÑ‚Ñ€Ð¸ÐºÐ¸ Ð·Ð°Ð´ÐµÑ€Ð¶ÐµÐº Ð² `/metrics`.
+Ð”Ð»Ñ AI HUB ÑÐ¿Ð¸ÑÐ¾Ðº capability-Ð¼Ð¾Ð´ÐµÐ»ÐµÐ¹ Ð¾Ð¿Ñ€ÐµÐ´ÐµÐ»ÑÐµÑ‚ÑÑ Ð¿Ð¾ `type` Ð¸Ð· Ð¾Ñ‚Ð²ÐµÑ‚Ð° Ð¿Ñ€Ð¾Ð²Ð°Ð¹Ð´ÐµÑ€Ð° (`chatbot`/`embedding`), Ð° catalog Ð¸ÑÐ¿Ð¾Ð»ÑŒÐ·ÑƒÐµÑ‚ÑÑ ÐºÐ°Ðº fallback ÐµÑÐ»Ð¸ discovery Ð½ÐµÐ´Ð¾ÑÑ‚ÑƒÐ¿ÐµÐ½.
 
 ## XLSX / CSV Settings (LangChain-first)
-- `XLSX_CHUNK_MAX_CHARS`: adaptive char-budget для row-dense чанков.
-- `XLSX_CHUNK_MAX_ROWS`: safety cap по строкам на chunk.
-- `XLSX_MAX_COLUMNS_PER_CHUNK`: soft cap колонок для wide-листов (value-dense pruning).
-- `FULL_FILE_MAP_MAX_TOKENS`: лимит map шага в structured full-file map/reduce.
-- `RAG_FULL_FILE_MIN_ROW_COVERAGE`: порог row coverage для full-file.
-- `RAG_FULL_FILE_ESCALATION_MAX_CHUNKS`: лимит repass-бюджета при low row coverage.
-- `XLSX_CELL_MAX_CHARS`: optional cap на длину ячейки в chunk serialization (`0` = без cap).
-- `TABULAR_ROW_GROUP_ROWS_NARROW / MEDIUM / WIDE`: динамический размер row-group чанков.
-- `TABULAR_MAX_EMBEDDING_DOCS`: hard cap на число embedding документов для huge таблиц.
-- `TABULAR_WIDE_CELL_HARD_LIMIT`: hard cap для слишком длинных текстовых ячеек (если `XLSX_CELL_MAX_CHARS=0`).
-- `OLLAMA_EMBED_MAX_INPUT_CHARS`: max размер одного embed-сегмента для local/Ollama.
-- `OLLAMA_EMBED_SEGMENT_OVERLAP_CHARS`: overlap между embed-сегментами.
-- Для `xlsx/xls/csv/tsv` ingestion сохраняет `tabular_dataset` (shared DuckDB/Parquet runtime) для deterministic `tabular_sql` path.
+- `XLSX_CHUNK_MAX_CHARS`: adaptive char-budget Ð´Ð»Ñ row-dense Ñ‡Ð°Ð½ÐºÐ¾Ð².
+- `XLSX_CHUNK_MAX_ROWS`: safety cap Ð¿Ð¾ ÑÑ‚Ñ€Ð¾ÐºÐ°Ð¼ Ð½Ð° chunk.
+- `XLSX_MAX_COLUMNS_PER_CHUNK`: soft cap ÐºÐ¾Ð»Ð¾Ð½Ð¾Ðº Ð´Ð»Ñ wide-Ð»Ð¸ÑÑ‚Ð¾Ð² (value-dense pruning).
+- `FULL_FILE_MAP_MAX_TOKENS`: Ð»Ð¸Ð¼Ð¸Ñ‚ map ÑˆÐ°Ð³Ð° Ð² structured full-file map/reduce.
+- `RAG_FULL_FILE_MIN_ROW_COVERAGE`: Ð¿Ð¾Ñ€Ð¾Ð³ row coverage Ð´Ð»Ñ full-file.
+- `RAG_FULL_FILE_ESCALATION_MAX_CHUNKS`: Ð»Ð¸Ð¼Ð¸Ñ‚ repass-Ð±ÑŽÐ´Ð¶ÐµÑ‚Ð° Ð¿Ñ€Ð¸ low row coverage.
+- `XLSX_CELL_MAX_CHARS`: optional cap Ð½Ð° Ð´Ð»Ð¸Ð½Ñƒ ÑÑ‡ÐµÐ¹ÐºÐ¸ Ð² chunk serialization (`0` = Ð±ÐµÐ· cap).
+- `TABULAR_ROW_GROUP_ROWS_NARROW / MEDIUM / WIDE`: Ð´Ð¸Ð½Ð°Ð¼Ð¸Ñ‡ÐµÑÐºÐ¸Ð¹ Ñ€Ð°Ð·Ð¼ÐµÑ€ row-group Ñ‡Ð°Ð½ÐºÐ¾Ð².
+- `TABULAR_MAX_EMBEDDING_DOCS`: hard cap Ð½Ð° Ñ‡Ð¸ÑÐ»Ð¾ embedding Ð´Ð¾ÐºÑƒÐ¼ÐµÐ½Ñ‚Ð¾Ð² Ð´Ð»Ñ huge Ñ‚Ð°Ð±Ð»Ð¸Ñ†.
+- `TABULAR_WIDE_CELL_HARD_LIMIT`: hard cap Ð´Ð»Ñ ÑÐ»Ð¸ÑˆÐºÐ¾Ð¼ Ð´Ð»Ð¸Ð½Ð½Ñ‹Ñ… Ñ‚ÐµÐºÑÑ‚Ð¾Ð²Ñ‹Ñ… ÑÑ‡ÐµÐµÐº (ÐµÑÐ»Ð¸ `XLSX_CELL_MAX_CHARS=0`).
+- `OLLAMA_EMBED_MAX_INPUT_CHARS`: max Ñ€Ð°Ð·Ð¼ÐµÑ€ Ð¾Ð´Ð½Ð¾Ð³Ð¾ embed-ÑÐµÐ³Ð¼ÐµÐ½Ñ‚Ð° Ð´Ð»Ñ local/Ollama.
+- `OLLAMA_EMBED_SEGMENT_OVERLAP_CHARS`: overlap Ð¼ÐµÐ¶Ð´Ñƒ embed-ÑÐµÐ³Ð¼ÐµÐ½Ñ‚Ð°Ð¼Ð¸.
+- Ð”Ð»Ñ `xlsx/xls/csv/tsv` ingestion ÑÐ¾Ñ…Ñ€Ð°Ð½ÑÐµÑ‚ `tabular_dataset` (shared DuckDB/Parquet runtime) Ð´Ð»Ñ deterministic `tabular_sql` path.
 
 ## Ingestion Status Lifecycle
 - `uploaded -> queued -> parsing -> parsed -> chunking -> embedding -> indexing -> completed`
-- Частичный успех: `partial_failed`
-- Фатальная ошибка: `failed`
-- `completed` выставляется только при полной консистентности expected/processed/indexed/upsert counters.
+- Ð§Ð°ÑÑ‚Ð¸Ñ‡Ð½Ñ‹Ð¹ ÑƒÑÐ¿ÐµÑ…: `partial_failed`
+- Ð¤Ð°Ñ‚Ð°Ð»ÑŒÐ½Ð°Ñ Ð¾ÑˆÐ¸Ð±ÐºÐ°: `failed`
+- `completed` Ð²Ñ‹ÑÑ‚Ð°Ð²Ð»ÑÐµÑ‚ÑÑ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð¿Ñ€Ð¸ Ð¿Ð¾Ð»Ð½Ð¾Ð¹ ÐºÐ¾Ð½ÑÐ¸ÑÑ‚ÐµÐ½Ñ‚Ð½Ð¾ÑÑ‚Ð¸ expected/processed/indexed/upsert counters.
 
 ## RAG Debug Quick Checks
-- `retrieval_path`: `vector` или `structured`
+- `retrieval_path`: `vector` Ð¸Ð»Ð¸ `structured`
 - `top_chunks[*].chunk_type`: `file_summary | sheet_summary | row_group | ...`
-- `top_similarity_scores`: верхние similarity значения
-- `context_tokens`: оценка фактически отправленного контекста в LLM
+- `top_similarity_scores`: Ð²ÐµÑ€Ñ…Ð½Ð¸Ðµ similarity Ð·Ð½Ð°Ñ‡ÐµÐ½Ð¸Ñ
+- `context_tokens`: Ð¾Ñ†ÐµÐ½ÐºÐ° Ñ„Ð°ÐºÑ‚Ð¸Ñ‡ÐµÑÐºÐ¸ Ð¾Ñ‚Ð¿Ñ€Ð°Ð²Ð»ÐµÐ½Ð½Ð¾Ð³Ð¾ ÐºÐ¾Ð½Ñ‚ÐµÐºÑÑ‚Ð° Ð² LLM
 
 ## Chat Service Internals (2026-03-03)
 
@@ -164,7 +165,7 @@ This keeps HTTP/SSE behavior stable while reducing file size and improving testa
 - Enforce policy-based model routing with circuit breaker and explicit route telemetry (`model_route`, `fallback_reason`).
 - Keep dual-path answering: deterministic `tabular_sql/profile` for numeric truth, retrieval+LLM only for narrative analysis.
 - Replace in-process ingestion worker with a durable queue/executor (idempotent jobs, retry policy, restart recovery).
-- Evolve tabular storage from per-file SQLite sidecars to shared `DuckDB/Parquet` runtime for large `xlsx/csv`.
+- Tabular storage now uses shared `DuckDB/Parquet` runtime for large `xlsx/csv` (no SQLite sidecar fallback in active backend flow).
 - Keep full-file coverage diagnostics as a hard quality gate (`rows_expected/retrieved/used`, coverage ratios, truncation flags).
 - Implement unified observability + eval framework for offline contour (including fallback-rate and SLO alarms).
 - Use [`docs/11_llm_file_chat_best_practices_architecture.md`](docs/11_llm_file_chat_best_practices_architecture.md) as the architecture baseline.
@@ -202,3 +203,81 @@ This keeps HTTP/SSE behavior stable while reducing file size and improving testa
 - AI HUB still applies provider-side cap `AIHUB_MAX_PROMPT_CHARS` (default `50000`), so request values above this are clamped for AI HUB calls.
 - To effectively raise AI HUB prompt size, increase server setting `AIHUB_MAX_PROMPT_CHARS` (not only UI request value).
 - RAG/provider debug now includes `prompt_chars_requested`, `prompt_chars_configured`, `prompt_chars_limit`, `prompt_chars_before`, `prompt_chars_after`, `prompt_truncated`.
+
+## Persistent User Files Architecture (2026-03-23)
+- File model was rebuilt to persistent user-owned artifacts.
+- Raw file is persisted first and is independent from chat lifecycle.
+- One file can be attached to many chats via `chat_file_links`.
+- Per-user raw storage quota is enforced: `1 GB`.
+- Processing is explicitly versioned in `file_processing_profiles`:
+  - `pipeline_version`, `parser_version`, `artifact_version`,
+  - `embedding_provider`, `embedding_model`, `embedding_dimension`,
+  - `chunking_strategy`, `retrieval_profile`, `is_active`.
+- Reprocess/reindex creates a new processing version and activates it on success.
+- Delete lifecycle removes chat links, vectors, artifacts, raw file, and frees quota.
+
+Detailed reference:
+- [`docs/13_persistent_user_files_architecture.md`](docs/13_persistent_user_files_architecture.md)
+
+## Frontend File UX (2026-03-23)
+- Composer upload now targets persistent user file library (not one-shot attachment memory).
+- Active chat panel shows files linked to current chat and supports:
+  - attach existing library file,
+  - detach from current chat,
+  - delete and reprocess actions.
+- Right sidebar is now `My files` library with quota and file details/debug panel.
+- File statuses (`uploaded/processing/ready/failed/deleting/deleted`) are rendered in both:
+  - file library,
+  - current chat file panel.
+- Upload can auto-attach to currently open chat via `chat_id`.
+- Chat payload uses persisted chat links (`getCurrentChatFileIds`) instead of temporary `attachedFiles`.
+- UX hardening pass adds:
+  - optimistic attach/detach with rollback,
+  - clearer library-vs-chat hints (`Upload to library`, `Files in this chat`),
+  - debug-only technical identifiers (`file_id`, `processing_id`),
+  - cleanup of unused legacy frontend modules (`file-manager`, `auth-ui`, `conversations-ui`, `utils`).
+
+## Table-Aware RAG Refactor (2026-03-23)
+- Ingestion now follows `raw file -> derived artifacts -> selective indexing`.
+- Derived artifacts are persisted per processing version:
+  - `runtime/file_artifacts/<file_id>/<processing_id>/manifest.json`
+- CSV/TSV parsing now records:
+  - encoding, delimiter, header detection, inferred types, preview rows.
+- XLSX parsing now records:
+  - workbook/sheet summaries, inferred types, preview rows, row windows.
+- Retrieval routing now exposes explicit strategy modes:
+  - `semantic`, `analytical`, `combined`.
+- Combined mode performs:
+  - semantic prefetch on tabular artifacts,
+  - then deterministic SQL on selected scope.
+- Full-file keyword hack was removed:
+  - no implicit full-file retrieval from query keywords.
+  - full-file is explicit (`rag_mode=full_file`) or policy escalation.
+- Vector metadata propagation now includes:
+  - `owner_user_id`, `processing_id`, `artifact_type`, `source_type`,
+  - `pipeline_version`, `parser_version`, `artifact_version`,
+  - `embedding_model`, `embedding_dimension`.
+- RAG debug payload was extended with:
+  - `strategy_mode`, `analytical_mode_used`, `active_processing_ids`, `avg_similarity`.
+
+See:
+- [`docs/04_ingestion_pipeline.md`](docs/04_ingestion_pipeline.md)
+- [`docs/03_rag_pipeline.md`](docs/03_rag_pipeline.md)
+
+## Runtime Storage Layout (inside service folder)
+- `runtime/raw_files/`
+- `runtime/temp_uploads/`
+- `runtime/file_artifacts/`
+- `runtime/public/uploads/`
+- `runtime/vector/chromadb/`
+- `runtime/queue/.ingestion_jobs.sqlite3`
+- `runtime/tabular_runtime/`
+
+Runtime data is git-ignored (`.gitignore` includes `/runtime/` and related paths).
+
+## Breaking Changes (Files API)
+- Removed: `POST /api/v1/files/process/{file_id}`
+- Use: `POST /api/v1/files/{file_id}/reprocess`
+- File status route is now: `GET /api/v1/files/{file_id}/status`
+- File API is chat-link based (`chat_id`) and user-owned, not attachment-temporary.
+

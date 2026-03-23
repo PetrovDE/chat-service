@@ -4,6 +4,7 @@ from app.domain.chat.query_planner import (
     INTENT_COMPLEX_ANALYTICS,
     INTENT_NARRATIVE_RETRIEVAL,
     INTENT_TABULAR_AGGREGATE,
+    INTENT_TABULAR_COMBINED,
     INTENT_TABULAR_LOOKUP,
     INTENT_TABULAR_PROFILE,
     ROUTE_COMPLEX_ANALYTICS,
@@ -13,10 +14,11 @@ from app.domain.chat.query_planner import (
 )
 
 
-def _tabular_file(*, file_type: str = "xlsx"):
+def _tabular_file(*, file_type: str = "xlsx", extension: str = "xlsx"):
     return SimpleNamespace(
         id="file-1",
         file_type=file_type,
+        extension=extension,
         custom_metadata={
             "tabular_dataset": {
                 "dataset_id": "ds-1",
@@ -85,3 +87,24 @@ def test_planner_routes_python_pandas_request_to_complex_analytics():
     assert decision.route == ROUTE_COMPLEX_ANALYTICS
     assert decision.intent == INTENT_COMPLEX_ANALYTICS
     assert decision.requires_clarification is False
+
+
+def test_planner_routes_combined_when_semantic_table_scope_and_aggregate_needed():
+    decision = plan_query(
+        query="На каком листе есть регион North и сколько там записей?",
+        files=[_tabular_file()],
+    )
+    assert decision.route == ROUTE_DETERMINISTIC_ANALYTICS
+    assert decision.intent == INTENT_TABULAR_COMBINED
+    assert decision.strategy_mode == "combined"
+    assert decision.requires_clarification is False
+
+
+def test_planner_detects_tabular_file_by_extension_without_file_type():
+    file_obj = _tabular_file(file_type="", extension="csv")
+    decision = plan_query(
+        query="Сколько всего строк в таблице?",
+        files=[file_obj],
+    )
+    assert decision.route == ROUTE_DETERMINISTIC_ANALYTICS
+    assert decision.intent == INTENT_TABULAR_AGGREGATE

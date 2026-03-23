@@ -6,6 +6,7 @@ from app.db.models.conversation import Conversation
 from app.db.models.message import Message
 from app.db.models.file import File
 from app.db.models.conversation_file import ConversationFile
+from app.db.models.file_processing import FileProcessingProfile
 from app.db.models.system import APIUsageLog, SystemSetting
 
 
@@ -17,6 +18,7 @@ __all__ = [
     "Message",
     "File",
     "ConversationFile",
+    "FileProcessingProfile",
     "APIUsageLog",
     "SystemSetting"
 ]

@@ -46,16 +46,25 @@ log/
 Thumbs.db
 
 # Project specific
-uploaded_files/
-temp/
 *.db
 *.sqlite3
-uploads/
-/dev_test/
-
-docker-compose.db.yml
+/runtime/
+/uploads/
+/uploaded_files/
+/temp/
 /chroma_db/
 /.chromadb/
+/dev_test/
+/test.xlsx.tabular.sqlite
+
+docker-compose.db.yml
 .editorconfig
-/docs/
 /.cursor/
+
+# Docs workspace (track selected architecture docs)
+/docs/*
+!/docs/00_project_map.md
+!/docs/01_service_spec.md
+!/docs/02_api_contracts.md
+!/docs/09_observability.md
+!/docs/13_persistent_user_files_architecture.md

@@ -3,7 +3,6 @@ import { AuthManager } from './auth-manager.js';
 import { ChatManager } from './chat-manager.js';
 import { ConversationsManager } from './conversations-manager.js';
 import { UIController } from './ui-controller.js';
-import { FileManager } from './file-manager.js';
 import { SettingsManager } from './settings-manager.js';
 import { FilesSidebarManager } from './files-sidebar-manager.js';
 import { ThemeManager } from './theme-manager.js';
@@ -16,7 +15,6 @@ class App {
         this.chatManager = null;
         this.conversationsManager = null;
         this.uiController = null;
-        this.fileManager = null;
         this.settingsManager = null;
         this.filesSidebarManager = null;
         this.themeManager = null;
@@ -37,7 +35,6 @@ class App {
         );
 
         this.chatManager.setConversationsManager(this.conversationsManager);
-        this.fileManager = new FileManager(this.chatManager);
         this.filesSidebarManager = new FilesSidebarManager(this.apiService, this.uiController);
         this.themeManager = new ThemeManager();
 
@@ -71,7 +68,6 @@ class App {
 
         await this.settingsManager.loadAvailableModels();
         await this.checkSystemHealth();
-        this.fileManager.initializeFileInput();
 
         this.initialized = true;
     }

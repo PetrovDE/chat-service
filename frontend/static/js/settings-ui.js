@@ -34,9 +34,3 @@ window.startNewConversation = function() {
 window.toggleSidebar = function() {
     document.body.classList.toggle('sidebar-collapsed');
 };
-
-window.clearAttachedFiles = function() {
-    if (window.app?.fileManager) {
-        window.app.fileManager.clearAttachedFiles();
-    }
-};

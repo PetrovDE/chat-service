@@ -97,8 +97,8 @@ def find_target_tabular_context(
     dataset = None
     datasets = None
     for file_obj in files:
-        file_type = str(getattr(file_obj, "file_type", "") or "").lower()
-        if file_type not in {"xlsx", "xls", "csv"}:
+        file_extension = str(getattr(file_obj, "extension", "") or "").lower()
+        if file_extension not in {"xlsx", "xls", "csv", "tsv"}:
             continue
         try:
             resolved = collect_datasets_for_file(file_obj)

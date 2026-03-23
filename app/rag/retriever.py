@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import logging
@@ -29,34 +29,8 @@ from app.rag.vector_store import VectorStoreManager
 logger = logging.getLogger(__name__)
 
 
-TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9_]+")
-FULL_FILE_PATTERNS = [
-    "весь файл",
-    "всему файлу",
-    "весь документ",
-    "всему документу",
-    "полный анализ",
-    "проанализируй весь",
-    "проанализировать весь",
-    "analyze full file",
-    "analyze entire file",
-    "summarize full file",
-    "whole file",
-    "entire document",
-    "проанализируй файл",
-    "проанализируй документ",
-    "проанализировать файл",
-    "проанализировать документ",
-    "по всем строкам",
-    "все строки",
-    "целиком",
-    "полностью",
-    "сводку по файлу",
-    "summary of file",
-    "analyze file",
-    "analyze document",
-]
-COMPARE_PATTERNS = ["сравни", "сравнить", "compare", "difference", "разница", "чем отличается"]
+TOKEN_RE = re.compile(r"[A-Za-zÐ-Ð¯Ð°-ÑÐÑ‘0-9_]+")
+COMPARE_PATTERNS: List[str] = ["compare", "difference"]
 
 
 @dataclass
@@ -78,7 +52,6 @@ class RAGRetriever:
     def _detect_intent(self, query: str) -> str:
         return detect_intent_helper(
             query,
-            full_file_patterns=FULL_FILE_PATTERNS,
             compare_patterns=COMPARE_PATTERNS,
         )
 
@@ -102,8 +75,10 @@ class RAGRetriever:
         self,
         *,
         conversation_id: Optional[str],
+        chat_id: Optional[str] = None,
         user_id: Optional[str],
         file_ids: Optional[List[str]],
+        processing_ids: Optional[List[str]] = None,
         sheet_names: Optional[List[str]] = None,
         chunk_types: Optional[List[str]] = None,
         namespace: Optional[str] = None,
@@ -112,8 +87,10 @@ class RAGRetriever:
     ) -> Optional[Dict[str, Any]]:
         return build_where_helper(
             conversation_id=conversation_id,
+            chat_id=chat_id,
             user_id=user_id,
             file_ids=file_ids,
+            processing_ids=processing_ids,
             sheet_names=sheet_names,
             chunk_types=chunk_types,
             namespace=namespace,
@@ -260,6 +237,7 @@ class RAGRetriever:
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         file_ids: Optional[List[str]] = None,
+        processing_ids: Optional[List[str]] = None,
         embedding_mode: str = "local",
         embedding_model: Optional[str] = None,
         score_threshold: Optional[float] = None,
@@ -286,8 +264,10 @@ class RAGRetriever:
         )
         where = self._build_where(
             conversation_id=conversation_id,
+            chat_id=conversation_id,
             user_id=user_id,
             file_ids=file_ids,
+            processing_ids=processing_ids,
             sheet_names=sheet_names,
             chunk_types=chunk_types,
             namespace=namespace,
@@ -303,6 +283,7 @@ class RAGRetriever:
                 conversation_id=conversation_id,
                 user_id=user_id,
                 file_ids=file_ids,
+                processing_ids=processing_ids,
                 embedding_mode=embedding_mode,
                 embedding_model=embedding_model,
                 max_chunks=full_file_max_chunks,
@@ -422,6 +403,7 @@ class RAGRetriever:
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         file_ids: Optional[List[str]] = None,
+        processing_ids: Optional[List[str]] = None,
         embedding_mode: Optional[str] = None,
         embedding_model: Optional[str] = None,
         max_chunks: Optional[int] = None,
@@ -434,8 +416,10 @@ class RAGRetriever:
         max_chunks = int(max_chunks or settings.RAG_FULL_FILE_MAX_CHUNKS)
         where = self._build_where(
             conversation_id=conversation_id,
+            chat_id=conversation_id,
             user_id=user_id,
             file_ids=file_ids,
+            processing_ids=processing_ids,
             sheet_names=sheet_names,
             chunk_types=chunk_types,
             namespace=namespace,
@@ -495,6 +479,7 @@ class RAGRetriever:
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         file_ids: Optional[List[str]] = None,
+        processing_ids: Optional[List[str]] = None,
         embedding_mode: str = "local",
         embedding_model: Optional[str] = None,
         score_threshold: Optional[float] = None,
@@ -520,6 +505,7 @@ class RAGRetriever:
                 conversation_id=conversation_id,
                 user_id=user_id,
                 file_ids=file_ids,
+                processing_ids=processing_ids,
                 embedding_mode=embedding_mode,
                 embedding_model=embedding_model,
                 score_threshold=score_threshold,
@@ -548,6 +534,7 @@ class RAGRetriever:
             conversation_id=conversation_id,
             user_id=user_id,
             file_ids=file_ids,
+            processing_ids=processing_ids,
             embedding_mode=embedding_mode,
             embedding_model=embedding_model,
             score_threshold=score_threshold,
@@ -596,3 +583,4 @@ class RAGRetriever:
 
 
 rag_retriever = RAGRetriever()
+

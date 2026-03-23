@@ -19,6 +19,7 @@ async def run_grouped_retrieval(
     conversation_id: uuid.UUID,
     groups: Dict[Tuple[str, Optional[str]], List[str]],
     all_file_ids: List[str],
+    processing_ids_by_file: Optional[Dict[str, str]],
     top_k: int,
     rag_mode: Optional[str],
     embedding_mode: str,
@@ -38,12 +39,20 @@ async def run_grouped_retrieval(
         emb_model: Optional[str],
         mode: Optional[str],
     ) -> Any:
+        selected_processing_ids: Optional[List[str]] = None
+        if processing_ids_by_file:
+            selected_processing_ids = [
+                processing_ids_by_file[str(fid)]
+                for fid in ids
+                if str(fid) in processing_ids_by_file
+            ]
         kwargs: Dict[str, Any] = {
             "query": query_text,
             "top_k": top_k_value,
             "user_id": str(usr_id),
             "conversation_id": str(conv_id),
             "file_ids": ids,
+            "processing_ids": selected_processing_ids,
             "embedding_mode": emb_mode,
             "embedding_model": emb_model,
             "rag_mode": mode,
@@ -51,11 +60,7 @@ async def run_grouped_retrieval(
         }
         if full_file_max_chunks is not None:
             kwargs["full_file_max_chunks"] = int(full_file_max_chunks)
-        try:
-            return await rag_retriever_client.query_rag(**kwargs)
-        except TypeError:
-            kwargs.pop("full_file_max_chunks", None)
-            return await rag_retriever_client.query_rag(**kwargs)
+        return await rag_retriever_client.query_rag(**kwargs)
 
     if len(groups) == 1:
         rag_result = await _query_with_optional_full_file_max(
@@ -88,12 +93,17 @@ async def run_grouped_retrieval(
             )
         )
     group_results = await asyncio.gather(*group_tasks, return_exceptions=True)
+    errors: List[Exception] = []
     for group_result in group_results:
         if isinstance(group_result, Exception):
             logger.warning("RAG group retrieval failed: %s", group_result)
+            errors.append(group_result)
             continue
         if isinstance(group_result, dict):
             rag_results.append(group_result)
+
+    if errors and not rag_results:
+        raise RuntimeError("all_group_retrieval_failed") from errors[0]
 
     return rag_results
 

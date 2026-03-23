@@ -53,6 +53,7 @@ def test_dynamic_top_k_short_auto_query_uses_20_percent(monkeypatch):
         score_threshold=None,  # noqa: ARG001
         debug_return=False,  # noqa: ARG001
         rag_mode=None,  # noqa: ARG001
+        **kwargs,  # noqa: ARG001
     ):
         captured["top_k"].append(top_k)
         return {
@@ -112,6 +113,7 @@ def test_full_file_mode_uses_100_percent_budget(monkeypatch):
         score_threshold=None,  # noqa: ARG001
         debug_return=False,  # noqa: ARG001
         rag_mode=None,  # noqa: ARG001
+        **kwargs,  # noqa: ARG001
     ):
         captured["top_k"].append(top_k)
         return {
@@ -175,6 +177,7 @@ def test_low_coverage_auto_mode_escalates_to_full_file(monkeypatch):
         score_threshold=None,  # noqa: ARG001
         debug_return=False,  # noqa: ARG001
         rag_mode=None,
+        **kwargs,  # noqa: ARG001
     ):
         calls.append({"top_k": top_k, "rag_mode": rag_mode})
         if rag_mode == "full_file":
@@ -250,6 +253,7 @@ def test_full_file_row_coverage_escalation_repass(monkeypatch):
         debug_return=False,  # noqa: ARG001
         rag_mode=None,
         full_file_max_chunks=None,
+        **kwargs,  # noqa: ARG001
     ):
         calls.append({"rag_mode": rag_mode, "full_file_max_chunks": full_file_max_chunks})
         docs = []
@@ -342,6 +346,7 @@ def test_full_file_silent_row_loss_marks_truncated(monkeypatch):
         debug_return=False,  # noqa: ARG001
         rag_mode=None,  # noqa: ARG001
         full_file_max_chunks=None,  # noqa: ARG001
+        **kwargs,  # noqa: ARG001
     ):
         docs = []
         for idx, (row_start, row_end) in enumerate([(250, 266), (267, 283), (284, 300)]):

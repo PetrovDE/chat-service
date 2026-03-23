@@ -1,11 +1,13 @@
 import asyncio
-import sqlite3
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.chat import tabular_sql
 from app.services.chat.tabular_sql import execute_tabular_sql_path
+from app.services.tabular.storage_adapter import SharedDuckDBParquetStorageAdapter
 from app.services.tabular.sql_errors import (
     SQL_ERROR_GUARDRAIL_BLOCKED,
     SQL_ERROR_SCAN_LIMIT_EXCEEDED,
@@ -13,40 +15,46 @@ from app.services.tabular.sql_errors import (
 )
 
 
-def _make_legacy_sidecar_file(tmp_path: Path) -> SimpleNamespace:
-    sidecar_path = tmp_path / "guardrails_legacy.sqlite"
-    conn = sqlite3.connect(str(sidecar_path))
-    try:
-        conn.execute("CREATE TABLE sheet_1 (city TEXT, amount TEXT)")
-        conn.execute("INSERT INTO sheet_1(city, amount) VALUES ('ekb', '10')")
-        conn.execute("INSERT INTO sheet_1(city, amount) VALUES ('msk', '20')")
-        conn.execute("INSERT INTO sheet_1(city, amount) VALUES ('spb', '30')")
-        conn.commit()
-    finally:
-        conn.close()
+def _make_tabular_dataset_file(tmp_path: Path) -> SimpleNamespace:
+    pytest.importorskip("duckdb")
+    pytest.importorskip("pandas")
+    adapter = SharedDuckDBParquetStorageAdapter(
+        dataset_root=tmp_path / "datasets",
+        catalog_path=tmp_path / "catalog.duckdb",
+    )
+    csv_path = tmp_path / "guardrails.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "city,amount",
+                "ekb,10",
+                "msk,20",
+                "spb,30",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    dataset = adapter.ingest(
+        file_id="guardrails-file",
+        file_path=csv_path,
+        file_type="csv",
+        source_filename="guardrails.csv",
+    )
+    assert dataset is not None
 
     return SimpleNamespace(
-        id="legacy-guardrails-file",
-        file_type="xlsx",
-        original_filename="guardrails.xlsx",
+        id="guardrails-file",
+        extension="csv",
+        file_type="csv",
+        original_filename="guardrails.csv",
         custom_metadata={
-            "tabular_sidecar": {
-                "path": str(sidecar_path),
-                "tables": [
-                    {
-                        "table_name": "sheet_1",
-                        "sheet_name": "Sheet1",
-                        "row_count": 3,
-                        "columns": ["city", "amount"],
-                    }
-                ],
-            }
-        },
+            "tabular_dataset": dataset,
+        }
     )
 
 
 def test_tabular_sql_guardrails_blocked_sql_returns_classified_error(tmp_path: Path, monkeypatch):
-    file_obj = _make_legacy_sidecar_file(tmp_path)
+    file_obj = _make_tabular_dataset_file(tmp_path)
 
     def fake_build_sql(*, query, table):  # noqa: ARG001
         return "DELETE FROM sheet_1", {"operation": "count", "group_by_column": None, "metric_column": None}
@@ -61,7 +69,7 @@ def test_tabular_sql_guardrails_blocked_sql_returns_classified_error(tmp_path: P
 
 
 def test_tabular_sql_guardrails_timeout_returns_classified_error(tmp_path: Path, monkeypatch):
-    file_obj = _make_legacy_sidecar_file(tmp_path)
+    file_obj = _make_tabular_dataset_file(tmp_path)
 
     def slow_execute(**kwargs):  # noqa: ANN003
         time.sleep(0.2)
@@ -77,7 +85,7 @@ def test_tabular_sql_guardrails_timeout_returns_classified_error(tmp_path: Path,
 
 
 def test_tabular_sql_guardrails_scan_limit_returns_classified_error(tmp_path: Path, monkeypatch):
-    file_obj = _make_legacy_sidecar_file(tmp_path)
+    file_obj = _make_tabular_dataset_file(tmp_path)
 
     monkeypatch.setattr(tabular_sql.settings, "TABULAR_SQL_MAX_SCANNED_ROWS", 2)
 
@@ -88,7 +96,7 @@ def test_tabular_sql_guardrails_scan_limit_returns_classified_error(tmp_path: Pa
 
 
 def test_tabular_sql_guardrails_happy_path_includes_trace_fields(tmp_path: Path, monkeypatch):
-    file_obj = _make_legacy_sidecar_file(tmp_path)
+    file_obj = _make_tabular_dataset_file(tmp_path)
     monkeypatch.setattr(tabular_sql.settings, "TABULAR_SQL_MAX_SCANNED_ROWS", 1000)
     monkeypatch.setattr(tabular_sql.settings, "TABULAR_SQL_TIMEOUT_SECONDS", 2.0)
 
@@ -104,7 +112,7 @@ def test_tabular_sql_guardrails_happy_path_includes_trace_fields(tmp_path: Path,
 
 
 def test_tabular_sql_lookup_happy_path_returns_lookup_intent(tmp_path: Path, monkeypatch):
-    file_obj = _make_legacy_sidecar_file(tmp_path)
+    file_obj = _make_tabular_dataset_file(tmp_path)
     monkeypatch.setattr(tabular_sql.settings, "TABULAR_SQL_MAX_SCANNED_ROWS", 1000)
     monkeypatch.setattr(tabular_sql.settings, "TABULAR_SQL_TIMEOUT_SECONDS", 2.0)
 

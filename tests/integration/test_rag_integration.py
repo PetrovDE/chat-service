@@ -35,6 +35,7 @@ def test_mixed_embedding_groups_merge(monkeypatch):
         score_threshold=None,  # noqa: ARG001
         debug_return=False,  # noqa: ARG001
         rag_mode=None,  # noqa: ARG001
+        **kwargs,  # noqa: ARG001
     ):
         return {
             "docs": [
@@ -123,6 +124,7 @@ def test_mixed_group_partial_failure_fallback(monkeypatch):
         score_threshold=None,  # noqa: ARG001
         debug_return=False,  # noqa: ARG001
         rag_mode=None,  # noqa: ARG001
+        **kwargs,  # noqa: ARG001
     ):
         if str(file_b.id) in (file_ids or []):
             raise RuntimeError("provider temporary failure")
@@ -189,6 +191,7 @@ def test_full_file_prompt_preserves_all_retrieved_chunks(monkeypatch):
         score_threshold=None,  # noqa: ARG001
         debug_return=False,  # noqa: ARG001
         rag_mode=None,  # noqa: ARG001
+        **kwargs,  # noqa: ARG001
     ):
         docs = []
         for idx in range(total_chunks):
@@ -274,6 +277,7 @@ def test_full_file_row_coverage_debug_fields(monkeypatch):
         score_threshold=None,  # noqa: ARG001
         debug_return=False,  # noqa: ARG001
         rag_mode=None,  # noqa: ARG001
+        **kwargs,  # noqa: ARG001
     ):
         docs = []
         for idx in range(4):
@@ -414,6 +418,126 @@ def test_tabular_intent_routes_to_sql_path(monkeypatch):
     assert "Deterministic tabular SQL result" in final_prompt
 
 
+def test_combined_tabular_route_uses_semantic_prefetch_before_sql(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_a = uuid.uuid4()
+    file_b = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_a,
+                embedding_model="local:nomic-embed-text:latest",
+                file_type="xlsx",
+                chunks_count=14,
+                is_processed="completed",
+                original_filename="north.xlsx",
+                active_processing=SimpleNamespace(id=uuid.uuid4()),
+                custom_metadata={
+                    "tabular_dataset": {
+                        "dataset_id": "ds-a",
+                        "dataset_version": 1,
+                        "dataset_provenance_id": "prov-a",
+                        "tables": [
+                            {
+                                "table_name": "north_sheet",
+                                "sheet_name": "North",
+                                "row_count": 120,
+                                "columns": ["region", "amount"],
+                                "column_aliases": {},
+                            }
+                        ],
+                    }
+                },
+            ),
+            SimpleNamespace(
+                id=file_b,
+                embedding_model="local:nomic-embed-text:latest",
+                file_type="xlsx",
+                chunks_count=9,
+                is_processed="completed",
+                original_filename="south.xlsx",
+                active_processing=SimpleNamespace(id=uuid.uuid4()),
+                custom_metadata={
+                    "tabular_dataset": {
+                        "dataset_id": "ds-b",
+                        "dataset_version": 1,
+                        "dataset_provenance_id": "prov-b",
+                        "tables": [
+                            {
+                                "table_name": "south_sheet",
+                                "sheet_name": "South",
+                                "row_count": 80,
+                                "columns": ["region", "amount"],
+                                "column_aliases": {},
+                            }
+                        ],
+                    }
+                },
+            ),
+        ]
+
+    async def fake_query_rag(**kwargs):  # noqa: ANN003
+        assert kwargs.get("chunk_types") == ["file_summary", "sheet_summary", "row_group", "column_summary"]
+        return {
+            "docs": [
+                {
+                    "content": "North sheet summary says region North has active records",
+                    "metadata": {
+                        "file_id": str(file_a),
+                        "filename": "north.xlsx",
+                        "sheet_name": "North",
+                        "chunk_type": "sheet_summary",
+                    },
+                    "similarity_score": 0.97,
+                }
+            ],
+            "debug": {"retrieval_mode": "hybrid", "intent": "fact_lookup"},
+        }
+
+    async def fake_tabular_sql_path(*, query, files):  # noqa: ARG001
+        assert "[combined_scope_sheet=North]" in query
+        assert len(files) == 1
+        assert str(files[0].id) == str(file_a)
+        return {
+            "status": "ok",
+            "prompt_context": "Deterministic tabular SQL result (source of truth): sql=SELECT COUNT(*) ... result=42",
+            "debug": {"retrieval_mode": "tabular_sql", "intent": "tabular_aggregate"},
+            "sources": ["north.xlsx | table=north_sheet | sql"],
+            "rows_expected_total": 120,
+            "rows_retrieved_total": 42,
+            "rows_used_map_total": 42,
+            "rows_used_reduce_total": 42,
+            "row_coverage_ratio": 0.35,
+        }
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
+    monkeypatch.setattr(rag_builder, "execute_tabular_sql_path", fake_tabular_sql_path)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="На каком листе есть region North и сколько там записей?",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is True
+    assert rag_caveats == []
+    assert rag_sources == ["north.xlsx | table=north_sheet | sql"]
+    assert context_docs
+    assert rag_debug["strategy_mode"] == "combined"
+    assert rag_debug["retrieval_mode"] == "tabular_combined"
+    assert rag_debug["combined_scope"]["selected_sheet"] == "North"
+    assert "Deterministic tabular SQL result" in final_prompt
+
+
 def test_tabular_sql_error_returns_clarification_without_narrative_fallback(monkeypatch):
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
@@ -494,6 +618,71 @@ def test_tabular_sql_error_returns_clarification_without_narrative_fallback(monk
     assert rag_debug["rag_mode_effective"] == "tabular_sql_error"
 
 
+def test_tabular_sql_invalid_payload_returns_clarification_without_narrative_fallback(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                embedding_model="local:nomic-embed-text:latest",
+                file_type="xlsx",
+                chunks_count=8,
+                is_processed="completed",
+                original_filename="table.xlsx",
+                custom_metadata={
+                    "tabular_dataset": {
+                        "dataset_id": "ds-1",
+                        "dataset_version": 1,
+                        "dataset_provenance_id": "prov-1",
+                        "tables": [
+                            {
+                                "table_name": "sheet_1",
+                                "sheet_name": "Sheet1",
+                                "row_count": 50,
+                                "columns": ["city", "amount"],
+                                "column_aliases": {},
+                            }
+                        ],
+                    }
+                },
+            )
+        ]
+
+    async def invalid_tabular_sql_path(*, query, files):  # noqa: ARG001
+        return "INVALID_PAYLOAD"
+
+    async def fail_query_rag(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("query_rag should not be used when deterministic SQL payload is invalid")
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder, "execute_tabular_sql_path", invalid_tabular_sql_path)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fail_query_rag)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Сколько всего строк в таблице?",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert context_docs == []
+    assert rag_caveats == []
+    assert rag_sources == []
+    assert "invalid payload" in final_prompt.lower()
+    assert rag_debug["requires_clarification"] is True
+    assert rag_debug["executor_error_code"] == "invalid_executor_payload"
+    assert rag_debug["rag_mode_effective"] == "tabular_sql_invalid_payload"
+
+
 def test_metric_critical_ambiguous_query_returns_clarification(monkeypatch):
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
@@ -559,6 +748,108 @@ def test_metric_critical_ambiguous_query_returns_clarification(monkeypatch):
     assert "metric_critical_ambiguous" in rag_debug["planner_decision"]["reason_codes"]
 
 
+def test_narrative_retrieval_runtime_error_surfaces_explicit_debug(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                embedding_model="local:nomic-embed-text:latest",
+                file_type="txt",
+                chunks_count=10,
+                is_processed="completed",
+                original_filename="notes.txt",
+                custom_metadata={},
+            )
+        ]
+
+    async def fail_query_rag(**kwargs):  # noqa: ANN003
+        raise RuntimeError("vector store unavailable")
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fail_query_rag)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Что написано в notes.txt?",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert context_docs == []
+    assert rag_caveats == []
+    assert rag_sources == []
+    assert "retrieval failed" in final_prompt.lower()
+    assert rag_debug["retrieval_mode"] == "narrative_error"
+    assert rag_debug["executor_error_code"] == "retrieval_runtime_error"
+    assert rag_debug["requires_clarification"] is True
+
+
+def test_narrative_all_group_failures_surface_explicit_debug(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_a = uuid.uuid4()
+    file_b = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_a,
+                embedding_model="local:nomic-embed-text:latest",
+                file_type="txt",
+                chunks_count=5,
+                is_processed="completed",
+                original_filename="a.txt",
+                custom_metadata={},
+            ),
+            SimpleNamespace(
+                id=file_b,
+                embedding_model="aihub:arctic",
+                file_type="txt",
+                chunks_count=5,
+                is_processed="completed",
+                original_filename="b.txt",
+                custom_metadata={},
+            ),
+        ]
+
+    async def fail_query_rag(**kwargs):  # noqa: ANN003
+        raise RuntimeError("retrieval backend outage")
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fail_query_rag)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Что есть в файлах?",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert context_docs == []
+    assert rag_caveats == []
+    assert rag_sources == []
+    assert "retrieval failed" in final_prompt.lower()
+    assert rag_debug["retrieval_mode"] == "narrative_error"
+    assert rag_debug["executor_error_code"] == "retrieval_runtime_error"
+    assert rag_debug["requires_clarification"] is True
+
+
 def test_query_language_policy_applied_without_user():
     final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
         rag_builder.build_rag_prompt(
@@ -574,6 +865,49 @@ def test_query_language_policy_applied_without_user():
 
     assert rag_used is False
     assert "Respond strictly in Russian" in final_prompt
+    assert rag_debug is None
+    assert context_docs == []
+    assert rag_caveats == []
+    assert rag_sources == []
+
+
+def test_build_rag_prompt_skips_files_without_active_ready_processing(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                extension="xlsx",
+                chunks_count=10,
+                active_processing=None,
+                original_filename="table.xlsx",
+                custom_metadata={},
+            )
+        ]
+
+    async def fail_query_rag(**kwargs):  # noqa: ANN003
+        raise AssertionError("query_rag should not be called for files without active processing")
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fail_query_rag)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Сколько записей в таблице?",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert isinstance(final_prompt, str) and final_prompt
+    assert rag_used is False
     assert rag_debug is None
     assert context_docs == []
     assert rag_caveats == []

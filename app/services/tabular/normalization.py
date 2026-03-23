@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 from typing import Dict, List, Optional, Tuple
 
+from app.services.tabular.parsing import read_csv_with_detection, read_excel_sheets
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,67 +50,20 @@ def normalize_dataframe_columns(df) -> Tuple[List[str], Dict[str, str]]:
 
 
 def _read_csv(file_path: Path):
-    import pandas as pd
-
-    attempts = [
-        {"encoding": "utf-8"},
-        {"encoding": "utf-8-sig"},
-        {"encoding": "cp1251"},
-        {"encoding": "latin-1"},
-    ]
-    last_error: Optional[Exception] = None
-    for attempt in attempts:
-        try:
-            return pd.read_csv(
-                str(file_path),
-                dtype=str,
-                keep_default_na=False,
-                engine="python",
-                sep=None,
-                on_bad_lines="skip",
-                **attempt,
-            )
-        except Exception as exc:
-            last_error = exc
-            continue
-    raise ValueError(f"Failed to read CSV file: {file_path}. Last error: {last_error}")
+    df, _meta = read_csv_with_detection(file_path, forced_delimiter=None)
+    return df
 
 
 def _read_tsv(file_path: Path):
-    import pandas as pd
-
-    attempts = [
-        {"encoding": "utf-8"},
-        {"encoding": "utf-8-sig"},
-        {"encoding": "cp1251"},
-        {"encoding": "latin-1"},
-    ]
-    last_error: Optional[Exception] = None
-    for attempt in attempts:
-        try:
-            return pd.read_csv(
-                str(file_path),
-                dtype=str,
-                keep_default_na=False,
-                sep="\t",
-                on_bad_lines="skip",
-                **attempt,
-            )
-        except Exception as exc:
-            last_error = exc
-            continue
-    raise ValueError(f"Failed to read TSV file: {file_path}. Last error: {last_error}")
+    df, _meta = read_csv_with_detection(file_path, forced_delimiter="\t")
+    return df
 
 
 def _read_excel_sheet(file_path: Path, sheet_name: str):
-    import pandas as pd
-
-    return pd.read_excel(
-        str(file_path),
-        sheet_name=sheet_name,
-        dtype=str,
-        keep_default_na=False,
-    )
+    tables = dict(read_excel_sheets(file_path))
+    if sheet_name not in tables:
+        raise ValueError(f"Excel sheet not found: {sheet_name}")
+    return tables[sheet_name]
 
 
 def _normalize_dataframe(df):
@@ -156,15 +111,8 @@ def load_normalized_tables(file_path: Path, file_type: str) -> List[NormalizedTa
         )
         return tables
 
-    import pandas as pd
-
-    excel = pd.ExcelFile(str(file_path))
-    for idx, sheet in enumerate(excel.sheet_names, start=1):
-        try:
-            df = _read_excel_sheet(file_path, sheet_name=sheet)
-        except Exception:
-            logger.warning("Tabular runtime: failed to read sheet '%s'", sheet, exc_info=True)
-            continue
+    excel_tables = read_excel_sheets(file_path)
+    for idx, (sheet, df) in enumerate(excel_tables, start=1):
         df = _normalize_dataframe(df)
         if df is None or df.empty:
             continue

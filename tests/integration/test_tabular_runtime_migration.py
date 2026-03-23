@@ -1,6 +1,5 @@
 import asyncio
 import json
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -96,18 +95,9 @@ def test_tabular_sql_reproducible_for_same_dataset_version(tmp_path: Path):
     assert rows[0][0] == 3
 
 
-def test_tabular_sql_supports_legacy_sqlite_sidecar_metadata(tmp_path: Path):
+def test_tabular_sql_ignores_legacy_sqlite_sidecar_metadata(tmp_path: Path):
     sidecar_path = tmp_path / "legacy.sqlite"
-    conn = sqlite3.connect(str(sidecar_path))
-    try:
-        conn.execute("CREATE TABLE sheet_1 (city TEXT, amount TEXT)")
-        conn.execute("INSERT INTO sheet_1(city, amount) VALUES ('ekb', '10')")
-        conn.execute("INSERT INTO sheet_1(city, amount) VALUES ('msk', '20')")
-        conn.execute("INSERT INTO sheet_1(city, amount) VALUES ('spb', '30')")
-        conn.commit()
-    finally:
-        conn.close()
-
+    sidecar_path.write_text("", encoding="utf-8")
     file_obj = SimpleNamespace(
         id="legacy-file",
         file_type="xlsx",
@@ -133,8 +123,4 @@ def test_tabular_sql_supports_legacy_sqlite_sidecar_metadata(tmp_path: Path):
             files=[file_obj],
         )
     )
-    assert result is not None
-    assert result["debug"]["tabular_sql"]["storage_engine"] == "sqlite_legacy"
-    assert result["rows_expected_total"] == 3
-    assert result["row_coverage_ratio"] == 1.0
-
+    assert result is None

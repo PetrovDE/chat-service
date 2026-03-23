@@ -24,7 +24,7 @@ def artifact_public_url(path_value: str) -> Optional[str]:
         return None
     try:
         artifact_path = Path(str(path_value)).expanduser().resolve()
-        uploads_root = Path("uploads").resolve()
+        uploads_root = settings.get_public_uploads_dir().resolve()
         relative = artifact_path.relative_to(uploads_root)
         return "/uploads/" + "/".join(relative.parts)
     except Exception:
@@ -36,7 +36,7 @@ def artifact_relative_path(path_value: str) -> Optional[str]:
         return None
     try:
         artifact_path = Path(str(path_value)).expanduser().resolve()
-        uploads_root = Path("uploads").resolve()
+        uploads_root = settings.get_public_uploads_dir().resolve()
         relative = artifact_path.relative_to(uploads_root)
         return "uploads/" + "/".join(relative.parts)
     except Exception:

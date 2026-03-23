@@ -62,9 +62,24 @@ class Settings(BaseSettings):
     default_rag_model: str = Field(default="llama3.1:8b")
     max_chunks_per_file: int = Field(default=100, ge=1)
     splitter_type: str = Field(default="smart")
+    USER_FILE_QUOTA_BYTES: int = Field(default=1_073_741_824, ge=1)
+    FILE_PIPELINE_VERSION_DEFAULT: str = Field(default="pipeline-v1")
+    FILE_PARSER_VERSION_DEFAULT: str = Field(default="parser-v1")
+    FILE_ARTIFACT_VERSION_DEFAULT: str = Field(default="artifact-v1")
+    FILE_CHUNKING_STRATEGY_DEFAULT: str = Field(default="smart")
+    FILE_RETRIEVAL_PROFILE_DEFAULT: str = Field(default="default")
+
+    # Runtime storage layout (inside service folder)
+    RUNTIME_ROOT: str = Field(default="runtime")
+    RUNTIME_RAW_FILES_DIR: str = Field(default="runtime/raw_files")
+    RUNTIME_TEMP_UPLOADS_DIR: str = Field(default="runtime/temp_uploads")
+    RUNTIME_FILE_ARTIFACTS_DIR: str = Field(default="runtime/file_artifacts")
+    RUNTIME_PUBLIC_UPLOADS_DIR: str = Field(default="runtime/public/uploads")
+    RUNTIME_EXPORTS_DIR: str = Field(default="runtime/exports")
+    RUNTIME_LOCAL_INDEX_DIR: str = Field(default="runtime/local_index")
 
     # VectorStore / RAG
-    VECTORDB_PATH: str = Field(default=".chromadb")
+    VECTORDB_PATH: str = Field(default="runtime/vector/chromadb")
     COLLECTION_NAME: str = Field(default="documents")
     EMBEDDINGS_MODEL: str = Field(default="nomic-embed-text:latest")
     OLLAMA_CHAT_MODEL: str = Field(default="llama3.2:latest")
@@ -137,9 +152,9 @@ class Settings(BaseSettings):
     INGESTION_WORKER_LEASE_SECONDS: float = Field(default=120.0, ge=5.0, le=86400.0)
     INGESTION_WORKER_HEARTBEAT_SECONDS: float = Field(default=5.0, ge=0.5, le=120.0)
     INGESTION_WORKER_SHUTDOWN_TIMEOUT_SECONDS: float = Field(default=15.0, ge=1.0, le=300.0)
-    INGESTION_QUEUE_SQLITE_PATH: str = Field(default="uploads/.ingestion_jobs.sqlite3")
-    TABULAR_RUNTIME_ROOT: str = Field(default="uploads/tabular_runtime/datasets")
-    TABULAR_RUNTIME_CATALOG_PATH: str = Field(default="uploads/tabular_runtime/catalog.duckdb")
+    INGESTION_QUEUE_SQLITE_PATH: str = Field(default="runtime/queue/.ingestion_jobs.sqlite3")
+    TABULAR_RUNTIME_ROOT: str = Field(default="runtime/tabular_runtime/datasets")
+    TABULAR_RUNTIME_CATALOG_PATH: str = Field(default="runtime/tabular_runtime/catalog.duckdb")
     TABULAR_SQL_TIMEOUT_SECONDS: float = Field(default=8.0, ge=0.5, le=120.0)
     TABULAR_SQL_MAX_RESULT_ROWS: int = Field(default=200, ge=10, le=10000)
     TABULAR_SQL_MAX_RESULT_BYTES: int = Field(default=200000, ge=1024, le=20000000)
@@ -151,7 +166,7 @@ class Settings(BaseSettings):
     COMPLEX_ANALYTICS_MAX_ARTIFACTS: int = Field(default=16, ge=1, le=128)
     COMPLEX_ANALYTICS_MAX_ARTIFACTS_HARD_CAP: int = Field(default=48, ge=1, le=256)
     COMPLEX_ANALYTICS_MAX_ROWS: int = Field(default=200000, ge=1000, le=5000000)
-    COMPLEX_ANALYTICS_ARTIFACT_DIR: str = Field(default="uploads/complex_analytics")
+    COMPLEX_ANALYTICS_ARTIFACT_DIR: str = Field(default="runtime/public/uploads/complex_analytics")
     COMPLEX_ANALYTICS_ARTIFACT_TTL_HOURS: int = Field(default=168, ge=1, le=87600)
     COMPLEX_ANALYTICS_ARTIFACT_MAX_RUN_DIRS: int = Field(default=2000, ge=10, le=200000)
     COMPLEX_ANALYTICS_CODEGEN_ENABLED: bool = Field(default=True)
@@ -222,8 +237,96 @@ class Settings(BaseSettings):
     def supported_filetypes_tuple(self) -> Tuple[str, ...]:
         return tuple(f".{x}" for x in self.supported_filetypes.split(",") if x)
 
+    def get_service_root(self) -> Path:
+        return Path(__file__).resolve().parents[2]
+
+    def _resolve_runtime_path(self, path_value: str) -> Path:
+        path = Path(str(path_value or "").strip() or ".").expanduser()
+        if not path.is_absolute():
+            path = (self.get_service_root() / path).resolve()
+        return path
+
+    def get_runtime_root(self) -> Path:
+        path = self._resolve_runtime_path(self.RUNTIME_ROOT)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_raw_files_dir(self) -> Path:
+        path = self._resolve_runtime_path(self.RUNTIME_RAW_FILES_DIR)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_temp_uploads_dir(self) -> Path:
+        path = self._resolve_runtime_path(self.RUNTIME_TEMP_UPLOADS_DIR)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_file_artifacts_dir(self) -> Path:
+        path = self._resolve_runtime_path(self.RUNTIME_FILE_ARTIFACTS_DIR)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_public_uploads_dir(self) -> Path:
+        path = self._resolve_runtime_path(self.RUNTIME_PUBLIC_UPLOADS_DIR)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_exports_dir(self) -> Path:
+        path = self._resolve_runtime_path(self.RUNTIME_EXPORTS_DIR)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_local_index_dir(self) -> Path:
+        path = self._resolve_runtime_path(self.RUNTIME_LOCAL_INDEX_DIR)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_ingestion_queue_path(self) -> Path:
+        path = self._resolve_runtime_path(self.INGESTION_QUEUE_SQLITE_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_tabular_runtime_root(self) -> Path:
+        path = self._resolve_runtime_path(self.TABULAR_RUNTIME_ROOT)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_tabular_runtime_catalog_path(self) -> Path:
+        configured = str(self.TABULAR_RUNTIME_CATALOG_PATH or "").strip()
+        if configured:
+            path = self._resolve_runtime_path(configured)
+        else:
+            path = (self.get_tabular_runtime_root().parent / "catalog.duckdb").resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_complex_analytics_artifact_dir(self) -> Path:
+        configured = str(self.COMPLEX_ANALYTICS_ARTIFACT_DIR or "").strip()
+        if configured:
+            path = self._resolve_runtime_path(configured)
+        else:
+            path = (self.get_public_uploads_dir() / "complex_analytics").resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def ensure_runtime_directories(self) -> dict[str, Path]:
+        return {
+            "runtime_root": self.get_runtime_root(),
+            "raw_files": self.get_raw_files_dir(),
+            "temp_uploads": self.get_temp_uploads_dir(),
+            "file_artifacts": self.get_file_artifacts_dir(),
+            "public_uploads": self.get_public_uploads_dir(),
+            "exports": self.get_exports_dir(),
+            "local_index": self.get_local_index_dir(),
+            "vectordb": self.get_vectordb_path(),
+            "ingestion_queue": self.get_ingestion_queue_path(),
+            "tabular_runtime_root": self.get_tabular_runtime_root(),
+            "tabular_runtime_catalog": self.get_tabular_runtime_catalog_path(),
+            "complex_analytics_artifacts": self.get_complex_analytics_artifact_dir(),
+        }
+
     def get_vectordb_path(self) -> Path:
-        path = Path(self.VECTORDB_PATH)
+        path = self._resolve_runtime_path(self.VECTORDB_PATH)
         path.mkdir(parents=True, exist_ok=True)
         return path
 

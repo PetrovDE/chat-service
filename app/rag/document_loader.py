@@ -11,6 +11,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.documents import Document
 
 from app.core.config import settings
+from app.services.tabular.parsing import (
+    dataframe_preview_rows,
+    infer_column_types,
+    read_csv_with_detection,
+    read_excel_sheets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,46 +69,10 @@ class DocumentLoader:
 
     @staticmethod
     def _infer_column_kind(series) -> str:
-        non_empty: List[str] = [str(v).strip() for v in series.tolist() if str(v).strip()]
-        if not non_empty:
-            return "empty"
+        # Keep backward-compatible method while delegating to shared parsing logic.
+        from app.services.tabular.parsing import infer_series_kind
 
-        sample = non_empty[:200]
-        bool_count = 0
-        int_count = 0
-        float_count = 0
-        date_count = 0
-
-        for value in sample:
-            lowered = value.lower()
-            if lowered in {"true", "false", "yes", "no", "y", "n", "0", "1"}:
-                bool_count += 1
-                continue
-            try:
-                int(value)
-                int_count += 1
-                continue
-            except Exception:
-                pass
-            try:
-                float(value.replace(",", "."))
-                float_count += 1
-                continue
-            except Exception:
-                pass
-            if "-" in value or "/" in value or ":" in value:
-                date_count += 1
-
-        total = max(1, len(sample))
-        if bool_count / total >= 0.8:
-            return "boolean"
-        if int_count / total >= 0.8:
-            return "integer"
-        if (int_count + float_count) / total >= 0.8:
-            return "number"
-        if date_count / total >= 0.6:
-            return "datetime_like"
-        return "text"
+        return infer_series_kind(series)
 
     def _row_group_size(self, columns_count: int) -> int:
         medium_threshold = int(getattr(settings, "TABULAR_ROW_GROUP_MEDIUM_COLUMNS_THRESHOLD", 12) or 12)
@@ -124,6 +94,8 @@ class DocumentLoader:
         file_type: str,
         metadata: Optional[Dict[str, Any]],
         sheet_profiles: List[Dict[str, Any]],
+        csv_parse: Optional[Dict[str, Any]] = None,
+        workbook_parse: Optional[Dict[str, Any]] = None,
     ) -> Optional[Document]:
         if not sheet_profiles:
             return None
@@ -149,19 +121,88 @@ class DocumentLoader:
         top_columns = int(getattr(settings, "TABULAR_SUMMARY_TOP_COLUMNS", 12) or 12)
         if total_cols_unique:
             lines.append("Top columns: " + ", ".join(total_cols_unique[:top_columns]))
+        if csv_parse:
+            lines.append(
+                "CSV parse: "
+                f"encoding={csv_parse.get('encoding')} delimiter={csv_parse.get('delimiter')} "
+                f"header_detected={csv_parse.get('header_detected')}"
+            )
+        if workbook_parse:
+            lines.append(
+                "Workbook parse: "
+                f"sheets_total={workbook_parse.get('sheets_total')} "
+                f"source_type={workbook_parse.get('source_type')}"
+            )
 
         doc_meta: Dict[str, Any] = {
             "source": filepath,
             "file_type": file_type,
+            "source_type": "tabular",
+            "artifact_type": "file_summary",
             "chunk_type": "file_summary",
             "sheets_count": len(sheet_profiles),
             "total_rows": total_rows,
             "columns_total_unique": len(total_cols_unique),
             "table_aware_version": 2,
+            "schema_snapshot": {
+                str(item.get("sheet_name") or "Sheet"): {
+                    "rows": int(item.get("rows", 0) or 0),
+                    "cols": int(item.get("cols", 0) or 0),
+                    "columns": list(item.get("columns") or []),
+                    "inferred_types": dict(item.get("inferred_types") or {}),
+                }
+                for item in sheet_profiles
+            },
         }
+        if csv_parse:
+            doc_meta["csv_parse"] = dict(csv_parse)
+        if workbook_parse:
+            doc_meta["workbook_parse"] = dict(workbook_parse)
         if metadata:
             doc_meta.update(metadata)
         return Document(page_content="\n".join(lines), metadata=doc_meta)
+
+    def _build_column_summary_docs(
+        self,
+        *,
+        filepath: str,
+        file_type: str,
+        metadata: Optional[Dict[str, Any]],
+        sheet_name: str,
+        column_types: Dict[str, str],
+        preview_rows: List[Dict[str, str]],
+    ) -> List[Document]:
+        if not bool(getattr(settings, "TABULAR_COLUMN_SUMMARY_ENABLED", True)):
+            return []
+        max_columns = int(getattr(settings, "TABULAR_COLUMN_SUMMARY_MAX_COLUMNS", 6) or 6)
+        out: List[Document] = []
+        for col_name, col_kind in list(column_types.items())[:max_columns]:
+            examples: List[str] = []
+            for row in preview_rows:
+                value = str(row.get(col_name, "") or "").strip()
+                if value and value not in examples:
+                    examples.append(value)
+                if len(examples) >= 3:
+                    break
+            text = (
+                f"Column summary: sheet={sheet_name} column={col_name} inferred_type={col_kind}\n"
+                f"Examples: {', '.join(examples) if examples else 'n/a'}"
+            )
+            item_meta: Dict[str, Any] = {
+                "source": filepath,
+                "file_type": file_type,
+                "source_type": "tabular",
+                "artifact_type": "column_summary",
+                "chunk_type": "column_summary",
+                "sheet_name": sheet_name,
+                "column_name": col_name,
+                "inferred_type": col_kind,
+                "table_aware_version": 2,
+            }
+            if metadata:
+                item_meta.update(metadata)
+            out.append(Document(page_content=text, metadata=item_meta))
+        return out
 
     def _cap_tabular_docs(self, docs: List[Document]) -> List[Document]:
         max_docs = int(getattr(settings, "TABULAR_MAX_EMBEDDING_DOCS", 320) or 320)
@@ -266,7 +307,8 @@ class DocumentLoader:
         sheet_label = str(sheet_name or "CSV")
         row_group_size = min(max_rows_hard, self._row_group_size(len(selected_columns)))
         row_group_size = max(1, row_group_size)
-        column_types = {col: self._infer_column_kind(df[col]) for col in selected_columns}
+        column_types = infer_column_types(df[selected_columns]) if selected_columns else {}
+        preview_rows = dataframe_preview_rows(df[selected_columns], max_rows=5) if selected_columns else []
 
         docs: List[Document] = []
         top_columns = int(getattr(settings, "TABULAR_SUMMARY_TOP_COLUMNS", 12) or 12)
@@ -290,6 +332,8 @@ class DocumentLoader:
                 metadata={
                     "source": filepath,
                     "file_type": file_type,
+                    "source_type": "tabular",
+                    "artifact_type": "sheet_summary",
                     "sheet_name": sheet_label,
                     "chunk_type": "sheet_summary",
                     "total_rows": total_rows,
@@ -299,9 +343,21 @@ class DocumentLoader:
                     "pruned_columns": pruned_columns,
                     "sheet_count": sheet_count,
                     "row_group_size": row_group_size,
+                    "inferred_types": column_types,
+                    "preview_rows": preview_rows,
                     "table_aware_version": 2,
                     **(metadata or {}),
                 },
+            )
+        )
+        docs.extend(
+            self._build_column_summary_docs(
+                filepath=filepath,
+                file_type=file_type,
+                metadata=metadata,
+                sheet_name=sheet_label,
+                column_types=column_types,
+                preview_rows=preview_rows,
             )
         )
 
@@ -354,6 +410,8 @@ class DocumentLoader:
             doc_meta: Dict[str, Any] = {
                 "source": filepath,
                 "file_type": file_type,
+                "source_type": "tabular",
+                "artifact_type": "row_group",
                 "sheet_name": sheet_label,
                 "row_start": row_start,
                 "row_end": row_end,
@@ -366,6 +424,7 @@ class DocumentLoader:
                 "chunk_type": "row_group",
                 "row_group_index": row_group_index,
                 "row_group_size": row_group_size,
+                "inferred_types": column_types,
                 "table_aware_version": 2,
             }
             if metadata:
@@ -429,6 +488,14 @@ class DocumentLoader:
             d.metadata = d.metadata or {}
             d.metadata.setdefault("source", filepath)
             d.metadata.setdefault("file_type", ext.lstrip("."))
+            file_type = str(d.metadata.get("file_type") or ext.lstrip(".")).lower()
+            is_tabular = file_type in {"xlsx", "xls", "csv", "tsv"}
+            d.metadata.setdefault("source_type", "tabular" if is_tabular else "document")
+            chunk_type = str(d.metadata.get("chunk_type") or "").strip().lower()
+            if not chunk_type:
+                chunk_type = "extracted_text"
+                d.metadata["chunk_type"] = chunk_type
+            d.metadata.setdefault("artifact_type", chunk_type)
 
         if not docs or not any((d.page_content or "").strip() for d in docs):
             raise ValueError(f"No readable content extracted from file: {filepath}")
@@ -468,104 +535,96 @@ class DocumentLoader:
         """
         CSV -> split into row blocks so RAG can target specific rows and columns.
         """
-        import pandas as pd
-
-        csv_attempts = [
-            {"encoding": "utf-8"},
-            {"encoding": "utf-8-sig"},
-            {"encoding": "cp1251"},
-            {"encoding": "latin-1"},
-        ]
-
-        df = None
-        last_error: Optional[Exception] = None
-        for attempt in csv_attempts:
-            try:
-                df = pd.read_csv(
-                    filepath,
-                    dtype=str,
-                    keep_default_na=False,
-                    engine="python",
-                    sep=None,
-                    on_bad_lines="skip",
-                    **attempt,
-                )
-                break
-            except Exception as e:
-                last_error = e
-                continue
-
-        if df is None:
-            raise ValueError(f"Failed to read CSV file: {filepath}. Last error: {last_error}")
-        df = self._normalize_tabular_dataframe(df)
+        df, parse_meta = read_csv_with_detection(Path(filepath), forced_delimiter=None)
         if df.empty:
             raise ValueError(f"No readable data found in CSV file: {filepath}")
 
+        tabular_metadata = dict(metadata or {})
+        tabular_metadata["csv_parse"] = {
+            "encoding": parse_meta.encoding,
+            "delimiter": parse_meta.delimiter,
+            "header_detected": parse_meta.header_detected,
+        }
         docs = self._build_tabular_docs(
             df=df,
             filepath=filepath,
             file_type="csv",
-            metadata=metadata,
+            metadata=tabular_metadata,
             sheet_name="CSV",
             sheet_count=1,
         )
-        profile = [{"sheet_name": "CSV", "rows": int(len(df)), "cols": int(len(df.columns)), "columns": [str(c) for c in df.columns]}]
+        profile = [
+            {
+                "sheet_name": "CSV",
+                "rows": int(len(df)),
+                "cols": int(len(df.columns)),
+                "columns": [str(c) for c in df.columns],
+                "inferred_types": dict(parse_meta.inferred_types),
+                "preview_rows": list(parse_meta.preview_rows),
+            }
+        ]
         file_summary = self._build_file_summary_doc(
             filepath=filepath,
             file_type="csv",
             metadata=metadata,
             sheet_profiles=profile,
+            csv_parse={
+                "encoding": parse_meta.encoding,
+                "delimiter": parse_meta.delimiter,
+                "header_detected": parse_meta.header_detected,
+            },
+            workbook_parse={
+                "source_type": "csv",
+                "sheets_total": 1,
+            },
         )
         if file_summary is not None:
             docs.insert(0, file_summary)
         return self._cap_tabular_docs(docs)
 
     async def load_tsv(self, filepath: str, metadata: Optional[Dict[str, Any]]) -> List[Document]:
-        import pandas as pd
-
-        attempts = [
-            {"encoding": "utf-8"},
-            {"encoding": "utf-8-sig"},
-            {"encoding": "cp1251"},
-            {"encoding": "latin-1"},
-        ]
-        df = None
-        last_error: Optional[Exception] = None
-        for attempt in attempts:
-            try:
-                df = pd.read_csv(
-                    filepath,
-                    dtype=str,
-                    keep_default_na=False,
-                    sep="\t",
-                    on_bad_lines="skip",
-                    **attempt,
-                )
-                break
-            except Exception as exc:
-                last_error = exc
-                continue
-
-        if df is None:
-            raise ValueError(f"Failed to read TSV file: {filepath}. Last error: {last_error}")
-        df = self._normalize_tabular_dataframe(df)
+        df, parse_meta = read_csv_with_detection(Path(filepath), forced_delimiter="\t")
         if df.empty:
             raise ValueError(f"No readable data found in TSV file: {filepath}")
 
+        tabular_metadata = dict(metadata or {})
+        tabular_metadata["csv_parse"] = {
+            "encoding": parse_meta.encoding,
+            "delimiter": parse_meta.delimiter,
+            "header_detected": parse_meta.header_detected,
+        }
         docs = self._build_tabular_docs(
             df=df,
             filepath=filepath,
             file_type="tsv",
-            metadata=metadata,
+            metadata=tabular_metadata,
             sheet_name="TSV",
             sheet_count=1,
         )
-        profile = [{"sheet_name": "TSV", "rows": int(len(df)), "cols": int(len(df.columns)), "columns": [str(c) for c in df.columns]}]
+        profile = [
+            {
+                "sheet_name": "TSV",
+                "rows": int(len(df)),
+                "cols": int(len(df.columns)),
+                "columns": [str(c) for c in df.columns],
+                "inferred_types": dict(parse_meta.inferred_types),
+                "preview_rows": list(parse_meta.preview_rows),
+            }
+        ]
         file_summary = self._build_file_summary_doc(
             filepath=filepath,
             file_type="tsv",
             metadata=metadata,
             sheet_profiles=profile,
+            csv_parse={
+                "encoding": parse_meta.encoding,
+                "delimiter": parse_meta.delimiter,
+                "header_detected": parse_meta.header_detected,
+            },
+            workbook_parse={
+                "source_type": "tsv",
+                "sheets_total": 1,
+            },
         )
         if file_summary is not None:
             docs.insert(0, file_summary)
@@ -579,38 +638,34 @@ class DocumentLoader:
         - create a separate Document per block with metadata:
           sheet_name, row_start/row_end, columns
         """
-        import pandas as pd
-
         try:
-            excel_file = pd.ExcelFile(filepath)
+            parsed_sheets = read_excel_sheets(Path(filepath))
         except Exception as e:
             raise ValueError(f"Failed to read Excel file: {filepath}. Error: {e}")
 
-        sheet_names = excel_file.sheet_names
+        sheet_names = [sheet_name for (sheet_name, _df) in parsed_sheets]
         logger.info("Processing Excel: sheets=%d", len(sheet_names))
 
         docs: List[Document] = []
         sheet_profiles: List[Dict[str, Any]] = []
         sheet_docs: List[Document] = []
 
-        for sheet_name in sheet_names:
-            try:
-                df = pd.read_excel(filepath, sheet_name=sheet_name, dtype=str, keep_default_na=False)
-            except Exception:
-                logger.warning("Failed to read sheet '%s'", sheet_name, exc_info=True)
-                continue
-
+        for sheet_name, df in parsed_sheets:
             df = self._normalize_tabular_dataframe(df)
             if df is None or df.empty:
                 continue
 
             file_type = Path(filepath).suffix.lower().lstrip(".") or "xlsx"
+            inferred_types = infer_column_types(df)
+            preview_rows = dataframe_preview_rows(df, max_rows=5)
             sheet_profiles.append(
                 {
                     "sheet_name": str(sheet_name),
                     "rows": int(len(df)),
                     "cols": int(len(df.columns)),
                     "columns": [str(col) for col in df.columns],
+                    "inferred_types": inferred_types,
+                    "preview_rows": preview_rows,
                 }
             )
             sheet_docs.extend(
@@ -630,6 +685,10 @@ class DocumentLoader:
                 file_type=(Path(filepath).suffix.lower().lstrip(".") or "xlsx"),
                 metadata=metadata,
                 sheet_profiles=sheet_profiles,
+                workbook_parse={
+                    "source_type": "workbook",
+                    "sheets_total": len(sheet_names),
+                },
             )
             if file_summary is not None:
                 docs.append(file_summary)

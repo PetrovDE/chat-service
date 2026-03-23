@@ -1,48 +1,80 @@
-# app/db/models/file.py
-"""File model for document storage and RAG processing"""
-from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, JSON, Text
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+"""Persistent user-owned file model."""
+
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
 from app.db.base import Base
 
 
 class File(Base):
-    """File storage model with RAG metadata and conversation association"""
+    """
+    Persistent user-owned file.
+    Chat linkage and processing versions are kept in dedicated tables.
+    """
+
     __tablename__ = "files"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    filename = Column(String(255), nullable=False)
-    original_filename = Column(String(255), nullable=False)
-    path = Column(String(500), nullable=False)
-    file_type = Column(String(50))  # pdf, docx, txt, csv, etc.
-    file_size = Column(Integer)  # in bytes
-    content_preview = Column(Text)  # First 500 chars for preview
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    original_filename = Column(String(512), nullable=False)
+    stored_filename = Column(String(512), nullable=False)
+    storage_key = Column(String(1024), nullable=False, unique=True)
+    storage_path = Column(String(2048), nullable=False)
+    mime_type = Column(String(255), nullable=True)
+    extension = Column(String(32), nullable=False, default="")
+    size_bytes = Column(BigInteger, nullable=False, default=0)
+    checksum = Column(String(128), nullable=True)
+    visibility = Column(String(32), nullable=False, default="private")
+    status = Column(String(32), nullable=False, default="uploaded", index=True)
+    source_kind = Column(String(64), nullable=False, default="upload")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
 
-    # RAG metadata
-    is_processed = Column(
-        String(20),
-        default="uploaded",
-    )  # uploaded, queued, parsing, parsed, chunking, embedding, indexing, completed, partial_failed, failed
-    chunks_count = Column(Integer, default=0)
-    embedding_model = Column(String(100))
-    processed_at = Column(DateTime)
+    # Denormalized summary for fast UI/retrieval access.
+    chunks_count = Column(Integer, default=0, nullable=False)
+    embedding_model = Column(String(255), nullable=True)
+    processed_at = Column(DateTime, nullable=True)
+    custom_metadata = Column(JSON, nullable=True)
+    content_preview = Column(Text, nullable=True)
 
-    # Additional metadata
-    custom_metadata = Column(JSON)
-    uploaded_at = Column(DateTime, default=datetime.utcnow)
-
-    # Relationships
     owner = relationship("User", back_populates="files")
-    # Association relationship for conversations
-    conversations_association = relationship("ConversationFile", back_populates="file", cascade="all, delete-orphan")
-    # Indirect relationship to conversations through association table
+    conversations_association = relationship(
+        "ConversationFile",
+        back_populates="file",
+        cascade="all, delete-orphan",
+    )
     conversations = relationship(
         "Conversation",
-        secondary="conversation_files",
+        secondary="chat_file_links",
         back_populates="files",
         viewonly=True,
-        lazy="selectin"
+        lazy="selectin",
     )
+    processing_profiles = relationship(
+        "FileProcessingProfile",
+        back_populates="file",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    @property
+    def active_processing(self) -> Optional["FileProcessingProfile"]:
+        active = [p for p in list(self.processing_profiles or []) if bool(getattr(p, "is_active", False))]
+        if not active:
+            return None
+        active.sort(
+            key=lambda item: (
+                getattr(item, "started_at", None) or datetime.min,
+                getattr(item, "created_at", None) or datetime.min,
+            ),
+            reverse=True,
+        )
+        return active[0]

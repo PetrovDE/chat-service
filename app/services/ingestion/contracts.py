@@ -11,6 +11,12 @@ class IngestionJobPayload:
     file_path: str
     embedding_mode: str
     embedding_model: str
+    processing_id: Optional[str] = None
+    pipeline_version: Optional[str] = None
+    parser_version: Optional[str] = None
+    artifact_version: Optional[str] = None
+    chunking_strategy: Optional[str] = None
+    retrieval_profile: Optional[str] = None
 
 
 @dataclass(frozen=True)

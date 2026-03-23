@@ -54,7 +54,6 @@ class TabularCleanupResult:
     datasets_deleted: int = 0
     tables_deleted: int = 0
     parquet_files_deleted: int = 0
-    legacy_sidecars_deleted: int = 0
 
 
 class SharedDuckDBParquetStorageAdapter:
@@ -310,19 +309,6 @@ class SharedDuckDBParquetStorageAdapter:
             except Exception:
                 logger.warning("Failed to remove tabular dataset directory %s", dataset_dir, exc_info=True)
 
-        legacy_sidecar_path = None
-        if isinstance(custom_metadata, dict):
-            legacy = custom_metadata.get("tabular_sidecar")
-            if isinstance(legacy, dict) and legacy.get("path"):
-                legacy_sidecar_path = Path(str(legacy.get("path")))
-        if legacy_sidecar_path is not None:
-            try:
-                if legacy_sidecar_path.exists():
-                    legacy_sidecar_path.unlink()
-                    result.legacy_sidecars_deleted += 1
-            except Exception:
-                logger.warning("Failed to delete legacy SQLite sidecar %s", legacy_sidecar_path, exc_info=True)
-
         return result
 
 
@@ -331,14 +317,8 @@ _shared_adapter_lock = Lock()
 
 
 def _resolve_runtime_paths() -> tuple[Path, Path]:
-    root_raw = str(settings.TABULAR_RUNTIME_ROOT or "uploads/tabular_runtime/datasets").strip()
-    catalog_raw = str(settings.TABULAR_RUNTIME_CATALOG_PATH or "").strip()
-
-    root = Path(root_raw).expanduser()
-    if catalog_raw:
-        catalog = Path(catalog_raw).expanduser()
-    else:
-        catalog = root.parent / "catalog.duckdb"
+    root = settings.get_tabular_runtime_root()
+    catalog = settings.get_tabular_runtime_catalog_path()
     return root, catalog
 
 

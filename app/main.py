@@ -114,9 +114,13 @@ async def prometheus_metrics():
 # API routes (as in your original project)
 app.include_router(api_router, prefix="/api/v1")
 
-# Static files (as in your original project)
-Path("uploads").mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# Runtime storage bootstrap
+settings.ensure_runtime_directories()
+
+# Static files
+public_uploads_dir = settings.get_public_uploads_dir()
+Path(public_uploads_dir).mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(public_uploads_dir)), name="uploads")
 app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
 

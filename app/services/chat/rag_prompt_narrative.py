@@ -16,7 +16,6 @@ from app.services.chat.rag_retrieval_helpers import (
 from app.services.chat.retrieval_policy import build_retrieval_budget_plan, choose_escalation_plan
 from app.services.chat.sources_debug import (
     build_row_coverage_stats,
-    build_sources_list,
     build_sources_list_with_mode,
 )
 
@@ -50,6 +49,12 @@ async def run_narrative_retrieval_path(
 
     expected_chunks_total = sum(int(getattr(file_obj, "chunks_count", 0) or 0) for file_obj in files)
     rag_file_ids = [str(file_obj.id) for file_obj in files]
+    processing_ids_by_file: Dict[str, str] = {}
+    for file_obj in files:
+        active_processing = getattr(file_obj, "active_processing", None)
+        processing_id = getattr(active_processing, "id", None)
+        if processing_id is not None:
+            processing_ids_by_file[str(file_obj.id)] = str(processing_id)
     groups = group_files_by_embedding_config(files, model_source)
     embedding_mode, embedding_model = resolve_rag_embedding_config(files, model_source)
 
@@ -70,6 +75,7 @@ async def run_narrative_retrieval_path(
             conversation_id=conversation_id,
             groups=groups,
             all_file_ids=rag_file_ids,
+            processing_ids_by_file=processing_ids_by_file,
             top_k=selected_top_k,
             rag_mode=selected_rag_mode,
             embedding_mode=embedding_mode,
@@ -119,6 +125,7 @@ async def run_narrative_retrieval_path(
                 conversation_id=conversation_id,
                 groups=groups,
                 all_file_ids=rag_file_ids,
+                processing_ids_by_file=processing_ids_by_file,
                 top_k=next_top_k,
                 rag_mode=next_mode,
                 embedding_mode=embedding_mode,
@@ -176,6 +183,7 @@ async def run_narrative_retrieval_path(
                     conversation_id=conversation_id,
                     groups=groups,
                     all_file_ids=rag_file_ids,
+                    processing_ids_by_file=processing_ids_by_file,
                     top_k=retried_top_k,
                     rag_mode="full_file",
                     embedding_mode=embedding_mode,
@@ -209,11 +217,13 @@ async def run_narrative_retrieval_path(
         rag_debug["embedding_mode"] = embedding_mode
         rag_debug["embedding_model"] = embedding_model
         rag_debug["planner_decision"] = planner_decision_payload
+        rag_debug["strategy_mode"] = planner_decision_payload.get("strategy_mode", "semantic")
         rag_debug["execution_route"] = "narrative"
         rag_debug["executor_attempted"] = False
         rag_debug["executor_status"] = "not_attempted"
         rag_debug["executor_error_code"] = None
         rag_debug["artifacts_count"] = 0
+        rag_debug["analytical_mode_used"] = False
         rag_debug["file_ids"] = rag_file_ids
         rag_debug["rag_mode"] = rag_mode or "auto"
         rag_debug["rag_mode_effective"] = selected_rag_mode or rag_mode or "auto"
@@ -325,6 +335,33 @@ async def run_narrative_retrieval_path(
                 aggregate_ranges=bool(retrieval_mode == "full_file" or intent == "analyze_full_file"),
             )
             rag_caveats = rag_caveats_builder(files=files, context_documents=context_docs, rag_debug=rag_debug)
+            avg_similarity = 0.0
+            if context_docs:
+                avg_similarity = float(
+                    sum(float(item.get("similarity_score", 0.0) or 0.0) for item in context_docs) / len(context_docs)
+                )
+            logger.info(
+                (
+                    "rag_trace route=%s strategy=%s analytical_mode_used=%s retrieval_mode=%s retrieval_k=%d "
+                    "retrieval_hits=%d avg_similarity=%.4f context_tokens=%d pipeline_version=%s "
+                    "embedding_model=%s embedding_dimension=%s uid=%s chat_id=%s file_ids=%s processing_ids=%s"
+                ),
+                "narrative_retrieval",
+                rag_debug.get("strategy_mode"),
+                rag_debug.get("analytical_mode_used"),
+                retrieval_mode,
+                selected_top_k,
+                len(context_docs),
+                avg_similarity,
+                int(rag_debug.get("context_tokens", 0) or 0),
+                str(rag_debug.get("pipeline_version") or ""),
+                str(embedding_model or ""),
+                str(rag_debug.get("embedding_dimension") or ""),
+                str(user_id),
+                str(conversation_id),
+                ",".join(rag_file_ids),
+                ",".join(processing_ids_by_file.values()),
+            )
             logger.info(
                 "RAG enabled: docs=%d mode=%s model=%s retrieval_mode=%s top_k=%d",
                 len(context_docs),
@@ -336,30 +373,75 @@ async def run_narrative_retrieval_path(
         else:
             logger.info("RAG: no relevant chunks")
 
-    except TypeError:
-        context_docs = await rag_retriever_client.query_rag(
-            query,
-            top_k=selected_top_k,
-            user_id=str(user_id),
-            conversation_id=str(conversation_id),
-            debug_return=True,
-        )
-        if isinstance(context_docs, dict) and "docs" in context_docs:
-            context_docs_list = context_docs.get("docs") or []
-            rag_debug = context_docs.get("debug")
-            if isinstance(rag_debug, dict):
-                rag_debug = deepcopy(rag_debug)
-                rag_debug["planner_decision"] = planner_decision_payload
-            else:
-                rag_debug = {"planner_decision": planner_decision_payload}
-            if context_docs_list:
-                final_prompt = rag_retriever_client.build_context_prompt(query=query, context_documents=context_docs_list)
-                final_prompt = apply_language_policy_to_prompt(prompt=final_prompt, preferred_lang=preferred_lang)
-                rag_used = True
-                rag_sources = build_sources_list(context_docs_list, max_items=12)
-                rag_caveats = rag_caveats_builder(files=files, context_documents=context_docs_list, rag_debug=rag_debug)
-
     except Exception as exc:
-        logger.warning("RAG retrieval failed: %s", exc)
+        logger.exception("RAG retrieval failed with strict contract: %s", exc)
+        error_prompt = apply_language_policy_to_prompt(
+            preferred_lang=preferred_lang,
+            prompt=(
+                "File context retrieval failed due an internal error. "
+                "Please retry the same request."
+            ),
+        )
+        final_prompt = error_prompt
+        rag_used = False
+        rag_sources = []
+        rag_caveats = []
+        rag_debug = {
+            "planner_decision": planner_decision_payload,
+            "strategy_mode": planner_decision_payload.get("strategy_mode", "semantic"),
+            "intent": "narrative_retrieval",
+            "retrieval_mode": "narrative_error",
+            "execution_route": "narrative",
+            "requires_clarification": True,
+            "clarification_prompt": error_prompt,
+            "executor_attempted": False,
+            "executor_status": "error",
+            "executor_error_code": "retrieval_runtime_error",
+            "artifacts_count": 0,
+            "analytical_mode_used": False,
+            "rag_mode": rag_mode or "auto",
+            "rag_mode_effective": "narrative_error",
+            "file_ids": rag_file_ids,
+            "retrieval_policy": {
+                **budget_plan,
+                "effective_top_k": selected_top_k,
+                "expected_chunks_total": expected_chunks_total,
+                "escalation": {"attempted": False, "applied": False, "reason": "retrieval_runtime_error"},
+                "row_escalation": {"attempted": False, "applied": False, "reason": "retrieval_runtime_error"},
+            },
+            "retrieved_chunks_total": 0,
+            "coverage": {
+                "expected_chunks": expected_chunks_total,
+                "retrieved_chunks": 0,
+                "ratio": 0.0,
+                "complete": bool(expected_chunks_total == 0),
+            },
+            "rows_expected_total": 0,
+            "rows_retrieved_total": 0,
+            "rows_used_map_total": 0,
+            "rows_used_reduce_total": 0,
+            "row_coverage_ratio": 0.0,
+        }
+        observe_retrieval_coverage(
+            coverage_ratio=0.0,
+            retrieval_mode="narrative_error",
+            expected_chunks=int(expected_chunks_total),
+            retrieved_chunks=0,
+        )
+        logger.error(
+            (
+                "rag_trace route=%s strategy=%s analytical_mode_used=false retrieval_mode=%s retrieval_k=%d "
+                "retrieval_hits=0 avg_similarity=0.0000 context_tokens=0 uid=%s chat_id=%s file_ids=%s processing_ids=%s error=%s"
+            ),
+            "narrative_retrieval",
+            rag_debug.get("strategy_mode"),
+            "narrative_error",
+            selected_top_k,
+            str(user_id),
+            str(conversation_id),
+            ",".join(rag_file_ids),
+            ",".join(processing_ids_by_file.values()),
+            type(exc).__name__,
+        )
 
     return final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources

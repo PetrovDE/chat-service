@@ -14,7 +14,18 @@ from app.schemas.conversation import (
     ConversationList, MessageResponse, ConversationMessageItem, ConversationDeleteResponse
 )
 from app.schemas.file import (
-    FileUploadResponse, FileInfo, FileProcessingStatus, FileReprocessResponse, FileDeleteResponse
+    FileAttachRequest,
+    FileAttachResponse,
+    FileDeleteResponse,
+    FileDetachRequest,
+    FileDetachResponse,
+    FileInfo,
+    FileProcessingProfileInfo,
+    FileProcessingStatus,
+    FileQuotaInfo,
+    FileReprocessRequest,
+    FileReprocessResponse,
+    FileUploadResponse,
 )
 from app.schemas.model import (
     ModelInfo, ModelsListResponse, ProviderStatus, ModelsStatusResponse
@@ -37,7 +48,18 @@ __all__ = [
     "ConversationCreate", "ConversationUpdate", "ConversationResponse",
     "ConversationList", "MessageResponse", "ConversationMessageItem", "ConversationDeleteResponse",
     # File
-    "FileUploadResponse", "FileInfo", "FileProcessingStatus", "FileReprocessResponse", "FileDeleteResponse",
+    "FileUploadResponse",
+    "FileInfo",
+    "FileProcessingStatus",
+    "FileReprocessRequest",
+    "FileReprocessResponse",
+    "FileDeleteResponse",
+    "FileProcessingProfileInfo",
+    "FileQuotaInfo",
+    "FileAttachRequest",
+    "FileDetachRequest",
+    "FileDetachResponse",
+    "FileAttachResponse",
     # Models
     "ModelInfo", "ModelsListResponse", "ProviderStatus", "ModelsStatusResponse",
     # Stats

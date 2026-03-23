@@ -11,7 +11,7 @@ def _read(path: str) -> str:
 def test_files_sidebar_uses_same_time_helper_as_messages():
     files_sidebar = _read("frontend/static/js/files-sidebar-manager.js")
     assert "from './time-format.js'" in files_sidebar
-    assert "formatRelativeTimestamp(file.uploaded_at)" in files_sidebar
+    assert "formatRelativeTimestamp(file.created_at)" in files_sidebar
     assert "formatDate(dateString)" not in files_sidebar
 
 

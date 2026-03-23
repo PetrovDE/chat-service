@@ -50,6 +50,29 @@ Structured log events for complex analytics pipeline:
   - includes `status=fallback reason=broad_query_local_formatter` when broad full-analysis query is answered directly by local formatter policy
 - `chat_route_decision` (includes `execution_route`, `executor_status`, `executor_error_code`, `artifacts_count`)
 
+Structured log events for persistent file lifecycle:
+- `file_lifecycle` with keys:
+  - `rid`
+  - `uid`
+  - `chat_id`
+  - `file_id`
+  - `upload_id`
+  - `processing_id`
+  - `pipeline_version`
+  - `embedding_model`
+  - `embedding_dimension`
+  - `storage_key`
+  - `quota_used_bytes`
+  - `quota_limit_bytes`
+  - `status`
+  - `is_active_processing`
+
+Useful journalctl filters:
+- `journalctl -u llama-service -o cat | rg "file_lifecycle"`
+- `journalctl -u llama-service -o cat | rg "\"uid\":\"<user-uuid>\""`
+- `journalctl -u llama-service -o cat | rg "\"file_id\":\"<file-uuid>\""`
+- `journalctl -u llama-service -o cat | rg "\"processing_id\":\"<processing-uuid>\""`
+
 ## Debug/Trace Fields
 RAG debug payload includes:
 - filters (`where`/`filters`)
@@ -138,4 +161,48 @@ Codegen controls:
   - `complex_analytics.codegen_execute`,
   - `complex_analytics.compose`,
   - `chat_route_decision` executor fields.
+
+## Update 2026-03-23 (Table-Aware RAG)
+Routing/debug observability was extended for semantic vs analytical execution:
+
+- `planner_decision.strategy_mode`: `semantic|analytical|combined`
+- `retrieval_mode`: `hybrid|full_file|tabular_sql|tabular_combined|clarification`
+- `route`: normalized execution route (`narrative|tabular_sql|complex_analytics|clarification`)
+- `analytical_mode_used`: explicit boolean for non-embedding analytical path
+
+Retrieval diagnostics now expose:
+
+- `active_processing_ids` (derived from retrieval filter `processing_id.$in`)
+- `avg_similarity` (alias to average top chunk score)
+- `retrieval_hits`
+- `context_tokens`
+- `combined_scope` for combined route prefetch/sheet selection
+
+Ingestion diagnostics now include derived-artifact persistence outputs:
+
+- `derived_artifacts.manifest_path`
+- `derived_artifacts.artifact_counts`
+- `derived_artifacts.total_artifacts`
+- `derived_artifacts.sheet_count` / `derived_artifacts.row_windows` (tabular files)
+
+Structured `rag_trace` logs for narrative/deterministic routes include:
+
+- `strategy`
+- `analytical_mode_used`
+- `retrieval_mode`
+- `retrieval_k`
+- `retrieval_hits`
+- `avg_similarity`
+- `context_tokens`
+
+Runtime storage resolution notes:
+- durable ingestion queue path comes from `settings.get_ingestion_queue_path()`
+- tabular runtime paths come from `settings.get_tabular_runtime_root()` and `settings.get_tabular_runtime_catalog_path()`
+- no `sqlite_legacy` tabular execution path remains in active backend flow
+
+Failure-path contract (no silent fallback):
+
+- deterministic invalid executor payload -> `executor_error_code=invalid_executor_payload`
+- narrative retrieval runtime failure -> `retrieval_mode=narrative_error`
+- both produce explicit clarification prompts and debug payload instead of hidden route downgrade
 

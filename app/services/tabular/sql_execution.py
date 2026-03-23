@@ -2,16 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import sqlite3
 from pathlib import Path
-from time import perf_counter
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.services.tabular.sql_errors import (
     SQL_ERROR_EXECUTION_FAILED,
     SQL_ERROR_RESULT_LIMIT_EXCEEDED,
     SQL_ERROR_RESULT_SIZE_EXCEEDED,
-    SQL_ERROR_TIMEOUT,
     TabularSQLException,
 )
 
@@ -49,7 +46,6 @@ class ResolvedTabularDataset:
     dataset_provenance_id: Optional[str]
     tables: List[ResolvedTabularTable]
     catalog_path: Optional[Path]
-    sqlite_path: Optional[Path]
 
 
 @dataclass(frozen=True)
@@ -85,7 +81,6 @@ class TabularExecutionSession:
         self.table = table
         self.limits = limits
         self._duckdb_conn = None
-        self._sqlite_conn = None
 
     def __enter__(self) -> "TabularExecutionSession":
         if self.dataset.engine == "duckdb_parquet":
@@ -101,21 +96,12 @@ class TabularExecutionSession:
             )
             return self
 
-        if self.dataset.engine == "sqlite_legacy":
-            if self.dataset.sqlite_path is None:
-                raise ValueError("Missing sqlite path for legacy SQL execution")
-            self._sqlite_conn = sqlite3.connect(str(self.dataset.sqlite_path))
-            return self
-
         raise ValueError(f"Unsupported tabular engine: {self.dataset.engine}")
 
     def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
         if self._duckdb_conn is not None:
             self._duckdb_conn.close()
             self._duckdb_conn = None
-        if self._sqlite_conn is not None:
-            self._sqlite_conn.close()
-            self._sqlite_conn = None
 
     def _validate_result_bounds(
         self,
@@ -185,56 +171,6 @@ class TabularExecutionSession:
                     details={"exception_type": type(exc).__name__},
                     executed_sql=sql,
                 ) from exc
-        if self._sqlite_conn is not None:
-            cur = self._sqlite_conn.cursor()
-            start = perf_counter()
-
-            timeout = float(timeout_seconds or 0.0)
-            if timeout > 0:
-                def _progress_handler() -> int:
-                    return 1 if (perf_counter() - start) > timeout else 0
-
-                self._sqlite_conn.set_progress_handler(_progress_handler, 1000)
-
-            try:
-                cur.execute(sql)
-                rows = cur.fetchall()
-                parsed = [tuple(row) for row in rows]
-                self._validate_result_bounds(
-                    rows=parsed,
-                    sql=sql,
-                    max_result_rows=effective_max_rows,
-                    max_result_bytes=effective_max_bytes,
-                )
-                return parsed
-            except TabularSQLException:
-                raise
-            except sqlite3.OperationalError as exc:
-                lowered = str(exc).lower()
-                if timeout > 0 and "interrupted" in lowered:
-                    raise TabularSQLException(
-                        code=SQL_ERROR_TIMEOUT,
-                        message="Tabular SQL execution timeout",
-                        details={"timeout_seconds": timeout},
-                        executed_sql=sql,
-                    ) from exc
-                raise TabularSQLException(
-                    code=SQL_ERROR_EXECUTION_FAILED,
-                    message="Tabular SQL execution failed",
-                    details={"exception_type": type(exc).__name__, "message": str(exc)},
-                    executed_sql=sql,
-                ) from exc
-            except Exception as exc:
-                raise TabularSQLException(
-                    code=SQL_ERROR_EXECUTION_FAILED,
-                    message="Tabular SQL execution failed",
-                    details={"exception_type": type(exc).__name__},
-                    executed_sql=sql,
-                ) from exc
-            finally:
-                if timeout > 0:
-                    self._sqlite_conn.set_progress_handler(None, 0)
-                cur.close()
         raise RuntimeError("TabularExecutionSession is not initialized")
 
 
@@ -289,7 +225,7 @@ def resolve_tabular_dataset(file_obj: Any) -> Optional[ResolvedTabularDataset]:
             if not isinstance(raw, dict):
                 continue
             parsed = _parse_table_entry(raw)
-            if parsed is not None:
+            if parsed is not None and parsed.parquet_path is not None:
                 tables.append(parsed)
         if tables:
             catalog_path = None
@@ -304,35 +240,7 @@ def resolve_tabular_dataset(file_obj: Any) -> Optional[ResolvedTabularDataset]:
                 dataset_provenance_id=str(dataset.get("dataset_provenance_id") or ""),
                 tables=tables,
                 catalog_path=catalog_path,
-                sqlite_path=None,
             )
-
-    sidecar = metadata.get("tabular_sidecar")
-    if isinstance(sidecar, dict):
-        raw_path = str(sidecar.get("path") or "")
-        path = Path(raw_path).expanduser()
-        raw_tables = sidecar.get("tables") if isinstance(sidecar.get("tables"), list) else []
-        if path.exists() and raw_tables:
-            tables: List[ResolvedTabularTable] = []
-            for raw in raw_tables:
-                if not isinstance(raw, dict):
-                    continue
-                parsed = _parse_table_entry(raw)
-                if parsed is None:
-                    continue
-                if not parsed.columns and isinstance(raw.get("columns"), list):
-                    parsed.columns = [str(col) for col in raw.get("columns")]
-                tables.append(parsed)
-            if tables:
-                return ResolvedTabularDataset(
-                    engine="sqlite_legacy",
-                    dataset_id=str(sidecar.get("dataset_id") or ""),
-                    dataset_version=int(sidecar.get("dataset_version", 1) or 1),
-                    dataset_provenance_id=str(sidecar.get("dataset_provenance_id") or ""),
-                    tables=tables,
-                    catalog_path=None,
-                    sqlite_path=path.resolve(),
-                )
 
     return None
 

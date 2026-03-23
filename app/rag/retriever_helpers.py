@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 import re
@@ -37,16 +37,13 @@ def tokenize(text: str, token_re: re.Pattern[str]) -> List[str]:
     return [t.lower() for t in token_re.findall((text or "").lower()) if len(t) >= 2]
 
 
-def detect_intent(query: str, *, full_file_patterns: List[str], compare_patterns: List[str]) -> str:
+def detect_intent(query: str, *, compare_patterns: List[str]) -> str:
     q = (query or "").strip().lower()
     if not q:
         return "fact_lookup"
-
-    if any(p in q for p in full_file_patterns):
-        return "analyze_full_file"
     if any(p in q for p in compare_patterns):
         return "compare_files"
-    if any(x in q for x in ["почему", "как связ", "why", "how does", "reason"]):
+    if any(x in q for x in ["why", "how does", "reason"]):
         return "multi_hop"
     return "fact_lookup"
 
@@ -64,24 +61,17 @@ def resolve_intent(
         return "analyze_full_file"
     if mode == "hybrid":
         return "fact_lookup"
-
-    detected = query_intent or detect_intent_fn(query)
-
-    q = (query or "").strip().lower()
-    broad_terms = ["анализ", "разбери", "разбор", "свод", "итог", "обзор", "analyze", "summary", "overview"]
-    file_terms = ["файл", "документ", "sheet", "таблиц", "строк"]
-    if file_ids and detected == "fact_lookup":
-        if any(t in q for t in broad_terms) and any(t in q for t in file_terms):
-            return "analyze_full_file"
-
-    return detected
+    _ = file_ids
+    return query_intent or detect_intent_fn(query)
 
 
 def build_where(
     *,
     conversation_id: Optional[str],
+    chat_id: Optional[str] = None,
     user_id: Optional[str],
     file_ids: Optional[List[str]],
+    processing_ids: Optional[List[str]] = None,
     sheet_names: Optional[List[str]] = None,
     chunk_types: Optional[List[str]] = None,
     namespace: Optional[str] = None,
@@ -91,8 +81,11 @@ def build_where(
     where: Dict[str, Any] = {}
     if file_ids:
         where["file_id"] = {"$in": [str(x) for x in file_ids]}
-    elif conversation_id:
-        where["conversation_id"] = conversation_id
+    elif chat_id or conversation_id:
+        where["chat_id"] = str(chat_id or conversation_id)
+
+    if processing_ids:
+        where["processing_id"] = {"$in": [str(x) for x in processing_ids]}
 
     if user_id:
         where["user_id"] = user_id
@@ -366,12 +359,13 @@ def build_context_prompt(*, query: str, context_documents: List[Dict[str, Any]])
         return (
             "You are an assistant. Build a detailed answer from the provided file context.\n"
             "Return three sections in this exact order:\n"
-            "1) Ответ\n"
-            "2) Ограничения/нехватка данных\n"
-            "3) Источники (кратко)\n"
+            "1) ÐžÑ‚Ð²ÐµÑ‚\n"
+            "2) ÐžÐ³Ñ€Ð°Ð½Ð¸Ñ‡ÐµÐ½Ð¸Ñ/Ð½ÐµÑ…Ð²Ð°Ñ‚ÐºÐ° Ð´Ð°Ð½Ð½Ñ‹Ñ…\n"
+            "3) Ð˜ÑÑ‚Ð¾Ñ‡Ð½Ð¸ÐºÐ¸ (ÐºÑ€Ð°Ñ‚ÐºÐ¾)\n"
             "If details are missing in context, explicitly list what is missing.\n\n"
             f"Question:\n{query}\n\n"
             f"Context:\n{context_block}\n\n"
             "Answer:"
         )
     return query
+

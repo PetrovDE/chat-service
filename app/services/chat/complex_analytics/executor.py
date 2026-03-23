@@ -190,7 +190,7 @@ def _execute_complex_analytics_sync(
     codegen_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     run_id = uuid.uuid4().hex
-    artifacts_root = Path(settings.COMPLEX_ANALYTICS_ARTIFACT_DIR).expanduser().resolve()
+    artifacts_root = settings.get_complex_analytics_artifact_dir()
     _cleanup_complex_analytics_artifacts(artifacts_root=artifacts_root)
     artifacts_dir = artifacts_root / run_id
 

@@ -440,8 +440,10 @@ async def execute_tabular_sql_path(
     target_file = None
     dataset = None
     for file_obj in files:
-        file_type = str(getattr(file_obj, "file_type", "") or "").lower()
-        if file_type not in {"xlsx", "xls", "csv"}:
+        file_extension = str(
+            getattr(file_obj, "extension", getattr(file_obj, "file_type", "")) or ""
+        ).lower().lstrip(".")
+        if file_extension not in {"xlsx", "xls", "csv", "tsv"}:
             continue
         resolved = resolve_tabular_dataset(file_obj)
         if resolved is not None and resolved.tables:

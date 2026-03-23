@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.crud import crud_file
 from app.domain.chat.query_planner import (
+    INTENT_TABULAR_COMBINED,
     ROUTE_COMPLEX_ANALYTICS,
     ROUTE_DETERMINISTIC_ANALYTICS,
     plan_query,
@@ -66,14 +67,39 @@ async def _load_conversation_files(
         allowed_ids = {str(x) for x in file_ids}
         files = [file_obj for file_obj in files if str(file_obj.id) in allowed_ids]
         logger.info("Conversation files filtered by payload file_ids: %d", len(files))
+
+    ready_statuses = {"ready", "completed", "partial_success", "partial_failed"}
+    eligible: List[Any] = []
+    skipped_without_active: List[str] = []
+    for file_obj in files:
+        if not hasattr(file_obj, "active_processing"):
+            # Test doubles and legacy plain objects without processing relation.
+            eligible.append(file_obj)
+            continue
+        active_processing = getattr(file_obj, "active_processing", None)
+        processing_id = getattr(active_processing, "id", None) if active_processing is not None else None
+        processing_status = str(getattr(active_processing, "status", "") or "").lower()
+        if processing_id is None or processing_status not in ready_statuses:
+            skipped_without_active.append(str(getattr(file_obj, "id", "-")))
+            continue
+        eligible.append(file_obj)
+
+    if skipped_without_active:
+        logger.warning(
+            "Skipped files without active ready processing profile: count=%d file_ids=%s",
+            len(skipped_without_active),
+            ",".join(skipped_without_active),
+        )
+    files = eligible
     return files
 
 
 def _log_planner_decision_payload(payload: Dict[str, Any]) -> None:
     logger.info(
-        "Query planner decision: route=%s intent=%s confidence=%.2f requires_clarification=%s reasons=%s",
+        "Query planner decision: route=%s intent=%s strategy_mode=%s confidence=%.2f requires_clarification=%s reasons=%s",
         payload.get("route"),
         payload.get("intent"),
+        payload.get("strategy_mode"),
         float(payload.get("confidence", 0.0) or 0.0),
         bool(payload.get("requires_clarification", False)),
         payload.get("reason_codes") or [],
@@ -83,6 +109,8 @@ def _log_planner_decision_payload(payload: Dict[str, Any]) -> None:
 async def _handle_planned_routes(
     *,
     query: str,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
     planner_decision: Any,
     planner_decision_payload: Dict[str, Any],
     files: List[Any],
@@ -93,6 +121,7 @@ async def _handle_planned_routes(
     provider_mode: Optional[str],
     model_name: Optional[str],
     preferred_lang: str,
+    rag_retriever_client: Any,
 ) -> Optional[RagPromptResult]:
     if planner_decision.requires_clarification:
         return build_clarification_route_result(
@@ -120,6 +149,8 @@ async def _handle_planned_routes(
     if planner_decision.route == ROUTE_DETERMINISTIC_ANALYTICS:
         return await maybe_run_deterministic_route(
             query=query,
+            user_id=user_id,
+            conversation_id=conversation_id,
             files=files,
             planner_decision=planner_decision,
             planner_decision_payload=planner_decision_payload,
@@ -128,6 +159,8 @@ async def _handle_planned_routes(
             top_k=top_k,
             preferred_lang=preferred_lang,
             tabular_sql_executor=execute_tabular_sql_path,
+            rag_retriever_client=rag_retriever_client,
+            is_combined_intent=bool(planner_decision.intent == INTENT_TABULAR_COMBINED),
         )
     return None
 
@@ -191,9 +224,11 @@ async def build_rag_prompt(
 
     expected_chunks_total = sum(int(getattr(file_obj, "chunks_count", 0) or 0) for file_obj in files)
     special_route_result = await _handle_planned_routes(
-        query=query, planner_decision=planner_decision, planner_decision_payload=planner_decision_payload,
+        query=query, user_id=user_id, conversation_id=conversation_id,
+        planner_decision=planner_decision, planner_decision_payload=planner_decision_payload,
         files=files, expected_chunks_total=expected_chunks_total, rag_mode=rag_mode, top_k=top_k,
         model_source=model_source, provider_mode=provider_mode, model_name=model_name, preferred_lang=preferred_lang,
+        rag_retriever_client=rag_retriever_client,
     )
     if special_route_result is not None:
         return special_route_result

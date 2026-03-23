@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from typing import Any, Dict, Optional, Tuple
 
 from app.core.config import settings
@@ -54,16 +53,6 @@ def load_table_dataframe(
         finally:
             conn.close()
 
-    if dataset.engine == "sqlite_legacy":
-        if dataset.sqlite_path is None:
-            raise RuntimeError("Missing SQLite path for legacy tabular dataset")
-        sqlite_conn = sqlite3.connect(str(dataset.sqlite_path))
-        try:
-            sql = f"SELECT * FROM {table_q}{limit_clause}"
-            return pd.read_sql_query(sql, sqlite_conn)
-        finally:
-            sqlite_conn.close()
-
     raise RuntimeError(f"Unsupported tabular dataset engine: {dataset.engine}")
 
 
@@ -77,4 +66,3 @@ def collect_datasets_for_file(file_obj: Any) -> Optional[Tuple[ResolvedTabularDa
     for table in dataset.tables:
         frames[table.table_name] = load_table_dataframe(dataset=dataset, table=table, max_rows=max_rows)
     return dataset, frames
-

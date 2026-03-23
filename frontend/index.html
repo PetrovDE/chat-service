@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -49,18 +49,22 @@
 
 <aside class="files-sidebar" id="filesSidebar" aria-label="Files">
     <div class="sidebar-header">
-        <h3>Files</h3>
+        <h3>My files</h3>
         <button class="close-files-sidebar" onclick="toggleFilesSidebar()" type="button" aria-label="Close files panel">X</button>
     </div>
 
     <div class="files-sidebar-info">
-        <p>Uploaded and processed files</p>
+        <p>Persistent file library. Upload once, attach to any chat.</p>
+        <p id="filesSidebarQuota" class="files-sidebar-quota">Library quota: loading...</p>
     </div>
 
     <div id="filesSidebarList" class="files-sidebar-list"></div>
+    <div id="fileDetailsPanel" class="file-details-panel">
+        <p class="file-details-empty">Select "Details" on a file to inspect lifecycle and processing state.</p>
+    </div>
 </aside>
 <button class="files-sidebar-toggle" onclick="toggleFilesSidebar()" type="button" aria-label="Toggle files panel">
-    Files
+    My files
 </button>
 
 <main class="main-container" role="main">
@@ -74,12 +78,23 @@
     </section>
 
     <section class="input-area" aria-label="Message composer">
-        <div id="attachedFilesContainer" class="attached-files-container" style="display: none;">
-            <div class="attached-files-header">
-                <span>Attachments</span>
-                <button class="icon-btn" onclick="clearAttachedFiles()" type="button">Clear all</button>
+        <div id="chatFilesPanel" class="chat-files-panel">
+            <div class="chat-files-header">
+                <span>Files in this chat</span>
+                <button id="uploadLibraryFileBtn" class="chat-files-upload-btn" type="button">Upload file</button>
             </div>
-            <div id="attachedFilesList" class="attached-files-list"></div>
+            <p id="chatFilesHint" class="chat-files-hint">Open a chat to attach files.</p>
+            <div class="chat-files-attach-row">
+                <label class="visually-hidden" for="chatFileSelect">Attach existing file</label>
+                <select id="chatFileSelect" aria-label="Attach existing file">
+                    <option value="">No files available</option>
+                </select>
+                <button id="attachExistingFileBtn" class="chat-files-attach-btn" type="button">Attach to chat</button>
+            </div>
+            <p class="chat-files-subhint">Upload always stores file in your library. If this chat is open, upload auto-attaches.</p>
+            <div id="chatFilesList" class="chat-files-list">
+                <div class="chat-files-empty">No files connected yet.</div>
+            </div>
         </div>
 
         <div class="input-container">
@@ -90,13 +105,13 @@
                         <option value="local">Local models (Ollama)</option>
                         <option value="aihub">Corporate AI HUB</option>
                     </select>
-                    <small class="control-hint">Провайдер AI</small>
+                    <small class="control-hint">Model provider</small>
                 </div>
 
                 <div class="control-with-hint">
                     <label class="visually-hidden" for="model-selector">Model</label>
                     <select id="model-selector" aria-label="Model"></select>
-                    <small class="control-hint">Выбор модели</small>
+                    <small class="control-hint">Chat model</small>
                 </div>
 
                 <div class="control-with-hint">
@@ -112,13 +127,13 @@
                         <option value="hybrid">RAG: Hybrid</option>
                         <option value="full_file">RAG: Full file</option>
                     </select>
-                    <small class="control-hint">Режим работы с документами</small>
+                    <small class="control-hint">File context mode</small>
                 </div>
 
                 <small id="modelCapsHint">Model limits: loading...</small>
             </div>
 
-            <button class="attach-btn" type="button" aria-label="Attach file">File</button>
+            <button class="attach-btn" type="button" aria-label="Upload file to library">Upload to library</button>
 
             <label class="visually-hidden" for="messageInput">Message</label>
             <textarea
@@ -144,7 +159,7 @@
     </section>
 </main>
 
-<input type="file" id="fileInput" style="display: none;" accept=".pdf,.docx,.txt,.md,.csv,.json,.xlsx">
+<input type="file" id="fileInput" style="display: none;" accept=".pdf,.docx,.txt,.md,.csv,.tsv,.json,.xlsx,.xls">
 
 <div id="authOverlay" class="auth-overlay">
     <div id="loginModal" class="auth-modal">

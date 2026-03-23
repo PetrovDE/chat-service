@@ -223,6 +223,13 @@ def build_standard_rag_debug_payload(
     context_tokens = sum(estimate_text_tokens((doc.get("content") or "")) for doc in context_docs)
     payload["filters"] = payload.get("filters") or payload.get("where")
     payload["applied_filters"] = payload["filters"]
+    payload["route"] = payload.get("execution_route") or payload.get("route") or "unknown"
+    payload["strategy_mode"] = payload.get("strategy_mode") or (
+        payload.get("planner_decision", {}).get("strategy_mode")
+        if isinstance(payload.get("planner_decision"), dict)
+        else None
+    )
+    payload["analytical_mode_used"] = bool(payload.get("analytical_mode_used", False))
     payload["top_chunks"] = top_chunks
     payload["top_chunks_limit"] = max_items
     payload["top_chunks_total"] = len(context_docs)
@@ -230,12 +237,19 @@ def build_standard_rag_debug_payload(
     payload["retrieval_hits"] = int(payload.get("returned_count", len(context_docs)) or 0)
     payload["retrieved_chunks_total"] = len(context_docs)
     payload["avg_score"] = float(avg_score)
+    payload["avg_similarity"] = float(avg_score)
     payload["top_similarity_scores"] = [float(item.get("score", 0.0) or 0.0) for item in top_chunks[:10]]
     payload["context_tokens"] = int(context_tokens)
     payload["llm_tokens_used"] = llm_tokens_used
     retrieval_mode = str(payload.get("retrieval_mode") or "")
-    payload["retrieval_path"] = "structured" if retrieval_mode.startswith("tabular_sql") else "vector"
+    structured_modes = {"tabular_sql", "tabular_combined", "complex_analytics"}
+    payload["retrieval_path"] = "structured" if retrieval_mode.startswith("tabular_sql") or retrieval_mode in structured_modes else "vector"
     payload["structured_path_used"] = bool(payload["retrieval_path"] == "structured")
+    filters = payload.get("filters")
+    if isinstance(filters, dict):
+        processing_filter = filters.get("processing_id")
+        if isinstance(processing_filter, dict) and isinstance(processing_filter.get("$in"), list):
+            payload["active_processing_ids"] = [str(x) for x in processing_filter.get("$in")]
 
     row_stats = build_row_coverage_stats(context_docs)
     rows_expected = payload.get("rows_expected_total", row_stats["rows_expected_total"])

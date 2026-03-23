@@ -7,6 +7,26 @@ class HttpError extends Error {
     }
 }
 
+function extractErrorMessage(responseBody, fallback) {
+    if (responseBody && typeof responseBody === 'object') {
+        if (typeof responseBody.detail === 'string' && responseBody.detail.trim()) {
+            return responseBody.detail.trim();
+        }
+        if (responseBody.error && typeof responseBody.error.message === 'string' && responseBody.error.message.trim()) {
+            return responseBody.error.message.trim();
+        }
+        if (Array.isArray(responseBody.details) && responseBody.details.length > 0) {
+            return String(responseBody.details[0]?.msg || fallback);
+        }
+    }
+
+    if (typeof responseBody === 'string' && responseBody.trim()) {
+        return responseBody.trim();
+    }
+
+    return fallback;
+}
+
 class ApiService {
     constructor() {
         this.baseURL = '/api/v1';
@@ -24,29 +44,40 @@ class ApiService {
     }
 
     async request(method, endpoint, data = null, options = {}) {
+        return this.requestRaw(method, endpoint, {
+            body: data ? JSON.stringify(data) : undefined,
+            includeJsonHeader: true,
+            ...options,
+        });
+    }
+
+    async requestRaw(method, endpoint, options = {}) {
         const url = `${this.baseURL}${endpoint}`;
         const timeoutMs = options.timeoutMs || this.defaultTimeoutMs;
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        const includeJsonHeader = options.includeJsonHeader !== false;
 
         try {
             const response = await fetch(url, {
                 method,
                 headers: {
-                    ...this.getAuthHeaders(true),
+                    ...this.getAuthHeaders(includeJsonHeader),
                     ...(options.headers || {}),
                 },
-                body: data ? JSON.stringify(data) : undefined,
+                body: options.body,
                 signal: options.signal || controller.signal,
             });
 
             const contentType = response.headers.get('content-type') || '';
-            const responseBody = contentType.includes('application/json')
+            const responseBody = response.status === 204
+                ? null
+                : contentType.includes('application/json')
                 ? await response.json()
                 : await response.text();
 
             if (!response.ok) {
-                const detail = responseBody?.detail || response.statusText || `HTTP ${response.status}`;
+                const detail = extractErrorMessage(responseBody, response.statusText || `HTTP ${response.status}`);
                 throw new HttpError(detail, response.status, responseBody);
             }
 
@@ -67,6 +98,14 @@ class ApiService {
 
     async post(endpoint, data, options = {}) {
         return this.request('POST', endpoint, data, options);
+    }
+
+    async postForm(endpoint, formData, options = {}) {
+        return this.requestRaw('POST', endpoint, {
+            ...options,
+            body: formData,
+            includeJsonHeader: false,
+        });
     }
 
     async put(endpoint, data, options = {}) {
@@ -124,43 +163,96 @@ class ApiService {
         return this.delete(`/conversations/${conversationId}`);
     }
 
-    async getProcessedFiles(conversationId = null) {
-        const params = conversationId ? `?conversation_id=${conversationId}` : '';
+    async uploadFile({
+        file,
+        chatId = null,
+        autoProcess = true,
+        sourceKind = 'upload',
+        embeddingProvider = 'local',
+        embeddingModel = null,
+        pipelineVersion = null,
+        parserVersion = null,
+        artifactVersion = null,
+        chunkingStrategy = null,
+        retrievalProfile = null,
+    }) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('source_kind', sourceKind);
+        formData.append('auto_process', String(Boolean(autoProcess)));
+        formData.append('embedding_provider', embeddingProvider || 'local');
+
+        if (chatId) formData.append('chat_id', String(chatId));
+        if (embeddingModel) formData.append('embedding_model', embeddingModel);
+        if (pipelineVersion) formData.append('pipeline_version', pipelineVersion);
+        if (parserVersion) formData.append('parser_version', parserVersion);
+        if (artifactVersion) formData.append('artifact_version', artifactVersion);
+        if (chunkingStrategy) formData.append('chunking_strategy', chunkingStrategy);
+        if (retrievalProfile) formData.append('retrieval_profile', retrievalProfile);
+
+        return this.postForm('/files/upload', formData);
+    }
+
+    async getFiles({ skip = 0, limit = 200 } = {}) {
+        const params = new URLSearchParams({
+            skip: String(skip),
+            limit: String(limit),
+        });
+        return this.get(`/files/?${params.toString()}`);
+    }
+
+    async getReadyFiles({ chatId = null } = {}) {
+        const params = chatId ? `?chat_id=${encodeURIComponent(chatId)}` : '';
         return this.get(`/files/processed${params}`);
     }
 
-    async getFiles() {
-        return this.get('/files/');
+    async getFile(fileId) {
+        return this.get(`/files/${fileId}`);
+    }
+
+    async getFileStatus(fileId) {
+        return this.get(`/files/${fileId}/status`);
+    }
+
+    async getFileQuota() {
+        return this.get('/files/quota');
+    }
+
+    async attachFileToChat(fileId, chatId) {
+        return this.post(`/files/${fileId}/attach`, { chat_id: chatId });
+    }
+
+    async detachFileFromChat(fileId, chatId) {
+        return this.post(`/files/${fileId}/detach`, { chat_id: chatId });
     }
 
     async deleteFile(fileId) {
         return this.delete(`/files/${fileId}`);
     }
 
-    async reprocessFile(fileId, embeddingMode = 'local', embeddingModel = null) {
-        const formData = new FormData();
-        formData.append('embedding_mode', embeddingMode || 'local');
-        if (embeddingModel) {
-            formData.append('embedding_model', embeddingModel);
-        }
+    async reprocessFile(fileId, request = {}) {
+        const payload = {
+            embedding_provider: request.embedding_provider || request.embeddingProvider || 'local',
+            embedding_model: request.embedding_model || request.embeddingModel || null,
+            pipeline_version: request.pipeline_version || request.pipelineVersion || 'pipeline-v1',
+            parser_version: request.parser_version || request.parserVersion || 'parser-v1',
+            artifact_version: request.artifact_version || request.artifactVersion || 'artifact-v1',
+            chunking_strategy: request.chunking_strategy || request.chunkingStrategy || 'smart',
+            retrieval_profile: request.retrieval_profile || request.retrievalProfile || 'default',
+        };
+        return this.post(`/files/${fileId}/reprocess`, payload);
+    }
 
-        const response = await fetch(`${this.baseURL}/files/process/${fileId}`, {
-            method: 'POST',
-            headers: this.getAuthHeaders(false),
-            body: formData,
-        });
+    async getFileDebugInfo(fileId) {
+        return this.get(`/files/${fileId}/debug`);
+    }
 
-        const contentType = response.headers.get('content-type') || '';
-        const payload = contentType.includes('application/json')
-            ? await response.json()
-            : await response.text();
+    async getFileProcessingVersions(fileId) {
+        return this.get(`/files/${fileId}/processing`);
+    }
 
-        if (!response.ok) {
-            const detail = payload?.detail || response.statusText || `HTTP ${response.status}`;
-            throw new HttpError(detail, response.status, payload);
-        }
-
-        return payload;
+    async getFileActiveProcessing(fileId) {
+        return this.get(`/files/${fileId}/processing/active`);
     }
 }
 

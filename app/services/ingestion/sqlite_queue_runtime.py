@@ -31,6 +31,12 @@ def init_db_sync(*, connect_fn) -> None:
                 file_path TEXT NOT NULL,
                 embedding_mode TEXT NOT NULL,
                 embedding_model TEXT NOT NULL,
+                processing_id TEXT,
+                pipeline_version TEXT,
+                parser_version TEXT,
+                artifact_version TEXT,
+                chunking_strategy TEXT,
+                retrieval_profile TEXT,
                 status TEXT NOT NULL,
                 attempt INTEGER NOT NULL DEFAULT 0,
                 max_retries INTEGER NOT NULL DEFAULT 3,
@@ -58,6 +64,20 @@ def init_db_sync(*, connect_fn) -> None:
             );
             """
         )
+        columns = {str(r["name"]) for r in conn.execute("PRAGMA table_info(ingestion_jobs)").fetchall()}
+        if "processing_id" not in columns:
+            conn.execute("ALTER TABLE ingestion_jobs ADD COLUMN processing_id TEXT")
+        if "pipeline_version" not in columns:
+            conn.execute("ALTER TABLE ingestion_jobs ADD COLUMN pipeline_version TEXT")
+        if "parser_version" not in columns:
+            conn.execute("ALTER TABLE ingestion_jobs ADD COLUMN parser_version TEXT")
+        if "artifact_version" not in columns:
+            conn.execute("ALTER TABLE ingestion_jobs ADD COLUMN artifact_version TEXT")
+        if "chunking_strategy" not in columns:
+            conn.execute("ALTER TABLE ingestion_jobs ADD COLUMN chunking_strategy TEXT")
+        if "retrieval_profile" not in columns:
+            conn.execute("ALTER TABLE ingestion_jobs ADD COLUMN retrieval_profile TEXT")
+        conn.commit()
     finally:
         conn.close()
 
@@ -155,6 +175,12 @@ def enqueue_sync(
                 file_path,
                 embedding_mode,
                 embedding_model,
+                processing_id,
+                pipeline_version,
+                parser_version,
+                artifact_version,
+                chunking_strategy,
+                retrieval_profile,
                 status,
                 attempt,
                 max_retries,
@@ -167,7 +193,7 @@ def enqueue_sync(
                 created_at,
                 updated_at,
                 completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, NULL, NULL, 0, 1, ?, ?, NULL)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, NULL, NULL, 0, 1, ?, ?, NULL)
             """,
             (
                 job_id,
@@ -176,6 +202,12 @@ def enqueue_sync(
                 payload.file_path,
                 payload.embedding_mode,
                 payload.embedding_model,
+                payload.processing_id,
+                payload.pipeline_version,
+                payload.parser_version,
+                payload.artifact_version,
+                payload.chunking_strategy,
+                payload.retrieval_profile,
                 STATUS_QUEUED,
                 max(0, max_retries),
                 now,
@@ -249,6 +281,12 @@ def acquire_sync(
                 file_path,
                 embedding_mode,
                 embedding_model,
+                processing_id,
+                pipeline_version,
+                parser_version,
+                artifact_version,
+                chunking_strategy,
+                retrieval_profile,
                 attempt,
                 max_retries,
                 next_run_at,
@@ -267,6 +305,12 @@ def acquire_sync(
             file_path=str(acquired["file_path"]),
             embedding_mode=str(acquired["embedding_mode"]),
             embedding_model=str(acquired["embedding_model"]),
+            processing_id=(str(acquired["processing_id"]) if acquired["processing_id"] is not None else None),
+            pipeline_version=(str(acquired["pipeline_version"]) if acquired["pipeline_version"] is not None else None),
+            parser_version=(str(acquired["parser_version"]) if acquired["parser_version"] is not None else None),
+            artifact_version=(str(acquired["artifact_version"]) if acquired["artifact_version"] is not None else None),
+            chunking_strategy=(str(acquired["chunking_strategy"]) if acquired["chunking_strategy"] is not None else None),
+            retrieval_profile=(str(acquired["retrieval_profile"]) if acquired["retrieval_profile"] is not None else None),
         )
         return IngestionLeasedJob(
             job_id=str(acquired["job_id"]),

@@ -176,7 +176,7 @@ class ConversationsManager {
                 chatMessages.innerHTML = `
                     <section class="chat-empty-state" aria-live="polite">
                         <h2>Start a new conversation</h2>
-                        <p>Ask anything or attach a file to work with RAG context.</p>
+                        <p>Ask anything. Attach files from your personal library.</p>
                     </section>
                 `;
             }

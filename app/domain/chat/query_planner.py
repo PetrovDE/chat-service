@@ -16,6 +16,7 @@ ROUTE_NARRATIVE_RETRIEVAL = "narrative_retrieval"
 INTENT_TABULAR_AGGREGATE = "tabular_aggregate"
 INTENT_TABULAR_PROFILE = "tabular_profile"
 INTENT_TABULAR_LOOKUP = "tabular_lookup"
+INTENT_TABULAR_COMBINED = "tabular_combined"
 INTENT_COMPLEX_ANALYTICS = "complex_analytics"
 INTENT_NARRATIVE_RETRIEVAL = "narrative_retrieval"
 INTENT_METRIC_CLARIFICATION = "metric_clarification"
@@ -67,6 +68,18 @@ _LOOKUP_HINTS = (
     "фильтр",
     "где ",
 )
+_SEMANTIC_RETRIEVAL_HINTS = (
+    "where is",
+    "which sheet",
+    "на каком листе",
+    "в каком листе",
+    "где находится",
+    "покажи релевантные строки",
+    "show relevant rows",
+    "find relevant rows",
+    "есть ли колонка",
+    "which column",
+)
 _METRIC_KEYWORDS = (
     "\u043c\u0435\u0442\u0440\u0438\u043a",
     "\u043f\u0440\u043e\u0446\u0435\u043d\u0442",
@@ -84,6 +97,7 @@ _METRIC_KEYWORDS = (
 class QueryPlanDecision:
     route: str
     intent: str
+    strategy_mode: str
     confidence: float
     requires_clarification: bool
     reason_codes: List[str]
@@ -94,6 +108,7 @@ class QueryPlanDecision:
         payload: Dict[str, Any] = {
             "route": self.route,
             "intent": self.intent,
+            "strategy_mode": self.strategy_mode,
             "confidence": float(self.confidence),
             "requires_clarification": bool(self.requires_clarification),
             "reason_codes": list(self.reason_codes),
@@ -110,8 +125,17 @@ def _norm(text: str) -> str:
 
 
 def _is_tabular_file(file_obj: Any) -> bool:
-    file_type = str(getattr(file_obj, "file_type", "") or "").lower()
-    return file_type in {"xlsx", "xls", "csv"}
+    extension = str(
+        getattr(file_obj, "extension", "")
+        or getattr(file_obj, "file_type", "")
+        or ""
+    ).lower().lstrip(".")
+    if extension:
+        return extension in {"xlsx", "xls", "csv", "tsv"}
+    original_filename = str(getattr(file_obj, "original_filename", "") or "").lower().strip()
+    if "." in original_filename:
+        return original_filename.rsplit(".", 1)[-1] in {"xlsx", "xls", "csv", "tsv"}
+    return False
 
 
 def detect_tabular_intent(query: str) -> Optional[str]:
@@ -174,6 +198,23 @@ def _collect_column_matches(query: str, files: Sequence[Any]) -> List[str]:
     return matches
 
 
+def _has_semantic_tabular_hints(query: str, files: Sequence[Any]) -> bool:
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    if any(hint in q for hint in _SEMANTIC_RETRIEVAL_HINTS):
+        return True
+    for file_obj in files:
+        dataset = resolve_tabular_dataset(file_obj)
+        if dataset is None:
+            continue
+        for table in dataset.tables:
+            sheet_name = str(table.sheet_name or "").strip().lower()
+            if sheet_name and sheet_name in q:
+                return True
+    return False
+
+
 def _build_clarification_prompt(query: str) -> str:
     if re.search(r"[\u0400-\u04FF]", query or ""):
         return (
@@ -214,6 +255,7 @@ def plan_query(
         decision = QueryPlanDecision(
             route=ROUTE_NARRATIVE_RETRIEVAL,
             intent=INTENT_NARRATIVE_RETRIEVAL,
+            strategy_mode="semantic",
             confidence=0.0,
             requires_clarification=False,
             reason_codes=["empty_query"],
@@ -233,6 +275,7 @@ def plan_query(
         decision = QueryPlanDecision(
             route=ROUTE_NARRATIVE_RETRIEVAL,
             intent=INTENT_NARRATIVE_RETRIEVAL,
+            strategy_mode="semantic",
             confidence=0.8,
             requires_clarification=False,
             reason_codes=reason_codes,
@@ -247,6 +290,7 @@ def plan_query(
         decision = QueryPlanDecision(
             route=ROUTE_NARRATIVE_RETRIEVAL,
             intent=INTENT_NARRATIVE_RETRIEVAL,
+            strategy_mode="semantic",
             confidence=0.65,
             requires_clarification=False,
             reason_codes=reason_codes,
@@ -261,6 +305,7 @@ def plan_query(
         decision = QueryPlanDecision(
             route=ROUTE_COMPLEX_ANALYTICS,
             intent=INTENT_COMPLEX_ANALYTICS,
+            strategy_mode="analytical",
             confidence=0.93,
             requires_clarification=False,
             reason_codes=reason_codes,
@@ -271,8 +316,12 @@ def plan_query(
 
     column_matches = _collect_column_matches(trimmed_query, tabular_ready)
     operation = _detect_operation(trimmed_query)
-    missing_scope_for_count = operation == "count" and not column_matches and not any(
-        hint in trimmed_query.lower() for hint in _AGGREGATE_SCOPE_HINTS
+    semantic_tabular_hint = _has_semantic_tabular_hints(trimmed_query, tabular_ready)
+    missing_scope_for_count = (
+        operation == "count"
+        and not semantic_tabular_hint
+        and not column_matches
+        and not any(hint in trimmed_query.lower() for hint in _AGGREGATE_SCOPE_HINTS)
     )
     missing_metric_column = operation in {"sum", "avg", "min", "max"} and not column_matches
     metric_ambiguous = bool(
@@ -294,6 +343,7 @@ def plan_query(
             decision = QueryPlanDecision(
                 route=route,
                 intent=intent,
+                strategy_mode="analytical",
                 confidence=confidence,
                 requires_clarification=False,
                 reason_codes=reason_codes,
@@ -312,6 +362,7 @@ def plan_query(
         decision = QueryPlanDecision(
             route=ROUTE_DETERMINISTIC_ANALYTICS,
             intent=INTENT_METRIC_CLARIFICATION,
+            strategy_mode="analytical",
             confidence=0.35,
             requires_clarification=True,
             reason_codes=reason_codes,
@@ -321,11 +372,29 @@ def plan_query(
         _observe_decision(decision)
         return decision
 
+    combined_hint = semantic_tabular_hint
+    if intent_kind in {"aggregate", "lookup"} and combined_hint:
+        reason_codes.extend(["combined_tabular_route", "semantic_tabular_hints"])
+        if column_matches:
+            reason_codes.append("column_match_found")
+        decision = QueryPlanDecision(
+            route=ROUTE_DETERMINISTIC_ANALYTICS,
+            intent=INTENT_TABULAR_COMBINED,
+            strategy_mode="combined",
+            confidence=0.88 if column_matches else 0.8,
+            requires_clarification=False,
+            reason_codes=reason_codes,
+            metric_critical=metric_critical,
+        )
+        _observe_decision(decision)
+        return decision
+
     if intent_kind == "profile":
         reason_codes.append("tabular_profile_intent")
         decision = QueryPlanDecision(
             route=ROUTE_DETERMINISTIC_ANALYTICS,
             intent=INTENT_TABULAR_PROFILE,
+            strategy_mode="analytical",
             confidence=0.95,
             requires_clarification=False,
             reason_codes=reason_codes,
@@ -341,6 +410,7 @@ def plan_query(
         decision = QueryPlanDecision(
             route=ROUTE_DETERMINISTIC_ANALYTICS,
             intent=INTENT_TABULAR_AGGREGATE,
+            strategy_mode="analytical",
             confidence=0.92 if column_matches else 0.84,
             requires_clarification=False,
             reason_codes=reason_codes,
@@ -356,6 +426,7 @@ def plan_query(
         decision = QueryPlanDecision(
             route=ROUTE_DETERMINISTIC_ANALYTICS,
             intent=INTENT_TABULAR_LOOKUP,
+            strategy_mode="analytical",
             confidence=0.86 if column_matches else 0.8,
             requires_clarification=False,
             reason_codes=reason_codes,
@@ -368,6 +439,7 @@ def plan_query(
     decision = QueryPlanDecision(
         route=ROUTE_NARRATIVE_RETRIEVAL,
         intent=INTENT_NARRATIVE_RETRIEVAL,
+        strategy_mode="semantic",
         confidence=0.72,
         requires_clarification=False,
         reason_codes=reason_codes,

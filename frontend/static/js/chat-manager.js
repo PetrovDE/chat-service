@@ -40,7 +40,7 @@ class ChatManager {
         chatMessages.innerHTML = `
             <section class="chat-empty-state" aria-live="polite">
                 <h2>Start a new conversation</h2>
-                <p>Ask anything or attach a file to work with RAG context.</p>
+                <p>Ask anything. Use your file library to attach context to this chat.</p>
             </section>
         `;
         this.lastRenderedDate = null;
@@ -82,8 +82,7 @@ class ChatManager {
 
             this.addMessageToUI('user', normalizedMessage, nowTimestampISO());
 
-            const attachedFiles = window.app?.fileManager?.getAttachedFiles?.() || [];
-            const fileIds = attachedFiles.map((file) => file.id);
+            const fileIds = window.app?.filesSidebarManager?.getCurrentChatFileIds?.() || [];
             const ragMode = this.resolveRagMode(normalizedMessage, fileIds);
 
             const payload = {
@@ -103,10 +102,6 @@ class ChatManager {
             };
 
             await this.streamResponse(payload);
-
-            if (window.app?.fileManager?.clearAttachedFiles) {
-                window.app.fileManager.clearAttachedFiles();
-            }
         } catch (error) {
             this.addMessageToUI('assistant', `Error: ${error.message || 'Failed to send message'}`, nowTimestampISO());
             throw error;
@@ -167,6 +162,7 @@ class ChatManager {
                     this.setCurrentConversation(chunk.conversation_id);
                     if (window.app?.filesSidebarManager) {
                         window.app.filesSidebarManager.setCurrentConversation(chunk.conversation_id);
+                        window.app.filesSidebarManager.loadFiles(true);
                     }
                 }
 

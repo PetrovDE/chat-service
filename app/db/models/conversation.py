@@ -32,11 +32,16 @@ class Conversation(Base):
         order_by="Message.timestamp"
     )
     # Association relationship for files
-    files_association = relationship("ConversationFile", back_populates="conversation", cascade="all, delete-orphan")
+    files_association = relationship(
+        "ConversationFile",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        foreign_keys="ConversationFile.chat_id",
+    )
     # Indirect relationship to files through association table
     files = relationship(
         "File",
-        secondary="conversation_files",
+        secondary="chat_file_links",
         back_populates="conversations",
         viewonly=True,
         lazy="selectin"

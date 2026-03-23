@@ -39,7 +39,7 @@ async def get_user_stats(
     # Count files
     file_result = await db.execute(
         select(func.count(File.id))
-        .where(File.user_id == current_user.id)
+        .where(File.user_id == current_user.id, File.status != "deleted")
     )
     total_files = file_result.scalar()
 

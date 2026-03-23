@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID
 
+from langchain_core.documents import Document
+
 
 def classify_ingestion_exception(exc: Exception) -> Dict[str, Any]:
     if getattr(exc, "retryable", None) is not None:
@@ -70,6 +72,7 @@ async def finalize_ingestion_pipeline(
     *,
     db: Any,
     file_id: UUID,
+    processing_id: Optional[UUID] = None,
     progress: Dict[str, Any],
     embedding_mode: str,
     embedding_model: str,
@@ -159,6 +162,7 @@ async def finalize_ingestion_pipeline(
     await update_processing_status_fn(
         db,
         file_id=file_id,
+        processing_id=processing_id,
         status=final_status,
         chunks_count=indexed,
         embedding_model=f"{embedding_mode}:{embedding_model}",
@@ -189,9 +193,15 @@ async def finalize_ingestion_pipeline(
 async def process_file_pipeline(
     *,
     file_id: UUID,
+    processing_id: Optional[UUID] = None,
     file_path: Path,
     embedding_mode: str,
     embedding_model: str,
+    pipeline_version: Optional[str] = None,
+    parser_version: Optional[str] = None,
+    artifact_version: Optional[str] = None,
+    chunking_strategy: Optional[str] = None,
+    retrieval_profile: Optional[str] = None,
     async_session_factory,
     crud_file_module,
     conversation_file_model,
@@ -205,6 +215,7 @@ async def process_file_pipeline(
     batch_fn,
     utc_now_iso_fn,
     extract_xlsx_stats_fn,
+    persist_derived_artifacts_fn,
     file_id_ctx_var,
     settings_obj,
     observe_ms_fn,
@@ -232,21 +243,40 @@ async def process_file_pipeline(
         "started_at": utc_now_iso_fn(),
         "finished_at": None,
         "bad_ratio": 0.0,
+        "pipeline_version": str(pipeline_version or ""),
+        "parser_version": str(parser_version or ""),
+        "artifact_version": str(artifact_version or ""),
+        "chunking_strategy": str(chunking_strategy or ""),
+        "retrieval_profile": str(retrieval_profile or ""),
+        "processing_id": str(processing_id) if processing_id is not None else None,
     }
     error_message: Optional[str] = None
     extra_metadata: Dict[str, Any] = {}
     failure_retryable = False
+    observed_embedding_dimension: Optional[int] = None
 
     async with async_session_factory() as db:
         try:
             async def _checkpoint(*, status: str, stage: str) -> None:
                 progress["status"] = status
                 progress["stage"] = stage
+                metadata_patch: Dict[str, Any] = {
+                    "ingestion_progress": progress,
+                    "error": None,
+                    "pipeline_version": str(pipeline_version or ""),
+                    "parser_version": str(parser_version or ""),
+                    "artifact_version": str(artifact_version or ""),
+                    "chunking_strategy": str(chunking_strategy or ""),
+                    "retrieval_profile": str(retrieval_profile or ""),
+                }
+                if observed_embedding_dimension is not None:
+                    metadata_patch["embedding_dimension"] = int(observed_embedding_dimension)
                 await crud_file_module.update_processing_status(
                     db,
                     file_id=file_id,
+                    processing_id=processing_id,
                     status=status,
-                    metadata_patch={"ingestion_progress": progress, "error": None},
+                    metadata_patch=metadata_patch,
                 )
 
             logger_obj.info(
@@ -255,10 +285,10 @@ async def process_file_pipeline(
             )
             await _checkpoint(status="parsing", stage="parsing")
 
-            q = select_fn(conversation_file_model.conversation_id).where(conversation_file_model.file_id == file_id)
+            q = select_fn(conversation_file_model.chat_id).where(conversation_file_model.file_id == file_id)
             r = await db.execute(q)
-            conv_ids = r.scalars().all()
-            conversation_id = str(conv_ids[0]) if conv_ids else None
+            chat_ids = r.scalars().all()
+            chat_id = str(chat_ids[0]) if chat_ids else None
 
             stage_t0 = asyncio.get_running_loop().time()
             docs = await document_loader_obj.load_file(str(file_path))
@@ -289,8 +319,49 @@ async def process_file_pipeline(
             file_record = await crud_file_module.get(db, id=file_id)
             if not file_record:
                 raise ValueError(f"File record not found: {file_id}")
+            active_processing = None
+            try:
+                active_processing = await crud_file_module.get_active_processing(
+                    db,
+                    file_id=file_id,
+                    user_id=file_record.user_id,
+                )
+            except Exception:
+                logger_obj.warning(
+                    "Could not resolve active processing profile: file_id=%s",
+                    file_id,
+                    exc_info=True,
+                )
+            is_active_processing = bool(
+                active_processing is not None
+                and processing_id is not None
+                and str(active_processing.id) == str(processing_id)
+            )
 
             file_ext = file_path.suffix.lower().lstrip(".")
+            try:
+                derived = await asyncio.to_thread(
+                    persist_derived_artifacts_fn,
+                    file_id=file_id,
+                    processing_id=processing_id,
+                    file_path=file_path,
+                    docs=docs,
+                    pipeline_version=pipeline_version,
+                    parser_version=parser_version,
+                    artifact_version=artifact_version,
+                    owner_user_id=file_record.user_id,
+                )
+                extra_metadata["derived_artifacts"] = dict(derived.summary)
+                logger_obj.info(
+                    "Derived artifacts persisted: file_id=%s processing_id=%s manifest=%s artifacts=%d",
+                    file_id,
+                    processing_id,
+                    derived.summary.get("manifest_path"),
+                    int(derived.summary.get("total_artifacts", 0) or 0),
+                )
+            except Exception:
+                logger_obj.warning("Derived artifacts persistence failed for file_id=%s", file_id, exc_info=True)
+                extra_metadata["derived_artifacts_error"] = "persist_failed"
             if file_ext in {"xlsx", "xls", "csv", "tsv"}:
                 try:
                     tabular_dataset = await asyncio.to_thread(
@@ -319,6 +390,22 @@ async def process_file_pipeline(
                 chunks = docs
             else:
                 chunks = text_splitter_obj.split_documents(docs)
+                # Keep a compact file-level summary chunk for selective indexing in narrative docs.
+                summary_lines: List[str] = []
+                for d in docs[:4]:
+                    content = str(getattr(d, "page_content", "") or "").strip()
+                    if content:
+                        summary_lines.append(content[:420])
+                summary_text = "\n\n".join(summary_lines)
+                if summary_text:
+                    summary_meta: Dict[str, Any] = {
+                        "source": str(file_path),
+                        "file_type": file_ext,
+                        "source_type": "document",
+                        "artifact_type": "document_summary",
+                        "chunk_type": "document_summary",
+                    }
+                    chunks.insert(0, Document(page_content=summary_text, metadata=summary_meta))
             if not chunks:
                 raise ValueError("No chunks created from documents")
             progress["total_chunks_expected"] = len(chunks)
@@ -353,8 +440,17 @@ async def process_file_pipeline(
             deleted = 0
             if resume_batch_index <= 1:
                 try:
-                    deleted = vector_store_obj.delete_by_metadata({"file_id": str(file_id)})
-                    logger_obj.info("Pre-clean vector store by file_id=%s deleted=%d", file_id, deleted)
+                    if processing_id is not None:
+                        deleted = vector_store_obj.delete_by_metadata({"processing_id": str(processing_id)})
+                        logger_obj.info(
+                            "Pre-clean vector store by processing_id=%s file_id=%s deleted=%d",
+                            processing_id,
+                            file_id,
+                            deleted,
+                        )
+                    else:
+                        deleted = vector_store_obj.delete_by_metadata({"file_id": str(file_id)})
+                        logger_obj.info("Pre-clean vector store by file_id=%s deleted=%d", file_id, deleted)
                 except Exception:
                     logger_obj.warning("Vector pre-clean failed (continue)", exc_info=True)
             else:
@@ -374,16 +470,25 @@ async def process_file_pipeline(
                     continue
                 meta: Dict[str, Any] = {
                     "file_id": str(file_id),
+                    "processing_id": str(processing_id) if processing_id is not None else "",
+                    "owner_user_id": str(file_record.user_id),
                     "user_id": str(file_record.user_id),
-                    "conversation_id": conversation_id,
+                    "chat_id": chat_id,
                     "chunk_index": idx,
                     "doc_id": str(file_id),
                     "chunk_id": f"{file_id}_{idx}",
                     "filename": file_record.original_filename,
-                    "file_type": file_record.file_type,
+                    "file_type": str(getattr(file_record, "extension", getattr(file_record, "file_type", "")) or "").lower(),
+                    "source_type": "tabular" if file_ext in {"xlsx", "xls", "csv", "tsv"} else "document",
+                    "artifact_type": str((cd.metadata or {}).get("artifact_type") or (cd.metadata or {}).get("chunk_type") or "chunk"),
                     "embedding_mode": embedding_mode,
                     "embedding_model": embedding_model,
                     "collection": getattr(settings_obj, "COLLECTION_NAME", "documents"),
+                    "pipeline_version": str(pipeline_version or ""),
+                    "parser_version": str(parser_version or ""),
+                    "artifact_version": str(artifact_version or ""),
+                    "retrieval_profile": str(retrieval_profile or ""),
+                    "is_active_processing": is_active_processing,
                 }
                 if cd.metadata:
                     for k, v in cd.metadata.items():
@@ -449,7 +554,8 @@ async def process_file_pipeline(
 
                 for vec, (text, meta, doc_id) in zip(vectors, batch):
                     try:
-                        meta["embedding_dimension"] = len(vec)
+                        observed_embedding_dimension = int(len(vec))
+                        meta["embedding_dimension"] = observed_embedding_dimension
                         meta["collection"] = vector_store_obj.resolve_collection_name(
                             embedding=vec,
                             metadata=meta,
@@ -501,7 +607,7 @@ async def process_file_pipeline(
             logger_obj.info(
                 (
                     "File processing done before finalize: file_id=%s chunks_expected=%d chunks_processed=%d "
-                    "chunks_indexed=%d chunks_failed=%d empty_chunks=%d deleted_old=%d conversation_id=%s "
+                    "chunks_indexed=%d chunks_failed=%d empty_chunks=%d deleted_old=%d chat_id=%s "
                     "embedding_model=%s embedding_batches=%d embedding_batches_failed=%d "
                     "upserts_expected=%d upserts_actual=%d"
                 ),
@@ -512,7 +618,7 @@ async def process_file_pipeline(
                 progress["chunks_failed"],
                 empty_chunks,
                 deleted,
-                conversation_id,
+                chat_id,
                 embedding_model,
                 progress["embedding_batches_total"],
                 progress["embedding_batches_failed"],
@@ -535,6 +641,8 @@ async def process_file_pipeline(
             logger_obj.error("File processing failed: file_id=%s err=%s", file_id, error_message, exc_info=True)
         finally:
             try:
+                if observed_embedding_dimension is not None:
+                    extra_metadata["embedding_dimension"] = int(observed_embedding_dimension)
                 observe_ms_fn(
                     "ingestion_total_ms",
                     (asyncio.get_running_loop().time() - started_ms) * 1000.0,
@@ -543,6 +651,7 @@ async def process_file_pipeline(
                 final_status = await finalize_ingestion_fn(
                     db=db,
                     file_id=file_id,
+                    processing_id=processing_id,
                     progress=progress,
                     embedding_mode=embedding_mode,
                     embedding_model=embedding_model,

@@ -245,6 +245,16 @@ def build_standard_rag_debug_payload(
     structured_modes = {"tabular_sql", "tabular_combined", "complex_analytics"}
     payload["retrieval_path"] = "structured" if retrieval_mode.startswith("tabular_sql") or retrieval_mode in structured_modes else "vector"
     payload["structured_path_used"] = bool(payload["retrieval_path"] == "structured")
+    payload["fallback_type"] = str(payload.get("fallback_type") or "none")
+    payload["fallback_reason"] = str(payload.get("fallback_reason") or "none")
+    payload["response_language"] = str(payload.get("response_language") or payload.get("detected_language") or "ru")
+    payload["detected_intent"] = str(payload.get("detected_intent") or payload.get("intent") or "unknown")
+    payload["selected_route"] = str(payload.get("selected_route") or payload.get("route") or "unknown")
+    payload["cache_hit"] = bool(payload.get("cache_hit", False))
+    payload["cache_miss"] = bool(payload.get("cache_miss", not payload["cache_hit"]))
+    payload["cache_key_version"] = str(payload.get("cache_key_version") or "unknown")
+    if payload.get("cache_key") is not None:
+        payload["cache_key"] = str(payload.get("cache_key"))
     filters = payload.get("filters")
     if isinstance(filters, dict):
         processing_filter = filters.get("processing_id")

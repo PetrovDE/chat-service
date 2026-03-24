@@ -15,6 +15,7 @@ from app.schemas import ChatMessage, ChatResponse
 from app.services.chat.context import (
     build_conversation_history as _build_conversation_history,
     build_rag_conversation_memory as _build_rag_conversation_memory,
+    should_include_assistant_history_for_generation as _should_include_assistant_history_for_generation,
 )
 from app.services.chat.language import (
     detect_preferred_response_language as _detect_preferred_response_language,
@@ -213,7 +214,12 @@ class ChatOrchestrator:
 
         history_for_generation = conversation_history
         if rag_used:
-            history_for_generation = _build_rag_conversation_memory(conversation_history, max_messages=6)
+            include_assistant = _should_include_assistant_history_for_generation(rag_debug)
+            history_for_generation = _build_rag_conversation_memory(
+                conversation_history,
+                max_messages=6,
+                include_assistant=include_assistant,
+            )
 
         return {
             "conversation_id": conversation_id,

@@ -31,10 +31,14 @@ def build_clarification_route_result(
     rag_debug = {
         "planner_decision": planner_decision_payload,
         "intent": planner_decision.intent,
+        "detected_intent": planner_decision.intent,
+        "selected_route": "clarification_required",
         "strategy_mode": planner_decision.strategy_mode,
         "retrieval_mode": "clarification",
         "requires_clarification": True,
         "clarification_prompt": planner_decision.clarification_prompt,
+        "fallback_type": "clarification",
+        "fallback_reason": "clarification_required",
         "execution_route": "clarification",
         "executor_attempted": False,
         "executor_status": "not_attempted",
@@ -96,6 +100,8 @@ async def maybe_run_complex_analytics_route(
         rag_debug["file_ids"] = [str(file_obj.id) for file_obj in files]
         rag_debug["rag_mode"] = rag_mode or "auto"
         rag_debug["execution_route"] = "complex_analytics"
+        rag_debug["detected_intent"] = "complex_analytics"
+        rag_debug["selected_route"] = "complex_analytics"
         rag_debug["artifacts"] = list(complex_result.get("artifacts") or [])
         rag_debug["artifacts_count"] = int(
             rag_debug.get("artifacts_count", len(rag_debug.get("artifacts") or [])) or 0
@@ -110,6 +116,8 @@ async def maybe_run_complex_analytics_route(
             rag_debug["executor_status"] = str(rag_debug.get("executor_status") or "success")
             rag_debug["short_circuit_response"] = True
             rag_debug["short_circuit_response_text"] = str(complex_result.get("final_response") or "").strip()
+            rag_debug["fallback_type"] = "none"
+            rag_debug["fallback_reason"] = "none"
             observe_retrieval_coverage(
                 coverage_ratio=1.0,
                 retrieval_mode="complex_analytics",
@@ -128,6 +136,8 @@ async def maybe_run_complex_analytics_route(
         rag_debug["rag_mode_effective"] = "complex_analytics_error"
         rag_debug["requires_clarification"] = True
         rag_debug["short_circuit_response"] = True
+        rag_debug["fallback_type"] = "complex_analytics_fallback"
+        rag_debug["fallback_reason"] = str(rag_debug.get("executor_error_code") or "complex_analytics_error")
         clarification_prompt = ensure_controlled_message_language(
             text=str(complex_result.get("clarification_prompt") or "").strip(),
             preferred_lang=preferred_lang,
@@ -160,8 +170,12 @@ async def maybe_run_complex_analytics_route(
         "planner_decision": planner_decision_payload,
         "strategy_mode": planner_decision_payload.get("strategy_mode", "analytical"),
         "intent": "complex_analytics",
+        "detected_intent": "complex_analytics",
+        "selected_route": "complex_analytics",
         "retrieval_mode": "clarification",
         "requires_clarification": True,
+        "fallback_type": "complex_analytics_unavailable",
+        "fallback_reason": "executor_unavailable",
         "execution_route": "complex_analytics",
         "executor_attempted": True,
         "executor_status": "error",
@@ -328,12 +342,38 @@ async def maybe_run_deterministic_route(
             rag_debug["rag_mode_effective"] = f"{retrieval_mode}_error"
             rag_debug["requires_clarification"] = True
             rag_debug["execution_route"] = "tabular_sql"
+            rag_debug["detected_intent"] = str(
+                rag_debug.get("detected_intent")
+                or rag_debug.get("intent")
+                or planner_decision_payload.get("intent")
+                or "tabular_error"
+            )
+            rag_debug["selected_route"] = str(
+                rag_debug.get("selected_route")
+                or planner_decision_payload.get("route")
+                or retrieval_mode
+            )
             rag_debug["executor_attempted"] = False
             rag_debug["executor_status"] = "not_attempted"
             rag_debug["executor_error_code"] = None
             rag_debug["artifacts_count"] = 0
             rag_debug["analytical_mode_used"] = True
             rag_debug["strategy_mode"] = "combined" if is_combined_intent else "analytical"
+            rag_debug["fallback_type"] = (
+                "unsupported_missing_column"
+                if str(rag_debug.get("selected_route") or "") == "unsupported_missing_column"
+                else "tabular_executor_error"
+            )
+            rag_debug["fallback_reason"] = str(
+                rag_debug.get("fallback_reason")
+                or rag_debug.get("executor_error_code")
+                or (
+                    rag_debug.get("deterministic_error", {}).get("code")
+                    if isinstance(rag_debug.get("deterministic_error"), dict)
+                    else None
+                )
+                or "tabular_executor_error"
+            )
             if combined_debug:
                 rag_debug["combined_scope"] = combined_debug
             clarification_prompt = ensure_controlled_message_language(
@@ -386,12 +426,25 @@ async def maybe_run_deterministic_route(
         rag_debug["rag_mode"] = rag_mode or "auto"
         rag_debug["rag_mode_effective"] = retrieval_mode
         rag_debug["execution_route"] = "tabular_sql"
+        rag_debug["detected_intent"] = str(
+            rag_debug.get("detected_intent")
+            or rag_debug.get("intent")
+            or planner_decision_payload.get("intent")
+            or "tabular_sql"
+        )
+        rag_debug["selected_route"] = str(
+            rag_debug.get("selected_route")
+            or planner_decision_payload.get("route")
+            or retrieval_mode
+        )
         rag_debug["executor_attempted"] = False
         rag_debug["executor_status"] = "not_attempted"
         rag_debug["executor_error_code"] = None
         rag_debug["artifacts_count"] = 0
         rag_debug["analytical_mode_used"] = True
         rag_debug["strategy_mode"] = "combined" if is_combined_intent else "analytical"
+        rag_debug["fallback_type"] = "none"
+        rag_debug["fallback_reason"] = "none"
         if combined_debug:
             rag_debug["combined_scope"] = combined_debug
         rag_debug["retrieval_policy"] = {
@@ -504,9 +557,13 @@ async def maybe_run_deterministic_route(
         "planner_decision": planner_decision_payload,
         "file_ids": [str(file_obj.id) for file_obj in files],
         "retrieval_mode": retrieval_mode,
+        "detected_intent": "tabular_sql",
+        "selected_route": "tabular_sql_invalid_payload",
         "rag_mode": rag_mode or "auto",
         "rag_mode_effective": f"{retrieval_mode}_invalid_payload",
         "requires_clarification": True,
+        "fallback_type": "tabular_invalid_payload",
+        "fallback_reason": "invalid_executor_payload",
         "execution_route": "tabular_sql",
         "executor_attempted": True,
         "executor_status": "error",

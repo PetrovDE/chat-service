@@ -395,6 +395,10 @@ async def run_narrative_retrieval_path(
             rag_debug["retrieval_mode"] = "narrative_no_retrieval"
             rag_debug["rag_mode_effective"] = "narrative_no_retrieval"
             rag_debug["detected_language"] = preferred_lang
+            rag_debug["detected_intent"] = "narrative_retrieval"
+            rag_debug["selected_route"] = "narrative_no_retrieval"
+            rag_debug["fallback_type"] = "retrieval_empty"
+            rag_debug["fallback_reason"] = "no_relevant_chunks"
 
     except Exception as exc:
         logger.exception("RAG retrieval failed with strict contract: %s", exc)
@@ -427,6 +431,10 @@ async def run_narrative_retrieval_path(
             "artifacts_count": 0,
             "analytical_mode_used": False,
             "detected_language": preferred_lang,
+            "detected_intent": "narrative_retrieval",
+            "selected_route": "narrative_error",
+            "fallback_type": "retrieval_runtime_error",
+            "fallback_reason": "retrieval_runtime_error",
             "rag_mode": rag_mode or "auto",
             "rag_mode_effective": "narrative_error",
             "file_ids": rag_file_ids,

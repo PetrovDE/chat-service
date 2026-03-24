@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.crud import crud_message
 from app.schemas import ChatMessage, ChatResponse
+from app.services.chat.language import localized_text
 from app.services.llm.manager import llm_manager
 
 logger = logging.getLogger(__name__)
@@ -313,10 +314,25 @@ async def stream_chat_events(
 
     except Exception as exc:
         logger.error("Streaming error: %s", exc, exc_info=True)
+        preferred_lang = str(ctx.get("preferred_lang") or "ru")
+        controlled_message = localized_text(
+            preferred_lang=preferred_lang,
+            ru=(
+                "Ошибка внутреннего runtime при формировании ответа по текущему контексту файлов. "
+                "Повторите запрос."
+            ),
+            en=(
+                "Internal runtime error while building an answer from the current file context. "
+                "Please retry the request."
+            ),
+        )
         error_payload = {
             "type": "error",
-            "message": str(exc),
+            "message": controlled_message,
             "error_type": type(exc).__name__,
+            "fallback_type": "orchestrator_runtime_error",
+            "fallback_reason": "runtime_exception",
+            "response_language": preferred_lang,
             **route_telemetry,
             **execution_telemetry,
         }
@@ -433,62 +449,138 @@ async def run_nonstream_chat(
             default_executor_status="success",
         )
 
-    generation_kwargs = orchestrator._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
-    result = await llm_manager.generate_response(**generation_kwargs)
-    orchestrator._log_route_event(
-        route_telemetry=result,
-        execution_telemetry=execution_telemetry,
-        conversation_id=conversation_id,
-        stream=False,
-    )
+    try:
+        generation_kwargs = orchestrator._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
+        result = await llm_manager.generate_response(**generation_kwargs)
+        orchestrator._log_route_event(
+            route_telemetry=result,
+            execution_telemetry=execution_telemetry,
+            conversation_id=conversation_id,
+            stream=False,
+        )
 
-    postprocess = await orchestrator._postprocess_generated_answer(
-        chat_data=chat_data,
-        ctx=ctx,
-        raw_answer=result.get("response", ""),
-        include_stream_events=False,
-    )
-    result["response"] = postprocess["answer_text"]
-    summary_text = postprocess["summary_text"]
-    if postprocess["critic_meta"] is not None:
-        logger.info("RAG critic(non-stream, summarize=%s): %s", chat_data.summarize, postprocess["critic_meta"])
+        postprocess = await orchestrator._postprocess_generated_answer(
+            chat_data=chat_data,
+            ctx=ctx,
+            raw_answer=result.get("response", ""),
+            include_stream_events=False,
+        )
+        result["response"] = postprocess["answer_text"]
+        summary_text = postprocess["summary_text"]
+        if postprocess["critic_meta"] is not None:
+            logger.info("RAG critic(non-stream, summarize=%s): %s", chat_data.summarize, postprocess["critic_meta"])
 
-    generation_time = (datetime.utcnow() - start_time).total_seconds()
+        generation_time = (datetime.utcnow() - start_time).total_seconds()
 
-    assistant_message = await crud_message.create_message(
-        db=db,
-        conversation_id=conversation_id,
-        role="assistant",
-        content=result["response"],
-        model_name=result["model"],
-        temperature=chat_data.temperature,
-        max_tokens=chat_data.max_tokens,
-        tokens_used=result.get("tokens_used"),
-        generation_time=generation_time,
-    )
+        assistant_message = await crud_message.create_message(
+            db=db,
+            conversation_id=conversation_id,
+            role="assistant",
+            content=result["response"],
+            model_name=result["model"],
+            temperature=chat_data.temperature,
+            max_tokens=chat_data.max_tokens,
+            tokens_used=result.get("tokens_used"),
+            generation_time=generation_time,
+        )
 
-    rag_debug_payload = _build_rag_debug_payload_if_enabled(
-        orchestrator=orchestrator,
-        chat_data=chat_data,
-        ctx=ctx,
-        llm_tokens_used=result.get("tokens_used"),
-        provider_debug=result.get("provider_debug"),
-    )
+        rag_debug_payload = _build_rag_debug_payload_if_enabled(
+            orchestrator=orchestrator,
+            chat_data=chat_data,
+            ctx=ctx,
+            llm_tokens_used=result.get("tokens_used"),
+            provider_debug=result.get("provider_debug"),
+        )
 
-    return _build_chat_response(
-        response_text=result["response"],
-        conversation_id=conversation_id,
-        message_id=assistant_message.id,
-        model_used=result["model"],
-        route_telemetry=result,
-        execution_telemetry=execution_telemetry,
-        generation_time=generation_time,
-        rag_caveats=ctx["rag_caveats"],
-        rag_sources=ctx["rag_sources"],
-        artifacts_payload=artifacts_payload,
-        rag_debug_payload=rag_debug_payload,
-        tokens_used=result.get("tokens_used"),
-        summary=summary_text,
-        default_execution_route="narrative",
-        default_executor_status="not_attempted",
-    )
+        return _build_chat_response(
+            response_text=result["response"],
+            conversation_id=conversation_id,
+            message_id=assistant_message.id,
+            model_used=result["model"],
+            route_telemetry=result,
+            execution_telemetry=execution_telemetry,
+            generation_time=generation_time,
+            rag_caveats=ctx["rag_caveats"],
+            rag_sources=ctx["rag_sources"],
+            artifacts_payload=artifacts_payload,
+            rag_debug_payload=rag_debug_payload,
+            tokens_used=result.get("tokens_used"),
+            summary=summary_text,
+            default_execution_route="narrative",
+            default_executor_status="not_attempted",
+        )
+    except Exception as exc:
+        logger.error("Non-stream generation error: %s", exc, exc_info=True)
+        preferred_lang = str(ctx.get("preferred_lang") or "ru")
+        response_text = localized_text(
+            preferred_lang=preferred_lang,
+            ru=(
+                "Ошибка внутреннего runtime при формировании ответа по текущему контексту файлов. "
+                "Повторите запрос."
+            ),
+            en=(
+                "Internal runtime error while building an answer from the current file context. "
+                "Please retry the request."
+            ),
+        )
+        rag_debug_ctx = ctx.get("rag_debug")
+        if isinstance(rag_debug_ctx, dict):
+            rag_debug_ctx["fallback_type"] = "orchestrator_runtime_error"
+            rag_debug_ctx["fallback_reason"] = "runtime_exception"
+            rag_debug_ctx["response_language"] = preferred_lang
+            rag_debug_ctx["requires_clarification"] = True
+            rag_debug_ctx["clarification_prompt"] = response_text
+            rag_debug_ctx["selected_route"] = str(
+                rag_debug_ctx.get("selected_route")
+                or rag_debug_ctx.get("retrieval_mode")
+                or rag_debug_ctx.get("execution_route")
+                or "narrative"
+            )
+
+        generation_time = (datetime.utcnow() - start_time).total_seconds()
+        assistant_message = await crud_message.create_message(
+            db=db,
+            conversation_id=conversation_id,
+            role="assistant",
+            content=response_text,
+            model_name=ctx["provider_model_effective"] or "orchestrator_fallback",
+            temperature=chat_data.temperature,
+            max_tokens=chat_data.max_tokens,
+            generation_time=generation_time,
+        )
+        route_telemetry = orchestrator._default_route_telemetry(
+            route_mode=ctx["provider_mode"],
+            provider_selected=ctx["provider_source_selected_raw"],
+            provider_effective=ctx["provider_source_effective"],
+            aihub_attempted=False,
+        )
+        rag_debug_payload = _build_rag_debug_payload_if_enabled(
+            orchestrator=orchestrator,
+            chat_data=chat_data,
+            ctx=ctx,
+            llm_tokens_used=None,
+            provider_debug={"runtime_error": type(exc).__name__},
+        )
+        orchestrator._log_route_event(
+            route_telemetry=route_telemetry,
+            execution_telemetry=execution_telemetry,
+            conversation_id=conversation_id,
+            stream=False,
+        )
+        return _build_chat_response(
+            response_text=response_text,
+            conversation_id=conversation_id,
+            message_id=assistant_message.id,
+            model_used=ctx["provider_model_effective"] or "orchestrator_fallback",
+            route_telemetry=route_telemetry,
+            execution_telemetry=execution_telemetry,
+            generation_time=generation_time,
+            rag_caveats=ctx["rag_caveats"],
+            rag_sources=ctx["rag_sources"],
+            artifacts_payload=artifacts_payload,
+            rag_debug_payload=rag_debug_payload,
+            tokens_used=None,
+            summary=None,
+            default_execution_route="narrative",
+            default_executor_status="error",
+        )

@@ -7,6 +7,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.observability.metrics import inc_counter
 from app.crud import crud_file
 from app.domain.chat.query_planner import (
     INTENT_TABULAR_COMBINED,
@@ -16,6 +17,7 @@ from app.domain.chat.query_planner import (
 )
 from app.rag.retriever import rag_retriever
 from app.services.chat.complex_analytics import execute_complex_analytics_path
+from app.services.chat.controlled_debug import annotate_controlled_debug
 from app.services.chat.full_file_analysis import build_full_file_map_reduce_prompt
 from app.services.chat.language import (
     apply_language_policy_to_prompt,
@@ -247,6 +249,50 @@ def _build_ambiguous_message(
     return "\n".join([header, *lines]).strip()
 
 
+def _build_no_context_message(*, preferred_lang: str) -> str:
+    return localized_text(
+        preferred_lang=preferred_lang,
+        ru=(
+            "В этом чате нет готовых файлов для ответа по данным. "
+            "Прикрепите файл к чату или укажите файл по имени, и я продолжу."
+        ),
+        en=(
+            "There are no ready files in this chat for file-based answering. "
+            "Attach a file to this chat or reference a filename, and I will continue."
+        ),
+    )
+
+
+def _infer_fallback_meta(
+    *,
+    rag_debug: Optional[Dict[str, Any]],
+    resolution_meta: Dict[str, Any],
+) -> Tuple[str, str]:
+    payload = rag_debug if isinstance(rag_debug, dict) else {}
+    file_resolution_status = str(resolution_meta.get("file_resolution_status") or "")
+    selected_route = str(payload.get("selected_route") or "")
+    retrieval_mode = str(payload.get("retrieval_mode") or "")
+    requires_clarification = bool(payload.get("requires_clarification", False))
+
+    if file_resolution_status == "not_found":
+        return "unresolved_file_not_found", "file_name_not_found"
+    if file_resolution_status == "ambiguous":
+        return "ambiguous_file", "multiple_file_matches"
+    if file_resolution_status == "no_context_files":
+        return "no_context", "no_ready_files_in_chat"
+    if selected_route == "unsupported_missing_column" or retrieval_mode == "tabular_sql" and str(
+        payload.get("fallback_reason") or ""
+    ) == "missing_required_columns":
+        return "unsupported_missing_column", "missing_required_columns"
+    if retrieval_mode == "narrative_no_retrieval":
+        return "retrieval_empty", "no_relevant_chunks"
+    if retrieval_mode == "narrative_error":
+        return "retrieval_runtime_error", str(payload.get("executor_error_code") or "retrieval_runtime_error")
+    if requires_clarification:
+        return "clarification", str(payload.get("fallback_reason") or "clarification_required")
+    return "none", str(payload.get("fallback_reason") or "none")
+
+
 def _build_file_resolution_clarification_result(
     *,
     prompt: str,
@@ -416,9 +462,13 @@ async def _resolve_file_references(
 
 
 def _inject_file_resolution_debug(
+    *,
     rag_debug: Optional[Dict[str, Any]],
     resolution_meta: Dict[str, Any],
     preferred_lang: str,
+    query: str,
+    user_id: Optional[uuid.UUID],
+    conversation_id: uuid.UUID,
 ) -> Optional[Dict[str, Any]]:
     if rag_debug is None and not resolution_meta:
         return None
@@ -428,6 +478,25 @@ def _inject_file_resolution_debug(
     payload["resolved_file_names"] = list(resolution_meta.get("resolved_file_names") or [])
     payload["resolved_file_ids"] = list(resolution_meta.get("resolved_file_ids") or [])
     payload["file_resolution_status"] = str(resolution_meta.get("file_resolution_status") or "not_requested")
+    fallback_type, fallback_reason = _infer_fallback_meta(rag_debug=payload, resolution_meta=resolution_meta)
+    payload = annotate_controlled_debug(
+        rag_debug=payload,
+        query=query,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        detected_language=preferred_lang,
+        file_resolution_status=payload["file_resolution_status"],
+        resolved_file_ids=payload.get("resolved_file_ids") or payload.get("file_ids") or [],
+        fallback_type=fallback_type,
+        fallback_reason=fallback_reason,
+        selected_route=str(
+            payload.get("selected_route")
+            or payload.get("retrieval_mode")
+            or payload.get("execution_route")
+            or "unknown"
+        ),
+        detected_intent=str(payload.get("detected_intent") or payload.get("intent") or "unknown"),
+    )
     return payload
 
 
@@ -458,6 +527,56 @@ def _log_planner_decision_payload(payload: Dict[str, Any]) -> None:
         float(payload.get("confidence", 0.0) or 0.0),
         bool(payload.get("requires_clarification", False)),
         payload.get("reason_codes") or [],
+    )
+
+
+def _log_fallback_cache_event(
+    *,
+    user_id: Optional[uuid.UUID],
+    conversation_id: uuid.UUID,
+    rag_debug: Optional[Dict[str, Any]],
+) -> None:
+    payload = rag_debug if isinstance(rag_debug, dict) else {}
+    fallback_type = str(payload.get("fallback_type") or "none")
+    fallback_reason = str(payload.get("fallback_reason") or "none")
+    cache_hit = bool(payload.get("cache_hit", False))
+    cache_version = str(payload.get("cache_key_version") or "unknown")
+    selected_route = str(payload.get("selected_route") or "unknown")
+    detected_intent = str(payload.get("detected_intent") or payload.get("intent") or "unknown")
+    response_language = str(payload.get("response_language") or payload.get("detected_language") or "")
+    try:
+        inc_counter(
+            "rag_controlled_fallback_total",
+            fallback_type=fallback_type,
+            fallback_reason=fallback_reason,
+            selected_route=selected_route,
+            detected_intent=detected_intent,
+            response_language=response_language or "unknown",
+        )
+        inc_counter(
+            "rag_response_cache_observation_total",
+            cache_hit=str(cache_hit).lower(),
+            cache_key_version=cache_version,
+        )
+    except Exception:
+        logger.debug("Fallback/cache counter emission failed", exc_info=True)
+    logger.info(
+        (
+            "rag_fallback_cache uid=%s chat_id=%s fallback_type=%s fallback_reason=%s "
+            "cache_hit=%s cache_miss=%s cache_key_version=%s response_language=%s "
+            "selected_route=%s detected_intent=%s resolved_file_ids=%s"
+        ),
+        str(user_id) if user_id is not None else "anonymous",
+        str(conversation_id),
+        fallback_type,
+        fallback_reason,
+        str(cache_hit).lower(),
+        str(bool(payload.get("cache_miss", True))).lower(),
+        cache_version,
+        response_language,
+        selected_route,
+        detected_intent,
+        ",".join([str(item) for item in (payload.get("resolved_file_ids") or [])]),
     )
 
 
@@ -590,11 +709,57 @@ async def build_rag_prompt(
     _log_file_resolution_event(user_id=user_id, conversation_id=conversation_id, resolution_meta=resolution_meta)
     if file_resolution_result is not None:
         prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = file_resolution_result
-        rag_debug = _inject_file_resolution_debug(rag_debug, resolution_meta, preferred_lang)
+        rag_debug = _inject_file_resolution_debug(
+            rag_debug=rag_debug,
+            resolution_meta=resolution_meta,
+            preferred_lang=preferred_lang,
+            query=query,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        _log_fallback_cache_event(user_id=user_id, conversation_id=conversation_id, rag_debug=rag_debug)
         return prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
 
     if not files:
-        return empty_result
+        no_context_prompt = _build_no_context_message(preferred_lang=preferred_lang)
+        no_context_debug: Dict[str, Any] = {
+            "intent": "no_context",
+            "detected_intent": "no_context",
+            "retrieval_mode": "no_context_files",
+            "execution_route": "clarification",
+            "requires_clarification": True,
+            "clarification_prompt": no_context_prompt,
+            "executor_attempted": False,
+            "executor_status": "not_attempted",
+            "executor_error_code": None,
+            "artifacts_count": 0,
+            "analytical_mode_used": False,
+            "rag_mode": rag_mode or "auto",
+            "rag_mode_effective": "no_context_files",
+            "file_ids": [],
+            "selected_route": "no_context",
+            "retrieval_policy": {
+                "mode": "clarification",
+                "query_profile": "no_context",
+                "requested_top_k": top_k,
+                "effective_top_k": 0,
+                "expected_chunks_total": 0,
+                "escalation": {"attempted": False, "applied": False, "reason": "no_ready_files_in_chat"},
+                "row_escalation": {"attempted": False, "applied": False, "reason": "no_ready_files_in_chat"},
+            },
+        }
+        resolution_meta = dict(resolution_meta or {})
+        resolution_meta["file_resolution_status"] = "no_context_files"
+        no_context_debug = _inject_file_resolution_debug(
+            rag_debug=no_context_debug,
+            resolution_meta=resolution_meta,
+            preferred_lang=preferred_lang,
+            query=query,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        _log_fallback_cache_event(user_id=user_id, conversation_id=conversation_id, rag_debug=no_context_debug)
+        return no_context_prompt, False, no_context_debug, [], [], []
 
     planner_decision = query_planner(query=query, files=files)
     planner_decision_payload = dict(planner_decision.as_dict())
@@ -621,7 +786,15 @@ async def build_rag_prompt(
     )
     if special_route_result is not None:
         prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = special_route_result
-        rag_debug = _inject_file_resolution_debug(rag_debug, resolution_meta, preferred_lang)
+        rag_debug = _inject_file_resolution_debug(
+            rag_debug=rag_debug,
+            resolution_meta=resolution_meta,
+            preferred_lang=preferred_lang,
+            query=query,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        _log_fallback_cache_event(user_id=user_id, conversation_id=conversation_id, rag_debug=rag_debug)
         return prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
 
     prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = await run_narrative_retrieval_path(
@@ -641,5 +814,13 @@ async def build_rag_prompt(
         rag_caveats_builder=rag_caveats_builder,
         initial_final_prompt=final_prompt,
     )
-    rag_debug = _inject_file_resolution_debug(rag_debug, resolution_meta, preferred_lang)
+    rag_debug = _inject_file_resolution_debug(
+        rag_debug=rag_debug,
+        resolution_meta=resolution_meta,
+        preferred_lang=preferred_lang,
+        query=query,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+    _log_fallback_cache_event(user_id=user_id, conversation_id=conversation_id, rag_debug=rag_debug)
     return prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources

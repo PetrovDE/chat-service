@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.core.config import settings
 from app.observability.metrics import inc_counter, observe_ms
-from app.services.chat.language import detect_preferred_response_language
+from app.services.chat.language import detect_preferred_response_language, localized_text
 from app.services.chat.tabular_intent_router import (
     TabularIntentDecision,
     classify_tabular_query,
@@ -418,13 +418,14 @@ def _execute_profile_sync(
 
 def _build_tabular_error_result(
     *,
+    query: str,
     intent_kind: str,
     dataset: ResolvedTabularDataset,
     table: ResolvedTabularTable,
     target_file: Any,
     error_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
-    return build_tabular_error_result_pipeline(
+    payload = build_tabular_error_result_pipeline(
         intent_kind=intent_kind,
         dataset=dataset,
         table=table,
@@ -433,6 +434,33 @@ def _build_tabular_error_result(
         sql_error_execution_failed=SQL_ERROR_EXECUTION_FAILED,
         sql_error_timeout=SQL_ERROR_TIMEOUT,
     )
+    preferred_lang = detect_preferred_response_language(query)
+    error_code = str(error_payload.get("code") or SQL_ERROR_EXECUTION_FAILED)
+    if error_code == SQL_ERROR_TIMEOUT:
+        payload["clarification_prompt"] = localized_text(
+            preferred_lang=preferred_lang,
+            ru=(
+                "Детерминированный SQL-запрос превысил лимит времени. "
+                "Сузьте фильтр или уменьшите scope анализа и повторите."
+            ),
+            en=(
+                "Deterministic SQL execution timed out. "
+                "Please narrow filters or reduce analysis scope and retry."
+            ),
+        )
+    else:
+        payload["clarification_prompt"] = localized_text(
+            preferred_lang=preferred_lang,
+            ru=(
+                "Детерминированный SQL-запрос был остановлен политикой или ошибкой выполнения. "
+                "Уточните метрику/фильтр и повторите запрос."
+            ),
+            en=(
+                "Deterministic SQL execution was blocked by safety policy or execution error. "
+                "Please clarify metric/filter and retry."
+            ),
+        )
+    return payload
 
 
 def _route_debug_payload(
@@ -440,13 +468,18 @@ def _route_debug_payload(
     decision: TabularIntentDecision,
     detected_language: str,
 ) -> Dict[str, Any]:
+    selected_route = str(decision.selected_route or "")
+    fallback_reason = str(decision.fallback_reason or "none")
+    fallback_type = "unsupported_missing_column" if selected_route == "unsupported_missing_column" else "none"
     return {
         "detected_intent": decision.detected_intent,
-        "selected_route": decision.selected_route,
+        "selected_route": selected_route,
         "matched_columns": list(decision.matched_columns),
         "unmatched_requested_fields": list(decision.unmatched_requested_fields),
-        "fallback_reason": str(decision.fallback_reason or "none"),
+        "fallback_type": fallback_type,
+        "fallback_reason": fallback_reason,
         "detected_language": detected_language,
+        "response_language": detected_language,
     }
 
 
@@ -900,6 +933,7 @@ async def execute_tabular_sql_path(
             details={"timeout_seconds": timeout_seconds},
         )
         payload = _build_tabular_error_result(
+            query=query,
             intent_kind=intent_kind,
             dataset=dataset,
             table=table,
@@ -930,6 +964,7 @@ async def execute_tabular_sql_path(
             exc_info=True,
         )
         payload = _build_tabular_error_result(
+            query=query,
             intent_kind=intent_kind,
             dataset=dataset,
             table=table,

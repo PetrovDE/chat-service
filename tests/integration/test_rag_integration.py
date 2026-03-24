@@ -4,6 +4,11 @@ import re
 import uuid
 from types import SimpleNamespace
 
+from app.domain.chat.query_planner import (
+    INTENT_TABULAR_AGGREGATE,
+    ROUTE_DETERMINISTIC_ANALYTICS,
+    QueryPlanDecision,
+)
 from app.observability.metrics import reset_metrics, snapshot_metrics
 from app.services.chat import rag_prompt_builder as rag_builder
 from app.services.chat import full_file_analysis
@@ -592,6 +597,16 @@ def test_tabular_sql_error_returns_clarification_without_narrative_fallback(monk
     async def fail_query_rag(*args, **kwargs):  # noqa: ARG001
         raise AssertionError("query_rag should not be used when deterministic SQL path returns classified error")
 
+    def force_deterministic_planner(*, query, files):  # noqa: ARG001
+        return QueryPlanDecision(
+            route=ROUTE_DETERMINISTIC_ANALYTICS,
+            intent=INTENT_TABULAR_AGGREGATE,
+            strategy_mode="analytical",
+            confidence=0.95,
+            requires_clarification=False,
+            reason_codes=["test_force_deterministic"],
+        )
+
     monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
     monkeypatch.setattr(rag_builder, "execute_tabular_sql_path", fake_tabular_sql_path)
     monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fail_query_rag)
@@ -605,6 +620,7 @@ def test_tabular_sql_error_returns_clarification_without_narrative_fallback(monk
             top_k=8,
             model_source="local",
             rag_mode="auto",
+            query_planner=force_deterministic_planner,
         )
     )
 
@@ -612,7 +628,7 @@ def test_tabular_sql_error_returns_clarification_without_narrative_fallback(monk
     assert context_docs == []
     assert rag_caveats == []
     assert rag_sources == []
-    assert "timed out" in final_prompt
+    assert "не удалось выполнить детерминированный sql-запрос" in final_prompt.lower()
     assert rag_debug["requires_clarification"] is True
     assert rag_debug["deterministic_error"]["code"] == "sql_timeout"
     assert rag_debug["rag_mode_effective"] == "tabular_sql_error"
@@ -657,6 +673,16 @@ def test_tabular_sql_invalid_payload_returns_clarification_without_narrative_fal
     async def fail_query_rag(*args, **kwargs):  # noqa: ARG001
         raise AssertionError("query_rag should not be used when deterministic SQL payload is invalid")
 
+    def force_deterministic_planner(*, query, files):  # noqa: ARG001
+        return QueryPlanDecision(
+            route=ROUTE_DETERMINISTIC_ANALYTICS,
+            intent=INTENT_TABULAR_AGGREGATE,
+            strategy_mode="analytical",
+            confidence=0.95,
+            requires_clarification=False,
+            reason_codes=["test_force_deterministic"],
+        )
+
     monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
     monkeypatch.setattr(rag_builder, "execute_tabular_sql_path", invalid_tabular_sql_path)
     monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fail_query_rag)
@@ -670,6 +696,7 @@ def test_tabular_sql_invalid_payload_returns_clarification_without_narrative_fal
             top_k=8,
             model_source="local",
             rag_mode="auto",
+            query_planner=force_deterministic_planner,
         )
     )
 
@@ -677,7 +704,7 @@ def test_tabular_sql_invalid_payload_returns_clarification_without_narrative_fal
     assert context_docs == []
     assert rag_caveats == []
     assert rag_sources == []
-    assert "invalid payload" in final_prompt.lower()
+    assert "невалидный payload" in final_prompt.lower()
     assert rag_debug["requires_clarification"] is True
     assert rag_debug["executor_error_code"] == "invalid_executor_payload"
     assert rag_debug["rag_mode_effective"] == "tabular_sql_invalid_payload"
@@ -788,7 +815,7 @@ def test_narrative_retrieval_runtime_error_surfaces_explicit_debug(monkeypatch):
     assert context_docs == []
     assert rag_caveats == []
     assert rag_sources == []
-    assert "retrieval failed" in final_prompt.lower()
+    assert "ошибка внутреннего контура retrieval" in final_prompt.lower()
     assert rag_debug["retrieval_mode"] == "narrative_error"
     assert rag_debug["executor_error_code"] == "retrieval_runtime_error"
     assert rag_debug["requires_clarification"] is True
@@ -908,7 +935,10 @@ def test_build_rag_prompt_skips_files_without_active_ready_processing(monkeypatc
 
     assert isinstance(final_prompt, str) and final_prompt
     assert rag_used is False
-    assert rag_debug is None
+    assert isinstance(rag_debug, dict)
+    assert rag_debug["retrieval_mode"] == "no_context_files"
+    assert rag_debug["requires_clarification"] is True
+    assert rag_debug["fallback_type"] == "no_context"
     assert context_docs == []
     assert rag_caveats == []
     assert rag_sources == []

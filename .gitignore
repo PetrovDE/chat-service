@@ -63,9 +63,3 @@ docker-compose.db.yml
 
 # Docs workspace (track selected architecture docs)
 /docs/*
-!/docs/00_project_map.md
-!/docs/01_service_spec.md
-!/docs/02_api_contracts.md
-!/docs/09_observability.md
-!/docs/13_persistent_user_files_architecture.md
-!/docs/20_alembic_clean_slate.md

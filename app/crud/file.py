@@ -163,6 +163,29 @@ class CRUDFile(CRUDBase[File, dict, dict]):
         result = await db.execute(query)
         return list(result.scalars().all())
 
+    async def get_user_ready_files_for_resolution(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: UUID,
+        limit: int = 300,
+    ) -> List[File]:
+        query = (
+            select(File)
+            .where(
+                and_(
+                    File.user_id == user_id,
+                    File.status == "ready",
+                    File.deleted_at.is_(None),
+                )
+            )
+            .options(selectinload(File.processing_profiles))
+            .order_by(File.created_at.desc())
+            .limit(max(1, int(limit or 1)))
+        )
+        result = await db.execute(query)
+        return list(result.scalars().all())
+
     async def get_conversation_files(
         self,
         db: AsyncSession,

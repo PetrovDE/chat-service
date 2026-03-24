@@ -213,7 +213,14 @@ async def postprocess_generated_answer(
             model_name=ctx["provider_model_effective"],
         )
         if summarized_answer and summarized_answer != answer_text:
-            summary_text = summarized_answer
+            summary_text, _ = await _enforce_answer_language(
+                answer=summarized_answer,
+                preferred_lang=ctx["preferred_lang"],
+                model_source=ctx["provider_source_selected_raw"],
+                provider_mode=ctx["provider_mode"],
+                model_name=ctx["provider_model_effective"],
+                prompt_max_chars=chat_data.prompt_max_chars,
+            )
             if include_stream_events:
                 stream_events.append(
                     {"type": "summary", "content": summary_text, "critic": critic_meta}

@@ -7,7 +7,11 @@ import uuid
 from app.domain.chat.query_planner import QueryPlanDecision
 from app.observability.slo_metrics import observe_retrieval_coverage, observe_tabular_row_coverage
 from app.services.chat.complex_analytics import execute_complex_analytics_path
-from app.services.chat.language import apply_language_policy_to_prompt
+from app.services.chat.language import (
+    apply_language_policy_to_prompt,
+    ensure_controlled_message_language,
+    localized_text,
+)
 from app.services.chat.tabular_sql import execute_tabular_sql_path
 
 
@@ -22,6 +26,7 @@ def build_clarification_route_result(
     files: List[Any],
     rag_mode: Optional[str],
     top_k: int,
+    preferred_lang: str,
 ) -> RagPromptResult:
     rag_debug = {
         "planner_decision": planner_decision_payload,
@@ -49,9 +54,17 @@ def build_clarification_route_result(
             "row_escalation": {"attempted": False, "applied": False, "reason": "clarification_required"},
         },
     }
-    final_prompt = planner_decision.clarification_prompt or (
-        "Please clarify the metric and scope before I run deterministic analytics."
+    final_prompt = ensure_controlled_message_language(
+        text=str(planner_decision.clarification_prompt or "").strip(),
+        preferred_lang=preferred_lang,
+        fallback_ru=(
+            "Уточните, пожалуйста, метрику и срез перед запуском детерминированной аналитики."
+        ),
+        fallback_en=(
+            "Please clarify the metric and scope before I run deterministic analytics."
+        ),
     )
+    rag_debug["clarification_prompt"] = final_prompt
     return final_prompt, False, rag_debug, [], [], []
 
 
@@ -63,6 +76,7 @@ async def maybe_run_complex_analytics_route(
     expected_chunks_total: int,
     rag_mode: Optional[str],
     top_k: int,
+    preferred_lang: str,
     model_source: Optional[str],
     provider_mode: Optional[str],
     model_name: Optional[str],
@@ -114,12 +128,18 @@ async def maybe_run_complex_analytics_route(
         rag_debug["rag_mode_effective"] = "complex_analytics_error"
         rag_debug["requires_clarification"] = True
         rag_debug["short_circuit_response"] = True
-        clarification_prompt = str(complex_result.get("clarification_prompt") or "").strip()
-        if not clarification_prompt:
-            clarification_prompt = (
+        clarification_prompt = ensure_controlled_message_language(
+            text=str(complex_result.get("clarification_prompt") or "").strip(),
+            preferred_lang=preferred_lang,
+            fallback_ru=(
+                "Не удалось выполнить сложный аналитический сценарий в sandbox. "
+                "Уточните метрику, фильтры или упростите шаги анализа."
+            ),
+            fallback_en=(
                 "Complex analytics sandbox execution failed. "
                 "Please clarify metric, filters, or simplify analysis steps."
-            )
+            ),
+        )
         rag_debug["clarification_prompt"] = clarification_prompt
         rag_debug["short_circuit_response_text"] = clarification_prompt
         observe_retrieval_coverage(
@@ -161,9 +181,16 @@ async def maybe_run_complex_analytics_route(
             "row_escalation": {"attempted": False, "applied": False, "reason": "executor_unavailable"},
         },
     }
-    final_prompt = (
-        "Complex analytics sandbox is currently unavailable. "
-        "Please retry with narrower scope or ask for deterministic SQL aggregate/profile."
+    final_prompt = localized_text(
+        preferred_lang=preferred_lang,
+        ru=(
+            "Sandbox сложной аналитики сейчас недоступен. "
+            "Повторите запрос с более узким scope или используйте детерминированный SQL (aggregate/profile)."
+        ),
+        en=(
+            "Complex analytics sandbox is currently unavailable. "
+            "Please retry with narrower scope or ask for deterministic SQL aggregate/profile."
+        ),
     )
     rag_debug["clarification_prompt"] = final_prompt
     rag_debug["short_circuit_response"] = True
@@ -309,12 +336,18 @@ async def maybe_run_deterministic_route(
             rag_debug["strategy_mode"] = "combined" if is_combined_intent else "analytical"
             if combined_debug:
                 rag_debug["combined_scope"] = combined_debug
-            clarification_prompt = str(tabular_sql_result.get("clarification_prompt") or "").strip()
-            if not clarification_prompt:
-                clarification_prompt = (
+            clarification_prompt = ensure_controlled_message_language(
+                text=str(tabular_sql_result.get("clarification_prompt") or "").strip(),
+                preferred_lang=preferred_lang,
+                fallback_ru=(
+                    "Не удалось выполнить детерминированный SQL-запрос. "
+                    "Уточните метрику, фильтр или период и повторите запрос."
+                ),
+                fallback_en=(
                     "Deterministic SQL execution failed. "
                     "Please clarify metric, filter, or period and retry."
-                )
+                ),
+            )
             rag_debug["clarification_prompt"] = clarification_prompt
             observe_retrieval_coverage(
                 coverage_ratio=0.0,
@@ -456,9 +489,16 @@ async def maybe_run_deterministic_route(
         return final_prompt, True, rag_debug, combined_context_docs, [], rag_sources
 
     retrieval_mode = "tabular_combined" if is_combined_intent else "tabular_sql"
-    clarification_prompt = (
-        "Deterministic analytics engine returned invalid payload. "
-        "Please retry; if this persists, narrow the question scope."
+    clarification_prompt = localized_text(
+        preferred_lang=preferred_lang,
+        ru=(
+            "Детерминированный аналитический модуль вернул невалидный payload. "
+            "Повторите запрос; если проблема сохранится, сузьте формулировку."
+        ),
+        en=(
+            "Deterministic analytics engine returned invalid payload. "
+            "Please retry; if this persists, narrow the question scope."
+        ),
     )
     rag_debug = {
         "planner_decision": planner_decision_payload,

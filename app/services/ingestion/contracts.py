@@ -11,6 +11,7 @@ class IngestionJobPayload:
     file_path: str
     embedding_mode: str
     embedding_model: str
+    request_id: Optional[str] = None
     processing_id: Optional[str] = None
     pipeline_version: Optional[str] = None
     parser_version: Optional[str] = None

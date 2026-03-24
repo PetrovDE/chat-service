@@ -74,6 +74,7 @@ class CRUDFile(CRUDBase[File, dict, dict]):
         visibility: str = "private",
         source_kind: str = "upload",
         content_preview: Optional[str] = None,
+        custom_metadata: Optional[Dict[str, Any]] = None,
     ) -> File:
         db_obj = File(
             user_id=user_id,
@@ -92,7 +93,7 @@ class CRUDFile(CRUDBase[File, dict, dict]):
             updated_at=_utcnow(),
             content_preview=content_preview,
             chunks_count=0,
-            custom_metadata={},
+            custom_metadata=(dict(custom_metadata) if isinstance(custom_metadata, dict) else {}),
         )
         db.add(db_obj)
         await db.commit()

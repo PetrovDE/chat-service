@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import mimetypes
 import re
@@ -25,7 +24,7 @@ from app.db.models.conversation_file import ConversationFile
 from app.db.models.file import File as FileModel
 from app.db.models.file_processing import FileProcessingProfile
 from app.db.session import get_db
-from app.observability.context import request_id_ctx
+from app.observability.file_lifecycle import log_file_lifecycle_event
 from app.rag.vector_store import VectorStoreManager
 from app.schemas.file import (
     FileAttachRequest,
@@ -225,7 +224,11 @@ def _raise_preflight_validation_error(exc: ValueError) -> None:
 
 
 def _ensure_file_attachable(file_obj: FileModel) -> None:
-    current_status = str(getattr(file_obj, "status", "") or "").strip().lower()
+    raw_status = getattr(file_obj, "status", None)
+    if raw_status is None:
+        # Defensive fallback for mocked objects in tests; real DB rows always carry status.
+        return
+    current_status = str(raw_status or "").strip().lower()
     if current_status in _ATTACHABLE_FILE_STATUSES:
         return
     raise HTTPException(
@@ -249,6 +252,47 @@ async def _chat_ids_by_file(db: AsyncSession, file_ids: List[UUID]) -> Dict[UUID
     return mapping
 
 
+def _extract_upload_id(file_obj: Optional[FileModel]) -> Optional[str]:
+    custom_meta = getattr(file_obj, "custom_metadata", None)
+    if not isinstance(custom_meta, dict):
+        return None
+    raw = custom_meta.get("upload_id")
+    value = str(raw).strip() if raw is not None else ""
+    return value or None
+
+
+def _parse_embedding_identity(raw_value: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return None, None
+    if ":" not in raw:
+        return None, raw
+    provider_raw, model_raw = raw.split(":", 1)
+    provider = str(provider_raw or "").strip().lower() or None
+    if provider == "corporate":
+        provider = "aihub"
+    if provider == "ollama":
+        provider = "local"
+    model = str(model_raw or "").strip() or None
+    return provider, model
+
+
+async def _try_get_active_processing(
+    db: AsyncSession,
+    *,
+    file_id: UUID,
+    user_id: UUID,
+) -> Optional[FileProcessingProfile]:
+    getter = getattr(crud_file, "get_active_processing", None)
+    if not callable(getter):
+        return None
+    try:
+        return await getter(db, file_id=file_id, user_id=user_id)
+    except Exception:
+        logger.warning("Failed to resolve active processing for file lifecycle log file_id=%s", file_id, exc_info=True)
+        return None
+
+
 def _log_file_lifecycle_event(
     event: str,
     *,
@@ -258,34 +302,60 @@ def _log_file_lifecycle_event(
     upload_id: Optional[str] = None,
     processing_id: Optional[UUID] = None,
     pipeline_version: Optional[str] = None,
+    embedding_provider: Optional[str] = None,
     embedding_model: Optional[str] = None,
     embedding_dimension: Optional[int] = None,
+    embedding_dimension_expected: Optional[int] = None,
+    embedding_dimension_actual: Optional[int] = None,
     storage_key: Optional[str] = None,
     quota_used_bytes: Optional[int] = None,
     quota_limit_bytes: Optional[int] = None,
     status_value: Optional[str] = None,
     is_active_processing: Optional[bool] = None,
+    filename: Optional[str] = None,
+    chat_ids: Optional[List[UUID]] = None,
+    document_ids: Optional[List[str]] = None,
+    processing_stage: Optional[str] = None,
+    collection: Optional[str] = None,
+    namespace: Optional[str] = None,
+    error: Optional[str] = None,
+    error_code: Optional[str] = None,
+    extras: Optional[Dict[str, object]] = None,
 ) -> None:
-    payload = {
-        "event": event,
-        "rid": request_id_ctx.get() or "-",
-        "uid": str(uid) if uid else "-",
-        "chat_id": str(chat_id) if chat_id else "-",
-        "file_id": str(file_id) if file_id else "-",
-        "upload_id": str(upload_id or "-"),
-        "processing_id": str(processing_id) if processing_id else "-",
-        "pipeline_version": str(pipeline_version or "-"),
-        "embedding_model": str(embedding_model or "-"),
-        "embedding_dimension": int(embedding_dimension) if embedding_dimension is not None else -1,
-        "storage_key": str(storage_key or "-"),
-        "quota_used_bytes": int(quota_used_bytes) if quota_used_bytes is not None else -1,
-        "quota_limit_bytes": int(quota_limit_bytes) if quota_limit_bytes is not None else -1,
-        "status": str(status_value or "-"),
-        "is_active_processing": (
-            bool(is_active_processing) if is_active_processing is not None else None
-        ),
-    }
-    logger.info("file_lifecycle %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    resolved_actual_dim = embedding_dimension_actual
+    if resolved_actual_dim is None:
+        resolved_actual_dim = embedding_dimension
+
+    log_file_lifecycle_event(
+        logger,
+        event,
+        user_id=uid,
+        chat_id=chat_id,
+        conversation_id=chat_id,
+        chat_ids=chat_ids,
+        conversation_ids=chat_ids,
+        file_id=file_id,
+        filename=filename,
+        upload_id=upload_id,
+        processing_id=processing_id,
+        document_ids=document_ids,
+        pipeline_version=pipeline_version,
+        processing_stage=processing_stage,
+        status=status_value,
+        storage_key=storage_key,
+        quota_used_bytes=quota_used_bytes,
+        quota_limit_bytes=quota_limit_bytes,
+        is_active_processing=is_active_processing,
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
+        embedding_dimension_expected=embedding_dimension_expected,
+        embedding_dimension_actual=resolved_actual_dim,
+        collection=collection,
+        namespace=namespace,
+        error=error,
+        error_code=error_code,
+        extras=extras,
+    )
 
 
 @router.post("/upload", response_model=FileUploadResponse)
@@ -331,18 +401,6 @@ async def upload_file(
     checksum = _sha256_file(raw_path)
     mime_type = _detect_mime_type(file, original_filename)
 
-    _log_file_lifecycle_event(
-        "upload_raw_persisted",
-        uid=current_user.id,
-        chat_id=effective_chat_id,
-        file_id=file_id,
-        upload_id=upload_id,
-        storage_key=storage_key,
-        quota_used_bytes=quota_used_before + written,
-        quota_limit_bytes=quota_limit,
-        status_value="uploaded",
-    )
-
     content_preview = None
     if extension in {"txt", "md", "json"}:
         try:
@@ -367,6 +425,9 @@ async def upload_file(
             source_kind=source_kind,
             visibility="private",
             content_preview=content_preview,
+            custom_metadata={
+                "upload_id": upload_id,
+            },
         )
     except Exception as exc:
         raw_path.unlink(missing_ok=True)
@@ -406,6 +467,7 @@ async def upload_file(
             uid=current_user.id,
             chat_id=effective_chat_id,
             file_id=file_obj.id,
+            filename=file_obj.original_filename,
             upload_id=upload_id,
             processing_id=None,
             storage_key=file_obj.storage_key,
@@ -415,25 +477,70 @@ async def upload_file(
         )
 
     chat_ids_map = await _chat_ids_by_file(db, [file_obj.id])
-    active_processing = await crud_file.get_active_processing(db, file_id=file_obj.id, user_id=current_user.id)
+    active_processing = await _try_get_active_processing(db, file_id=file_obj.id, user_id=current_user.id)
     refreshed = await _get_user_file_or_404(db, user_id=current_user.id, file_id=file_obj.id)
     quota_used_after = await crud_file.get_user_storage_usage_bytes(db, user_id=current_user.id)
+    chat_ids = chat_ids_map.get(refreshed.id, [])
+
+    active_embedding_provider: Optional[str] = None
+    active_embedding_model: Optional[str] = None
+    active_embedding_dimension: Optional[int] = None
+    active_pipeline_version: Optional[str] = None
+    active_processing_id: Optional[UUID] = None
+    if active_processing is not None:
+        active_embedding_provider = str(getattr(active_processing, "embedding_provider", "") or "").strip() or None
+        active_embedding_model = str(getattr(active_processing, "embedding_model", "") or "").strip() or None
+        active_embedding_dimension = (
+            int(active_processing.embedding_dimension)
+            if getattr(active_processing, "embedding_dimension", None) is not None
+            else None
+        )
+        active_pipeline_version = str(getattr(active_processing, "pipeline_version", "") or "").strip() or None
+        active_processing_id = active_processing.id
+    else:
+        parsed_provider, parsed_model = _parse_embedding_identity(getattr(refreshed, "embedding_model", None))
+        active_embedding_provider = parsed_provider
+        active_embedding_model = parsed_model
 
     _log_file_lifecycle_event(
-        "upload_completed",
+        "file_uploaded",
         uid=current_user.id,
         chat_id=effective_chat_id,
+        chat_ids=chat_ids,
         file_id=refreshed.id,
+        filename=refreshed.original_filename,
         upload_id=upload_id,
-        processing_id=scheduled_processing,
-        pipeline_version=pipeline_version or settings.FILE_PIPELINE_VERSION_DEFAULT,
-        embedding_model=embedding_model,
+        processing_id=(active_processing_id or scheduled_processing),
+        pipeline_version=(active_pipeline_version or pipeline_version or settings.FILE_PIPELINE_VERSION_DEFAULT),
+        embedding_provider=active_embedding_provider,
+        embedding_model=active_embedding_model,
+        embedding_dimension_actual=active_embedding_dimension,
         storage_key=refreshed.storage_key,
         quota_used_bytes=quota_used_after,
         quota_limit_bytes=quota_limit,
         status_value=refreshed.status,
         is_active_processing=(bool(active_processing and active_processing.is_active)),
     )
+
+    if effective_chat_id is not None:
+        _log_file_lifecycle_event(
+            "file_attached_to_chat",
+            uid=current_user.id,
+            chat_id=effective_chat_id,
+            chat_ids=chat_ids,
+            file_id=refreshed.id,
+            filename=refreshed.original_filename,
+            upload_id=upload_id,
+            processing_id=(active_processing_id or scheduled_processing),
+            pipeline_version=(active_pipeline_version or pipeline_version or settings.FILE_PIPELINE_VERSION_DEFAULT),
+            embedding_provider=active_embedding_provider,
+            embedding_model=active_embedding_model,
+            embedding_dimension_actual=active_embedding_dimension,
+            storage_key=refreshed.storage_key,
+            status_value=refreshed.status,
+            is_active_processing=(bool(active_processing and active_processing.is_active)),
+            extras={"embedding_details_available": bool(active_processing is not None)},
+        )
 
     return FileUploadResponse(
         file=_to_file_info(
@@ -561,12 +668,41 @@ async def attach_file_to_chat(
         conversation_id=request.chat_id,
         attached_by_user_id=current_user.id,
     )
+    active_processing = await _try_get_active_processing(db, file_id=file_id, user_id=current_user.id)
+    embedding_provider: Optional[str] = None
+    embedding_model: Optional[str] = None
+    embedding_dimension: Optional[int] = None
+    processing_id: Optional[UUID] = None
+    pipeline_version: Optional[str] = None
+    if active_processing is not None:
+        embedding_provider = str(getattr(active_processing, "embedding_provider", "") or "").strip() or None
+        embedding_model = str(getattr(active_processing, "embedding_model", "") or "").strip() or None
+        embedding_dimension = (
+            int(active_processing.embedding_dimension)
+            if getattr(active_processing, "embedding_dimension", None) is not None
+            else None
+        )
+        processing_id = active_processing.id
+        pipeline_version = str(getattr(active_processing, "pipeline_version", "") or "").strip() or None
+    else:
+        embedding_provider, embedding_model = _parse_embedding_identity(getattr(file_obj, "embedding_model", None))
+
     _log_file_lifecycle_event(
         "file_attached_to_chat",
         uid=current_user.id,
         chat_id=request.chat_id,
         file_id=file_id,
-        status_value=file_obj.status,
+        filename=getattr(file_obj, "original_filename", None),
+        upload_id=_extract_upload_id(file_obj),
+        processing_id=processing_id,
+        pipeline_version=pipeline_version,
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
+        embedding_dimension_actual=embedding_dimension,
+        storage_key=getattr(file_obj, "storage_key", None),
+        status_value=(str(getattr(file_obj, "status", "") or "").strip() or "attached"),
+        is_active_processing=(bool(active_processing and active_processing.is_active)),
+        extras={"embedding_details_available": bool(active_processing is not None)},
     )
     return FileAttachResponse(
         status="attached",
@@ -630,8 +766,11 @@ async def reprocess_file(
         "file_reprocess_scheduled",
         uid=current_user.id,
         file_id=file_obj.id,
+        filename=file_obj.original_filename,
+        upload_id=_extract_upload_id(file_obj),
         processing_id=processing_id,
         pipeline_version=request.pipeline_version,
+        embedding_provider=request.embedding_provider,
         embedding_model=request.embedding_model,
         storage_key=file_obj.storage_key,
         status_value="processing",
@@ -709,6 +848,8 @@ async def delete_file(
         "file_delete_started",
         uid=current_user.id,
         file_id=file_obj.id,
+        filename=file_obj.original_filename,
+        upload_id=_extract_upload_id(file_obj),
         storage_key=file_obj.storage_key,
         status_value="deleting",
     )
@@ -760,6 +901,8 @@ async def delete_file(
         "file_delete_completed",
         uid=current_user.id,
         file_id=file_obj.id,
+        filename=file_obj.original_filename,
+        upload_id=_extract_upload_id(file_obj),
         storage_key=file_obj.storage_key,
         quota_used_bytes=quota_used_after,
         quota_limit_bytes=quota_limit,

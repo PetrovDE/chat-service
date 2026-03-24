@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import hashlib
-import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,6 +31,7 @@ from app.rag.text_splitter import SmartTextSplitter
 from app.rag.vector_store import VectorStoreManager
 from app.observability.context import file_id_ctx
 from app.observability.context import request_id_ctx
+from app.observability.file_lifecycle import log_file_lifecycle_event
 from app.observability.metrics import inc_counter, observe_ms
 from app.observability.slo_metrics import observe_ingestion_enqueue, set_ingestion_queue_snapshot
 from app.services.file_pipeline import finalize_ingestion_pipeline, process_file_pipeline
@@ -56,36 +56,94 @@ _ingestion_worker: Optional[DurableIngestionWorker] = None
 _ingestion_worker_lock = asyncio.Lock()
 
 
-def _log_file_lifecycle(
+async def _load_file_lifecycle_context(db: Any, *, file_id: UUID) -> Dict[str, Any]:
+    file_obj = await crud_file.get(db, id=file_id)
+    if file_obj is None:
+        return {
+            "file_id": str(file_id),
+            "user_id": None,
+            "chat_ids": [],
+            "chat_id": None,
+            "filename": None,
+            "upload_id": None,
+            "storage_key": None,
+        }
+
+    chats_query = select(ConversationFile.chat_id).where(ConversationFile.file_id == file_id)
+    chats_result = await db.execute(chats_query)
+    chat_ids = [str(chat_id) for chat_id in chats_result.scalars().all()]
+
+    raw_custom_meta = getattr(file_obj, "custom_metadata", None)
+    custom_meta = raw_custom_meta if isinstance(raw_custom_meta, dict) else {}
+    upload_id_raw = custom_meta.get("upload_id")
+    upload_id = str(upload_id_raw).strip() if upload_id_raw is not None else ""
+    storage_key_raw = getattr(file_obj, "storage_key", None)
+    storage_key = str(storage_key_raw).strip() if storage_key_raw is not None else ""
+    filename_raw = getattr(file_obj, "original_filename", None)
+    filename = str(filename_raw).strip() if filename_raw is not None else ""
+    return {
+        "file_id": str(file_id),
+        "user_id": str(file_obj.user_id),
+        "chat_ids": chat_ids,
+        "chat_id": chat_ids[0] if chat_ids else None,
+        "filename": filename or None,
+        "upload_id": upload_id or None,
+        "storage_key": storage_key or None,
+    }
+
+
+def _emit_file_lifecycle(
     event: str,
     *,
+    context: Optional[Dict[str, Any]],
     file_id: UUID,
     processing_id: Optional[UUID],
     pipeline_version: Optional[str],
-    embedding_model: Optional[str],
     status_value: Optional[str],
-    is_active_processing: Optional[bool],
+    embedding_provider: Optional[str] = None,
+    embedding_model: Optional[str] = None,
+    embedding_dimension_expected: Optional[int] = None,
+    embedding_dimension_actual: Optional[int] = None,
+    embedding_dimension_source: Optional[str] = None,
+    collection: Optional[str] = None,
+    namespace: Optional[str] = None,
+    processing_stage: Optional[str] = None,
+    document_ids: Optional[List[str]] = None,
+    is_active_processing: Optional[bool] = None,
+    error: Optional[str] = None,
+    error_code: Optional[str] = None,
+    extras: Optional[Dict[str, Any]] = None,
 ) -> None:
-    payload = {
-        "event": event,
-        "rid": request_id_ctx.get() or "-",
-        "uid": "-",
-        "chat_id": "-",
-        "file_id": str(file_id),
-        "upload_id": "-",
-        "processing_id": str(processing_id) if processing_id else "-",
-        "pipeline_version": str(pipeline_version or "-"),
-        "embedding_model": str(embedding_model or "-"),
-        "embedding_dimension": -1,
-        "storage_key": "-",
-        "quota_used_bytes": -1,
-        "quota_limit_bytes": -1,
-        "status": str(status_value or "-"),
-        "is_active_processing": (
-            bool(is_active_processing) if is_active_processing is not None else None
-        ),
-    }
-    logger.info("file_lifecycle %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    resolved = context or {}
+    log_file_lifecycle_event(
+        logger,
+        event,
+        user_id=resolved.get("user_id"),
+        chat_id=resolved.get("chat_id"),
+        conversation_id=resolved.get("chat_id"),
+        chat_ids=resolved.get("chat_ids"),
+        conversation_ids=resolved.get("chat_ids"),
+        file_id=file_id,
+        filename=resolved.get("filename"),
+        upload_id=resolved.get("upload_id"),
+        processing_id=processing_id,
+        document_ids=document_ids,
+        pipeline_version=pipeline_version,
+        processing_stage=processing_stage,
+        status=status_value,
+        storage_key=resolved.get("storage_key"),
+        is_active_processing=is_active_processing,
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
+        embedding_dimension_expected=embedding_dimension_expected,
+        embedding_dimension_actual=embedding_dimension_actual,
+        embedding_dimension_source=embedding_dimension_source,
+        collection=collection,
+        namespace=namespace,
+        error=error,
+        error_code=error_code,
+        extras=extras,
+    )
 
 
 def _batch(items: List[Any], size: int) -> List[List[Any]]:
@@ -147,6 +205,15 @@ async def _finalize_ingestion(
     error_message: Optional[str],
     extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
+    lifecycle_context = await _load_file_lifecycle_context(db, file_id=file_id)
+    metadata = extra_metadata if isinstance(extra_metadata, dict) else {}
+    actual_dimension: Optional[int] = None
+    if metadata.get("embedding_dimension") is not None:
+        try:
+            actual_dimension = int(metadata.get("embedding_dimension"))
+        except Exception:
+            actual_dimension = None
+
     final_status = await finalize_ingestion_pipeline(
         db=db,
         file_id=file_id,
@@ -163,14 +230,33 @@ async def _finalize_ingestion(
         inc_counter_fn=inc_counter,
         logger_obj=logger,
     )
-    _log_file_lifecycle(
-        "processing_finalized",
+    finalized_event = (
+        "file_ready"
+        if final_status in {"ready", "completed", "partial_success", "partial_failed"}
+        else "processing_failed"
+    )
+    _emit_file_lifecycle(
+        finalized_event,
+        context=lifecycle_context,
         file_id=file_id,
         processing_id=processing_id,
-        pipeline_version=str(progress.get("pipeline_version") or "-"),
-        embedding_model=f"{embedding_mode}:{embedding_model}",
+        pipeline_version=str(progress.get("pipeline_version") or ""),
         status_value=final_status,
+        embedding_provider=embedding_mode,
+        embedding_model=embedding_model,
+        embedding_dimension_actual=actual_dimension,
+        collection=(str(metadata.get("collection")) if metadata.get("collection") is not None else None),
+        namespace=(str(metadata.get("namespace")) if metadata.get("namespace") is not None else None),
+        processing_stage=str(progress.get("stage") or ""),
         is_active_processing=(final_status in {"ready", "completed", "partial_success", "partial_failed"}),
+        error=error_message,
+        error_code=(str(progress.get("failure_code") or "") or None),
+        extras={
+            "chunks_expected": int(progress.get("total_chunks_expected", 0) or 0),
+            "chunks_processed": int(progress.get("chunks_processed", 0) or 0),
+            "chunks_indexed": int(progress.get("chunks_indexed", 0) or 0),
+            "chunks_failed": int(progress.get("chunks_failed", 0) or 0),
+        },
     )
     return final_status
 
@@ -351,18 +437,26 @@ async def _process_payload_for_worker(payload: IngestionJobPayload) -> Tuple[boo
         except Exception:
             logger.error("Invalid ingestion payload processing_id=%s", payload.processing_id)
             return False, False
-    return await _process_file(
-        file_id=file_id,
-        processing_id=processing_uuid,
-        file_path=Path(payload.file_path),
-        embedding_mode=payload.embedding_mode,
-        embedding_model=payload.embedding_model,
-        pipeline_version=payload.pipeline_version,
-        parser_version=payload.parser_version,
-        artifact_version=payload.artifact_version,
-        chunking_strategy=payload.chunking_strategy,
-        retrieval_profile=payload.retrieval_profile,
-    )
+    rid_token = None
+    request_id_value = str(payload.request_id or "").strip() if payload.request_id is not None else ""
+    if request_id_value:
+        rid_token = request_id_ctx.set(request_id_value)
+    try:
+        return await _process_file(
+            file_id=file_id,
+            processing_id=processing_uuid,
+            file_path=Path(payload.file_path),
+            embedding_mode=payload.embedding_mode,
+            embedding_model=payload.embedding_model,
+            pipeline_version=payload.pipeline_version,
+            parser_version=payload.parser_version,
+            artifact_version=payload.artifact_version,
+            chunking_strategy=payload.chunking_strategy,
+            retrieval_profile=payload.retrieval_profile,
+        )
+    finally:
+        if rid_token is not None:
+            request_id_ctx.reset(rid_token)
 
 
 async def _ensure_worker_started() -> DurableIngestionWorker:
@@ -429,8 +523,11 @@ async def process_file_async(
     resolved_artifact_version = str(artifact_version or settings.FILE_ARTIFACT_VERSION_DEFAULT)
     resolved_chunking_strategy = str(chunking_strategy or settings.FILE_CHUNKING_STRATEGY_DEFAULT)
     resolved_retrieval_profile = str(retrieval_profile or settings.FILE_RETRIEVAL_PROFILE_DEFAULT)
+    expected_dim_decision = llm_manager.provider_registry.resolve_embedding_dimension_decision(provider_source, resolved)
+    expected_dimension = int(expected_dim_decision.dimension) if int(expected_dim_decision.dimension or 0) > 0 else None
 
     target_processing_id = processing_id
+    lifecycle_context: Dict[str, Any] = {}
     async with AsyncSessionLocal() as db:
         try:
             if target_processing_id is None:
@@ -482,24 +579,16 @@ async def process_file_async(
                     "retrieval_profile": resolved_retrieval_profile,
                 },
             )
+            lifecycle_context = await _load_file_lifecycle_context(db, file_id=file_id)
         except Exception:
             logger.warning("Failed to pre-mark file queued: file_id=%s", file_id, exc_info=True)
-    if target_processing_id is not None:
-        _log_file_lifecycle(
-            "processing_profile_queued",
-            file_id=file_id,
-            processing_id=target_processing_id,
-            pipeline_version=resolved_pipeline_version,
-            embedding_model=f"{mode}:{resolved}",
-            status_value="queued",
-            is_active_processing=False,
-        )
     worker = await _ensure_worker_started()
     job_payload = IngestionJobPayload(
         file_id=str(file_id),
         file_path=str(file_path),
         embedding_mode=mode,
         embedding_model=resolved,
+        request_id=(request_id_ctx.get() or None),
         processing_id=(str(target_processing_id) if target_processing_id is not None else None),
         pipeline_version=resolved_pipeline_version,
         parser_version=resolved_parser_version,
@@ -547,14 +636,26 @@ async def process_file_async(
     )
     if target_processing_id is None:
         raise RuntimeError("Failed to create or resolve processing profile id")
-    _log_file_lifecycle(
-        "processing_job_enqueued",
+    _emit_file_lifecycle(
+        "processing_created",
+        context=lifecycle_context,
         file_id=file_id,
         processing_id=target_processing_id,
         pipeline_version=resolved_pipeline_version,
-        embedding_model=f"{mode}:{resolved}",
-        status_value=result.status,
+        status_value="queued",
+        embedding_provider=mode,
+        embedding_model=resolved,
+        embedding_dimension_expected=expected_dimension,
+        embedding_dimension_source=f"{expected_dim_decision.source}:{expected_dim_decision.reason}",
+        processing_stage="queued",
         is_active_processing=False,
+        extras={
+            "job_id": result.job_id,
+            "queue_status": result.status,
+            "deduplicated": bool(result.deduplicated),
+            "resolution_source": resolution_source,
+            "resolution_reason": resolution_reason,
+        },
     )
     return target_processing_id
 
@@ -698,13 +799,27 @@ async def recover_pending_file_jobs(limit: int = 200) -> int:
                 chunking_strategy=(active_processing.chunking_strategy if active_processing is not None else None),
                 retrieval_profile=(active_processing.retrieval_profile if active_processing is not None else None),
             )
-            _log_file_lifecycle(
+            _emit_file_lifecycle(
                 "processing_recovered_after_restart",
+                context={
+                    "user_id": str(file_obj.user_id),
+                    "chat_id": None,
+                    "chat_ids": [],
+                    "filename": str(file_obj.original_filename),
+                    "upload_id": (
+                        str(file_obj.custom_metadata.get("upload_id"))
+                        if isinstance(file_obj.custom_metadata, dict) and file_obj.custom_metadata.get("upload_id") is not None
+                        else None
+                    ),
+                    "storage_key": str(file_obj.storage_key),
+                },
                 file_id=file_obj.id,
                 processing_id=processing_id,
                 pipeline_version=(active_processing.pipeline_version if active_processing is not None else None),
-                embedding_model=(f"{mode}:{model}" if model else mode),
                 status_value="queued",
+                embedding_provider=mode,
+                embedding_model=model,
+                processing_stage="queued",
                 is_active_processing=bool(active_processing and active_processing.is_active),
             )
             recovered += 1

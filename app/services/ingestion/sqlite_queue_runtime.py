@@ -31,6 +31,7 @@ def init_db_sync(*, connect_fn) -> None:
                 file_path TEXT NOT NULL,
                 embedding_mode TEXT NOT NULL,
                 embedding_model TEXT NOT NULL,
+                request_id TEXT,
                 processing_id TEXT,
                 pipeline_version TEXT,
                 parser_version TEXT,
@@ -67,6 +68,8 @@ def init_db_sync(*, connect_fn) -> None:
         columns = {str(r["name"]) for r in conn.execute("PRAGMA table_info(ingestion_jobs)").fetchall()}
         if "processing_id" not in columns:
             conn.execute("ALTER TABLE ingestion_jobs ADD COLUMN processing_id TEXT")
+        if "request_id" not in columns:
+            conn.execute("ALTER TABLE ingestion_jobs ADD COLUMN request_id TEXT")
         if "pipeline_version" not in columns:
             conn.execute("ALTER TABLE ingestion_jobs ADD COLUMN pipeline_version TEXT")
         if "parser_version" not in columns:
@@ -175,6 +178,7 @@ def enqueue_sync(
                 file_path,
                 embedding_mode,
                 embedding_model,
+                request_id,
                 processing_id,
                 pipeline_version,
                 parser_version,
@@ -193,7 +197,7 @@ def enqueue_sync(
                 created_at,
                 updated_at,
                 completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, NULL, NULL, 0, 1, ?, ?, NULL)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, NULL, NULL, 0, 1, ?, ?, NULL)
             """,
             (
                 job_id,
@@ -202,6 +206,7 @@ def enqueue_sync(
                 payload.file_path,
                 payload.embedding_mode,
                 payload.embedding_model,
+                payload.request_id,
                 payload.processing_id,
                 payload.pipeline_version,
                 payload.parser_version,
@@ -281,6 +286,7 @@ def acquire_sync(
                 file_path,
                 embedding_mode,
                 embedding_model,
+                request_id,
                 processing_id,
                 pipeline_version,
                 parser_version,
@@ -305,6 +311,7 @@ def acquire_sync(
             file_path=str(acquired["file_path"]),
             embedding_mode=str(acquired["embedding_mode"]),
             embedding_model=str(acquired["embedding_model"]),
+            request_id=(str(acquired["request_id"]) if acquired["request_id"] is not None else None),
             processing_id=(str(acquired["processing_id"]) if acquired["processing_id"] is not None else None),
             pipeline_version=(str(acquired["pipeline_version"]) if acquired["pipeline_version"] is not None else None),
             parser_version=(str(acquired["parser_version"]) if acquired["parser_version"] is not None else None),

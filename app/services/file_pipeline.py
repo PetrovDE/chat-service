@@ -8,6 +8,22 @@ from uuid import UUID
 
 from langchain_core.documents import Document
 
+from app.observability.file_lifecycle import log_file_lifecycle_event
+from app.services.llm.manager import llm_manager
+
+
+def _provider_source_for_embedding_mode(mode: str) -> str:
+    normalized = str(mode or "local").strip().lower()
+    if normalized == "corporate":
+        normalized = "aihub"
+    if normalized == "ollama":
+        normalized = "local"
+    if normalized == "openai":
+        return "openai"
+    if normalized == "aihub":
+        return "aihub"
+    return "ollama"
+
 
 def classify_ingestion_exception(exc: Exception) -> Dict[str, Any]:
     if getattr(exc, "retryable", None) is not None:
@@ -254,6 +270,13 @@ async def process_file_pipeline(
     extra_metadata: Dict[str, Any] = {}
     failure_retryable = False
     observed_embedding_dimension: Optional[int] = None
+    observed_collection: Optional[str] = None
+    lifecycle_user_id: Optional[str] = None
+    lifecycle_filename: Optional[str] = None
+    lifecycle_upload_id: Optional[str] = None
+    lifecycle_storage_key: Optional[str] = None
+    lifecycle_chat_ids: List[str] = []
+    document_ids_sample: List[str] = []
 
     async with async_session_factory() as db:
         try:
@@ -288,7 +311,45 @@ async def process_file_pipeline(
             q = select_fn(conversation_file_model.chat_id).where(conversation_file_model.file_id == file_id)
             r = await db.execute(q)
             chat_ids = r.scalars().all()
-            chat_id = str(chat_ids[0]) if chat_ids else None
+            lifecycle_chat_ids = [str(chat_id_value) for chat_id_value in chat_ids]
+            chat_id = lifecycle_chat_ids[0] if lifecycle_chat_ids else None
+
+            file_record = await crud_file_module.get(db, id=file_id)
+            if not file_record:
+                raise ValueError(f"File record not found: {file_id}")
+            lifecycle_user_id = str(getattr(file_record, "user_id", "") or "")
+            lifecycle_filename = str(getattr(file_record, "original_filename", "") or "")
+            lifecycle_storage_key = str(getattr(file_record, "storage_key", "") or "")
+            raw_file_custom_meta = getattr(file_record, "custom_metadata", None)
+            file_custom_meta = raw_file_custom_meta if isinstance(raw_file_custom_meta, dict) else {}
+            upload_id_raw = file_custom_meta.get("upload_id")
+            lifecycle_upload_id = str(upload_id_raw).strip() if upload_id_raw is not None else None
+            if lifecycle_upload_id == "":
+                lifecycle_upload_id = None
+
+            log_file_lifecycle_event(
+                logger_obj,
+                "extraction_started",
+                user_id=lifecycle_user_id,
+                chat_id=chat_id,
+                conversation_id=chat_id,
+                chat_ids=lifecycle_chat_ids,
+                conversation_ids=lifecycle_chat_ids,
+                file_id=file_id,
+                filename=lifecycle_filename,
+                upload_id=lifecycle_upload_id,
+                processing_id=processing_id,
+                pipeline_version=(str(pipeline_version or "") or None),
+                parser_version=(str(parser_version or "") or None),
+                artifact_version=(str(artifact_version or "") or None),
+                chunking_strategy=(str(chunking_strategy or "") or None),
+                retrieval_profile=(str(retrieval_profile or "") or None),
+                processing_stage="parsing",
+                status="parsing",
+                storage_key=lifecycle_storage_key,
+                embedding_provider=embedding_mode,
+                embedding_model=embedding_model,
+            )
 
             stage_t0 = asyncio.get_running_loop().time()
             docs = await document_loader_obj.load_file(str(file_path))
@@ -315,10 +376,34 @@ async def process_file_pipeline(
                 raise ValueError("Extracted text is empty/too small (possible scanned PDF).")
             progress["parsing_ok"] = True
             await _checkpoint(status="parsed", stage="parsed")
-
-            file_record = await crud_file_module.get(db, id=file_id)
-            if not file_record:
-                raise ValueError(f"File record not found: {file_id}")
+            log_file_lifecycle_event(
+                logger_obj,
+                "extraction_completed",
+                user_id=lifecycle_user_id,
+                chat_id=chat_id,
+                conversation_id=chat_id,
+                chat_ids=lifecycle_chat_ids,
+                conversation_ids=lifecycle_chat_ids,
+                file_id=file_id,
+                filename=lifecycle_filename,
+                upload_id=lifecycle_upload_id,
+                processing_id=processing_id,
+                pipeline_version=(str(pipeline_version or "") or None),
+                parser_version=(str(parser_version or "") or None),
+                artifact_version=(str(artifact_version or "") or None),
+                chunking_strategy=(str(chunking_strategy or "") or None),
+                retrieval_profile=(str(retrieval_profile or "") or None),
+                processing_stage="parsed",
+                status="parsed",
+                storage_key=lifecycle_storage_key,
+                embedding_provider=embedding_mode,
+                embedding_model=embedding_model,
+                extras={
+                    "documents_loaded": len(docs),
+                    "extracted_text_chars": total_chars,
+                    "chunk_types_count": dict(chunk_type_counter),
+                },
+            )
             active_processing = None
             try:
                 active_processing = await crud_file_module.get_active_processing(
@@ -417,15 +502,109 @@ async def process_file_pipeline(
                 settings_obj.CHUNK_OVERLAP,
                 file_id,
             )
+            log_file_lifecycle_event(
+                logger_obj,
+                "chunking_completed",
+                user_id=lifecycle_user_id,
+                chat_id=chat_id,
+                conversation_id=chat_id,
+                chat_ids=lifecycle_chat_ids,
+                conversation_ids=lifecycle_chat_ids,
+                file_id=file_id,
+                filename=lifecycle_filename,
+                upload_id=lifecycle_upload_id,
+                processing_id=processing_id,
+                pipeline_version=(str(pipeline_version or "") or None),
+                parser_version=(str(parser_version or "") or None),
+                artifact_version=(str(artifact_version or "") or None),
+                chunking_strategy=(str(chunking_strategy or "") or None),
+                retrieval_profile=(str(retrieval_profile or "") or None),
+                processing_stage="chunking",
+                status="chunked",
+                storage_key=lifecycle_storage_key,
+                embedding_provider=embedding_mode,
+                embedding_model=embedding_model,
+                extras={
+                    "chunks_expected": len(chunks),
+                    "chunk_size": int(settings_obj.CHUNK_SIZE),
+                    "chunk_overlap": int(settings_obj.CHUNK_OVERLAP),
+                },
+            )
             observe_ms_fn("ingestion_stage_ms", (asyncio.get_running_loop().time() - stage_t0) * 1000.0, stage="chunk")
 
             await _checkpoint(status="embedding", stage="embedding")
             emb = embeddings_manager_cls(mode=embedding_mode, model=embedding_model)
             logger_obj.info("Embedding mode=%s resolved_model=%s", embedding_mode, embedding_model)
+            provider_source = _provider_source_for_embedding_mode(embedding_mode)
+            dim_decision = llm_manager.provider_registry.resolve_embedding_dimension_decision(
+                provider_source,
+                embedding_model,
+            )
+            expected_embedding_dimension = (
+                int(dim_decision.dimension) if int(dim_decision.dimension or 0) > 0 else None
+            )
+            expected_dim_source = f"{dim_decision.source}:{dim_decision.reason}"
+            namespace = str(getattr(settings_obj, "COLLECTION_NAME", "documents") or "documents")
+            expected_collection = None
+            if expected_embedding_dimension is not None:
+                try:
+                    expected_collection = vector_store_obj.resolve_collection_name(
+                        embedding=[0.0] * expected_embedding_dimension,
+                        metadata={
+                            "embedding_mode": embedding_mode,
+                            "embedding_model": embedding_model,
+                        },
+                    )
+                except Exception:
+                    expected_collection = None
+
+            log_file_lifecycle_event(
+                logger_obj,
+                "embedding_started",
+                user_id=lifecycle_user_id,
+                chat_id=chat_id,
+                conversation_id=chat_id,
+                chat_ids=lifecycle_chat_ids,
+                conversation_ids=lifecycle_chat_ids,
+                file_id=file_id,
+                filename=lifecycle_filename,
+                upload_id=lifecycle_upload_id,
+                processing_id=processing_id,
+                pipeline_version=(str(pipeline_version or "") or None),
+                parser_version=(str(parser_version or "") or None),
+                artifact_version=(str(artifact_version or "") or None),
+                chunking_strategy=(str(chunking_strategy or "") or None),
+                retrieval_profile=(str(retrieval_profile or "") or None),
+                processing_stage="embedding",
+                status="embedding",
+                storage_key=lifecycle_storage_key,
+                embedding_provider=embedding_mode,
+                embedding_model=embedding_model,
+                embedding_dimension_expected=expected_embedding_dimension,
+                embedding_dimension_source=expected_dim_source,
+                collection=expected_collection,
+                namespace=namespace,
+                extras={"provider_source": provider_source},
+            )
+            logger_obj.info(
+                (
+                    "Embedding target selected: file_id=%s processing_id=%s provider=%s mode=%s model=%s "
+                    "expected_dim=%s expected_dim_source=%s collection=%s namespace=%s"
+                ),
+                file_id,
+                processing_id,
+                provider_source,
+                embedding_mode,
+                embedding_model,
+                expected_embedding_dimension,
+                expected_dim_source,
+                expected_collection,
+                namespace,
+            )
 
             existing_progress = (
-                file_record.custom_metadata.get("ingestion_progress")
-                if isinstance(getattr(file_record, "custom_metadata", None), dict)
+                raw_file_custom_meta.get("ingestion_progress")
+                if isinstance(raw_file_custom_meta, dict)
                 else None
             )
             resume_batch_index = 1
@@ -495,6 +674,8 @@ async def process_file_pipeline(
                         if k not in meta:
                             meta[k] = v
                 doc_id = f"{file_id}_{idx}"
+                if len(document_ids_sample) < 20:
+                    document_ids_sample.append(doc_id)
                 items.append((text, meta, doc_id))
 
             if not items:
@@ -560,6 +741,7 @@ async def process_file_pipeline(
                             embedding=vec,
                             metadata=meta,
                         )
+                        observed_collection = str(meta["collection"])
                         if not target_collection_logged:
                             logger_obj.info(
                                 "Vector target: file_id=%s provider=%s model=%s dimension=%d collection=%s",
@@ -603,6 +785,74 @@ async def process_file_pipeline(
             progress["indexing_ok"] = bool(
                 int(progress.get("vector_upserts_actual", 0) or 0) == int(progress.get("chunks_indexed", 0) or 0)
             )
+            log_file_lifecycle_event(
+                logger_obj,
+                "embedding_completed",
+                user_id=lifecycle_user_id,
+                chat_id=chat_id,
+                conversation_id=chat_id,
+                chat_ids=lifecycle_chat_ids,
+                conversation_ids=lifecycle_chat_ids,
+                file_id=file_id,
+                filename=lifecycle_filename,
+                upload_id=lifecycle_upload_id,
+                processing_id=processing_id,
+                pipeline_version=(str(pipeline_version or "") or None),
+                parser_version=(str(parser_version or "") or None),
+                artifact_version=(str(artifact_version or "") or None),
+                chunking_strategy=(str(chunking_strategy or "") or None),
+                retrieval_profile=(str(retrieval_profile or "") or None),
+                processing_stage="embedding",
+                status="embedded",
+                storage_key=lifecycle_storage_key,
+                embedding_provider=embedding_mode,
+                embedding_model=embedding_model,
+                embedding_dimension_expected=expected_embedding_dimension,
+                embedding_dimension_actual=observed_embedding_dimension,
+                embedding_dimension_source=expected_dim_source,
+                collection=observed_collection,
+                namespace=namespace,
+                document_ids=document_ids_sample,
+                extras={
+                    "embedding_batches_total": int(progress.get("embedding_batches_total", 0) or 0),
+                    "embedding_batches_failed": int(progress.get("embedding_batches_failed", 0) or 0),
+                },
+            )
+            log_file_lifecycle_event(
+                logger_obj,
+                "indexing_completed",
+                user_id=lifecycle_user_id,
+                chat_id=chat_id,
+                conversation_id=chat_id,
+                chat_ids=lifecycle_chat_ids,
+                conversation_ids=lifecycle_chat_ids,
+                file_id=file_id,
+                filename=lifecycle_filename,
+                upload_id=lifecycle_upload_id,
+                processing_id=processing_id,
+                pipeline_version=(str(pipeline_version or "") or None),
+                parser_version=(str(parser_version or "") or None),
+                artifact_version=(str(artifact_version or "") or None),
+                chunking_strategy=(str(chunking_strategy or "") or None),
+                retrieval_profile=(str(retrieval_profile or "") or None),
+                processing_stage="indexing",
+                status="indexed",
+                storage_key=lifecycle_storage_key,
+                embedding_provider=embedding_mode,
+                embedding_model=embedding_model,
+                embedding_dimension_expected=expected_embedding_dimension,
+                embedding_dimension_actual=observed_embedding_dimension,
+                embedding_dimension_source=expected_dim_source,
+                collection=observed_collection,
+                namespace=namespace,
+                document_ids=document_ids_sample,
+                extras={
+                    "vector_upserts_expected": int(progress.get("vector_upserts_expected", 0) or 0),
+                    "vector_upserts_actual": int(progress.get("vector_upserts_actual", 0) or 0),
+                    "chunks_indexed": int(progress.get("chunks_indexed", 0) or 0),
+                    "chunks_failed": int(progress.get("chunks_failed", 0) or 0),
+                },
+            )
             observe_ms_fn("ingestion_stage_ms", (asyncio.get_running_loop().time() - stage_t0) * 1000.0, stage="embed_upsert")
             logger_obj.info(
                 (
@@ -643,6 +893,9 @@ async def process_file_pipeline(
             try:
                 if observed_embedding_dimension is not None:
                     extra_metadata["embedding_dimension"] = int(observed_embedding_dimension)
+                if observed_collection:
+                    extra_metadata["collection"] = str(observed_collection)
+                extra_metadata["namespace"] = str(getattr(settings_obj, "COLLECTION_NAME", "documents") or "documents")
                 observe_ms_fn(
                     "ingestion_total_ms",
                     (asyncio.get_running_loop().time() - started_ms) * 1000.0,

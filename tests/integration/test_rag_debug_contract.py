@@ -252,6 +252,41 @@ def test_rag_debug_contract_file_aware_tabular_fields_are_preserved():
     assert payload["debug_sections"]["tabular"]["unmatched_requested_fields"] == ["birth_date"]
 
 
+def test_rag_debug_contract_includes_schema_match_and_chart_fields():
+    rag_debug = {
+        "retrieval_mode": "tabular_sql",
+        "requested_field_text": "status code",
+        "candidate_columns": ["status_code", "status_name"],
+        "scored_candidates": [
+            {"column": "status_code", "score": 0.91},
+            {"column": "status_name", "score": 0.88},
+        ],
+        "matched_column": "status_code",
+        "match_score": 0.91,
+        "match_strategy": "alias_match",
+        "chart_spec_generated": True,
+        "chart_rendered": False,
+        "chart_artifact_exists": False,
+        "chart_artifact_path": None,
+        "chart_artifact_id": None,
+    }
+    payload = build_standard_rag_debug_payload(
+        rag_debug=rag_debug,
+        context_docs=[],
+        rag_sources=[],
+        llm_tokens_used=0,
+        max_items=8,
+    )
+
+    assert payload["requested_field_text"] == "status code"
+    assert payload["candidate_columns"] == ["status_code", "status_name"]
+    assert payload["matched_column"] == "status_code"
+    assert payload["match_strategy"] == "alias_match"
+    assert payload["chart_spec_generated"] is True
+    assert payload["chart_rendered"] is False
+    assert payload["debug_sections"]["chart"]["chart_artifact_exists"] is False
+
+
 def test_rag_debug_contract_extracts_embedding_and_collection_namespace_details():
     docs = [
         {

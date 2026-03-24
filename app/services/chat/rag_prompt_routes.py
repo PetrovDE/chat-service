@@ -440,11 +440,47 @@ async def maybe_run_deterministic_route(
         rag_debug["executor_attempted"] = False
         rag_debug["executor_status"] = "not_attempted"
         rag_debug["executor_error_code"] = None
-        rag_debug["artifacts_count"] = 0
+        rag_debug["artifacts"] = list(tabular_sql_result.get("artifacts") or [])
+        rag_debug["artifacts_count"] = int(len(rag_debug["artifacts"]))
         rag_debug["analytical_mode_used"] = True
         rag_debug["strategy_mode"] = "combined" if is_combined_intent else "analytical"
-        rag_debug["fallback_type"] = "none"
-        rag_debug["fallback_reason"] = "none"
+        selected_route_value = str(rag_debug.get("selected_route") or "")
+        if selected_route_value in {"chart", "trend", "comparison"}:
+            chart_response_text = str(tabular_sql_result.get("chart_response_text") or "").strip()
+            tabular_debug = rag_debug.get("tabular_sql") if isinstance(rag_debug.get("tabular_sql"), dict) else {}
+            for key in (
+                "requested_chart_field",
+                "matched_chart_field",
+                "chart_spec_generated",
+                "chart_rendered",
+                "chart_artifact_path",
+                "chart_artifact_id",
+                "chart_artifact_exists",
+                "chart_fallback_reason",
+                "response_language",
+            ):
+                if rag_debug.get(key) is None and isinstance(tabular_debug, dict) and key in tabular_debug:
+                    rag_debug[key] = tabular_debug.get(key)
+            if not chart_response_text:
+                chart_response_text = localized_text(
+                    preferred_lang=preferred_lang,
+                    ru="График обработан детерминированным маршрутом. Смотрите данные и артефакты в ответе.",
+                    en="Chart request was handled by deterministic route. See data and artifacts in the response.",
+                )
+            rag_debug["short_circuit_response"] = True
+            rag_debug["short_circuit_response_text"] = chart_response_text
+            chart_artifact_exists = bool(rag_debug.get("chart_artifact_exists", False))
+            if chart_artifact_exists:
+                rag_debug["fallback_type"] = "none"
+                rag_debug["fallback_reason"] = "none"
+            else:
+                rag_debug["fallback_type"] = "tabular_chart_render_failed"
+                rag_debug["fallback_reason"] = str(
+                    rag_debug.get("chart_fallback_reason") or "chart_render_failed"
+                )
+        else:
+            rag_debug["fallback_type"] = "none"
+            rag_debug["fallback_reason"] = "none"
         if combined_debug:
             rag_debug["combined_scope"] = combined_debug
         rag_debug["retrieval_policy"] = {

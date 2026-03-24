@@ -13,10 +13,11 @@ from app.domain.chat.query_planner import (
     INTENT_TABULAR_COMBINED,
     ROUTE_COMPLEX_ANALYTICS,
     ROUTE_DETERMINISTIC_ANALYTICS,
+    detect_tabular_intent,
     plan_query,
 )
 from app.rag.retriever import rag_retriever
-from app.services.chat.complex_analytics import execute_complex_analytics_path
+from app.services.chat.complex_analytics import execute_complex_analytics_path, is_complex_analytics_query
 from app.services.chat.controlled_debug import annotate_controlled_debug
 from app.services.chat.full_file_analysis import build_full_file_map_reduce_prompt
 from app.services.chat.language import (
@@ -31,6 +32,7 @@ from app.services.chat.rag_prompt_routes import (
     maybe_run_complex_analytics_route,
     maybe_run_deterministic_route,
 )
+from app.services.chat.tabular_intent_router import classify_tabular_query
 from app.services.chat.tabular_sql import execute_tabular_sql_path
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,12 @@ _BARE_FILENAME_TOKEN_RE = re.compile(
     r"(?<![A-Za-zА-Яа-яЁё0-9._\-])([A-Za-zА-Яа-яЁё0-9._\-\[\]()]{1,220}\.[A-Za-z0-9]{1,10})(?![A-Za-zА-Яа-яЁё0-9._\-])"
 )
 _STORED_PREFIX_RE = re.compile(r"^[0-9a-fA-F\-]{8,}_")
+_EXPLICIT_FILE_REQUEST_RE = re.compile(
+    r"(?:\bfile\b|\bfiles\b|\bdocument\b|\bdocuments\b|\bdataset\b|\bspreadsheet\b|\bcsv\b|\bxlsx\b|\bexcel\b|\u0444\u0430\u0439\u043b|\u0444\u0430\u0439\u043b\u0430|\u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442|\u0434\u0430\u0442\u0430\u0441\u0435\u0442)"
+)
+_EXPLICIT_DATA_CONTEXT_RE = re.compile(
+    r"(?:\b(?:from|in|by)\s+(?:the\s+)?(?:table|data|sheet)\b|\b(?:table|data)\b\s+(?:summary|analysis)|\b(?:\u043f\u043e|\u0438\u0437|\u0432)\s+(?:\u0442\u0430\u0431\u043b\u0438\u0446|\u0434\u0430\u043d\u043d|\u043b\u0438\u0441\u0442))"
+)
 
 
 def _resolve_builder_dependencies(
@@ -261,6 +269,51 @@ def _build_no_context_message(*, preferred_lang: str) -> str:
             "Attach a file to this chat or reference a filename, and I will continue."
         ),
     )
+
+
+def _classify_top_level_intent(
+    *,
+    query: str,
+    resolution_meta: Dict[str, Any],
+) -> str:
+    text = str(query or "").strip()
+    if not text:
+        return "general_chat"
+
+    requested_file_names = list(resolution_meta.get("requested_file_names") or [])
+    if requested_file_names:
+        return "file_lookup"
+
+    lowered = text.lower()
+
+    if is_complex_analytics_query(text):
+        return "tabular_analytics"
+
+    try:
+        tabular_decision = classify_tabular_query(query=text, table=None)
+        selected_route = str(getattr(tabular_decision, "selected_route", "") or "")
+    except Exception:
+        selected_route = ""
+
+    if selected_route == "schema_question":
+        return "schema_question"
+    if selected_route == "filtering":
+        return "file_lookup"
+    if selected_route in {"overview", "aggregation", "chart", "comparison", "trend", "unsupported_missing_column"}:
+        return "tabular_analytics"
+
+    legacy_tabular_intent = detect_tabular_intent(text)
+    if legacy_tabular_intent == "lookup":
+        return "file_lookup"
+    if legacy_tabular_intent in {"aggregate", "profile"}:
+        return "tabular_analytics"
+
+    if _EXPLICIT_FILE_REQUEST_RE.search(lowered):
+        return "file_question"
+    if _EXPLICIT_DATA_CONTEXT_RE.search(lowered):
+        return "file_question"
+
+    return "general_chat"
 
 
 def _infer_fallback_meta(
@@ -720,11 +773,58 @@ async def build_rag_prompt(
         _log_fallback_cache_event(user_id=user_id, conversation_id=conversation_id, rag_debug=rag_debug)
         return prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources
 
+    top_level_intent = _classify_top_level_intent(query=query, resolution_meta=resolution_meta)
+    logger.info(
+        "Top-level route intent: intent=%s file_count=%d file_resolution_status=%s",
+        top_level_intent,
+        len(files),
+        str(resolution_meta.get("file_resolution_status") or "not_requested"),
+    )
+
+    if top_level_intent == "general_chat":
+        general_chat_debug: Dict[str, Any] = {
+            "intent": "general_chat",
+            "detected_intent": "general_chat",
+            "retrieval_mode": "assistant_direct",
+            "execution_route": "narrative",
+            "requires_clarification": False,
+            "executor_attempted": False,
+            "executor_status": "not_attempted",
+            "executor_error_code": None,
+            "artifacts_count": 0,
+            "analytical_mode_used": False,
+            "rag_mode": rag_mode or "auto",
+            "rag_mode_effective": "assistant_direct",
+            "file_ids": [str(getattr(file_obj, "id")) for file_obj in files if getattr(file_obj, "id", None) is not None],
+            "selected_route": "general_chat",
+            "fallback_type": "none",
+            "fallback_reason": "none",
+            "retrieval_policy": {
+                "mode": "assistant_direct",
+                "query_profile": "general_chat",
+                "requested_top_k": top_k,
+                "effective_top_k": 0,
+                "expected_chunks_total": 0,
+                "escalation": {"attempted": False, "applied": False, "reason": "general_chat_route"},
+                "row_escalation": {"attempted": False, "applied": False, "reason": "general_chat_route"},
+            },
+        }
+        general_chat_debug = _inject_file_resolution_debug(
+            rag_debug=general_chat_debug,
+            resolution_meta=resolution_meta,
+            preferred_lang=preferred_lang,
+            query=query,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        _log_fallback_cache_event(user_id=user_id, conversation_id=conversation_id, rag_debug=general_chat_debug)
+        return final_prompt, False, general_chat_debug, [], [], []
+
     if not files:
         no_context_prompt = _build_no_context_message(preferred_lang=preferred_lang)
         no_context_debug: Dict[str, Any] = {
-            "intent": "no_context",
-            "detected_intent": "no_context",
+            "intent": top_level_intent,
+            "detected_intent": top_level_intent,
             "retrieval_mode": "no_context_files",
             "execution_route": "clarification",
             "requires_clarification": True,

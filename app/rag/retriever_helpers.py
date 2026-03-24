@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import math
 import re
@@ -359,9 +359,9 @@ def build_context_prompt(*, query: str, context_documents: List[Dict[str, Any]])
         return (
             "You are an assistant. Build a detailed answer from the provided file context.\n"
             "Return three sections in this exact order:\n"
-            "1) ÐžÑ‚Ð²ÐµÑ‚\n"
-            "2) ÐžÐ³Ñ€Ð°Ð½Ð¸Ñ‡ÐµÐ½Ð¸Ñ/Ð½ÐµÑ…Ð²Ð°Ñ‚ÐºÐ° Ð´Ð°Ð½Ð½Ñ‹Ñ…\n"
-            "3) Ð˜ÑÑ‚Ð¾Ñ‡Ð½Ð¸ÐºÐ¸ (ÐºÑ€Ð°Ñ‚ÐºÐ¾)\n"
+            "1) Ответ\n"
+            "2) Ограничения/нехватка данных\n"
+            "3) Источники (кратко)\n"
             "If details are missing in context, explicitly list what is missing.\n\n"
             f"Question:\n{query}\n\n"
             f"Context:\n{context_block}\n\n"

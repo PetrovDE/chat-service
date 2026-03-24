@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import re
 import uuid
@@ -883,7 +883,7 @@ def test_query_language_policy_applied_without_user():
             db=None,
             user_id=None,
             conversation_id=uuid.uuid4(),
-            query="Ð¡Ð´ÐµÐ»Ð°Ð¹ ÐºÑ€Ð°Ñ‚ÐºÐ¸Ð¹ Ð¾Ñ‚Ñ‡ÐµÑ‚",
+            query="Сделай краткий отчет",
             top_k=8,
             model_source="local",
             rag_mode="auto",

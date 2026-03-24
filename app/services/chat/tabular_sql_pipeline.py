@@ -403,19 +403,10 @@ def build_tabular_error_result_pipeline(
     if not isinstance(guardrail_flags, list):
         guardrail_flags = []
 
-    clarification_prompt = (
-        "Deterministic SQL execution was blocked by safety policy. "
-        "Please narrow the metric/filter scope and retry."
-    )
-    if error_code == sql_error_timeout:
-        clarification_prompt = (
-            "Deterministic SQL execution timed out. "
-            "Please narrow the filter or reduce the analysis scope and retry."
-        )
-
     return {
         "status": "error",
-        "clarification_prompt": clarification_prompt,
+        # User-facing copy is composed in response layer, not in execution pipeline.
+        "clarification_prompt": "",
         "prompt_context": (
             "Deterministic tabular SQL execution failed.\n"
             f"error_code={error_code}\n"

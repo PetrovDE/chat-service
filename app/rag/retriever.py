@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -29,7 +29,7 @@ from app.rag.vector_store import VectorStoreManager
 logger = logging.getLogger(__name__)
 
 
-TOKEN_RE = re.compile(r"[A-Za-zÐ-Ð¯Ð°-ÑÐÑ‘0-9_]+")
+TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9_]+")
 COMPARE_PATTERNS: List[str] = ["compare", "difference"]
 
 

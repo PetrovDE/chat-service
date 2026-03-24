@@ -173,6 +173,11 @@ async def stream_chat_events(
 
         short_circuit_text = orchestrator._executor_short_circuit_text(ctx)
         if short_circuit_text:
+            short_circuit_model = (
+                "complex_analytics_executor"
+                if str(execution_telemetry.get("execution_route") or "") == "complex_analytics"
+                else "tabular_sql_executor"
+            )
             full_response = short_circuit_text
             start_payload = {
                 "type": "start",
@@ -200,7 +205,7 @@ async def stream_chat_events(
                 conversation_id=conversation_id,
                 role="assistant",
                 content=short_circuit_text,
-                model_name="complex_analytics_executor",
+                model_name=short_circuit_model,
                 temperature=chat_data.temperature,
                 max_tokens=chat_data.max_tokens,
                 generation_time=generation_time,
@@ -401,13 +406,18 @@ async def run_nonstream_chat(
 
     short_circuit_text = orchestrator._executor_short_circuit_text(ctx)
     if short_circuit_text:
+        short_circuit_model = (
+            "complex_analytics_executor"
+            if str(execution_telemetry.get("execution_route") or "") == "complex_analytics"
+            else "tabular_sql_executor"
+        )
         generation_time = (datetime.utcnow() - start_time).total_seconds()
         assistant_message = await crud_message.create_message(
             db=db,
             conversation_id=conversation_id,
             role="assistant",
             content=short_circuit_text,
-            model_name="complex_analytics_executor",
+            model_name=short_circuit_model,
             temperature=chat_data.temperature,
             max_tokens=chat_data.max_tokens,
             generation_time=generation_time,
@@ -435,7 +445,7 @@ async def run_nonstream_chat(
             response_text=short_circuit_text,
             conversation_id=conversation_id,
             message_id=assistant_message.id,
-            model_used="complex_analytics_executor",
+            model_used=short_circuit_model,
             route_telemetry=route_telemetry,
             execution_telemetry=execution_telemetry,
             generation_time=generation_time,

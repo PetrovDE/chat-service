@@ -6,7 +6,7 @@ from app.services.chat.complex_analytics import composer
 from app.services.tabular.sql_execution import ResolvedTabularDataset, ResolvedTabularTable
 
 
-def _build_dataset(columns):
+def _build_dataset(columns, *, aliases=None):
     return ResolvedTabularDataset(
         engine="duckdb_parquet",
         dataset_id="ds-routing",
@@ -18,7 +18,7 @@ def _build_dataset(columns):
                 sheet_name="Sheet1",
                 row_count=120,
                 columns=list(columns),
-                column_aliases={},
+                column_aliases=dict(aliases or {}),
                 table_version=1,
                 provenance_id="tbl-routing",
                 parquet_path=None,
@@ -85,10 +85,10 @@ def test_narrow_chart_request_with_missing_column_returns_controlled_response(mo
     assert result is not None
     assert result["status"] == "error"
     assert result["debug"]["selected_route"] == "unsupported_missing_column"
-    assert "birth_date" in result["debug"]["unmatched_requested_fields"]
+    assert "месяцам рождения" in result["debug"]["unmatched_requested_fields"]
     assert result["debug"]["matched_columns"] == []
     clarification = str(result.get("clarification_prompt") or "")
-    assert "нет колонки" in clarification
+    assert "не найдено уверенного соответствия" in clarification
     assert "created_at" in clarification
     assert "city" in clarification
     assert "status" in clarification
@@ -97,7 +97,10 @@ def test_narrow_chart_request_with_missing_column_returns_controlled_response(mo
 
 
 def test_narrow_chart_request_with_matching_column_routes_chart(monkeypatch):
-    dataset = _build_dataset(["request_id", "birth_date", "city", "status"])
+    dataset = _build_dataset(
+        ["request_id", "birth_date", "city", "status"],
+        aliases={"birth_date": "месяц рождения"},
+    )
     file_obj = _file_obj()
     monkeypatch.setattr(tsql, "resolve_tabular_dataset", lambda _: dataset)
 

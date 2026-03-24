@@ -332,6 +332,36 @@ def build_standard_rag_debug_payload(
     payload["resolved_file_ids"] = _normalized_str_list(payload.get("resolved_file_ids") or payload.get("file_ids"))
     payload["matched_columns"] = _normalized_str_list(payload.get("matched_columns"))
     payload["unmatched_requested_fields"] = _normalized_str_list(payload.get("unmatched_requested_fields"))
+    requested_field_text = str(payload.get("requested_field_text") or "").strip()
+    payload["requested_field_text"] = requested_field_text or None
+    payload["candidate_columns"] = _normalized_str_list(payload.get("candidate_columns"))
+    scored_candidates = payload.get("scored_candidates")
+    payload["scored_candidates"] = scored_candidates if isinstance(scored_candidates, list) else []
+    matched_column = str(payload.get("matched_column") or "").strip()
+    payload["matched_column"] = matched_column or None
+    match_strategy = str(payload.get("match_strategy") or "none").strip()
+    payload["match_strategy"] = match_strategy or "none"
+    try:
+        payload["match_score"] = (
+            float(payload.get("match_score"))
+            if payload.get("match_score") is not None
+            else None
+        )
+    except Exception:
+        payload["match_score"] = None
+    payload["chart_spec_generated"] = bool(payload.get("chart_spec_generated", False))
+    payload["chart_rendered"] = bool(payload.get("chart_rendered", False))
+    payload["chart_artifact_exists"] = bool(payload.get("chart_artifact_exists", False))
+    payload["chart_artifact_path"] = (
+        str(payload.get("chart_artifact_path")).strip()
+        if payload.get("chart_artifact_path") is not None
+        else None
+    )
+    payload["chart_artifact_id"] = (
+        str(payload.get("chart_artifact_id")).strip()
+        if payload.get("chart_artifact_id") is not None
+        else None
+    )
     payload["cache_hit"] = bool(payload.get("cache_hit", False))
     payload["cache_miss"] = bool(payload.get("cache_miss", not payload["cache_hit"]))
     payload["cache_key_version"] = str(payload.get("cache_key_version") or "unknown")
@@ -410,8 +440,21 @@ def build_standard_rag_debug_payload(
             "resolved_file_ids": payload["resolved_file_ids"],
         },
         "tabular": {
+            "requested_field_text": payload["requested_field_text"],
+            "candidate_columns": payload["candidate_columns"],
+            "scored_candidates": payload["scored_candidates"],
+            "matched_column": payload["matched_column"],
+            "match_score": payload["match_score"],
+            "match_strategy": payload["match_strategy"],
             "matched_columns": payload["matched_columns"],
             "unmatched_requested_fields": payload["unmatched_requested_fields"],
+        },
+        "chart": {
+            "chart_spec_generated": payload["chart_spec_generated"],
+            "chart_rendered": payload["chart_rendered"],
+            "chart_artifact_exists": payload["chart_artifact_exists"],
+            "chart_artifact_path": payload["chart_artifact_path"],
+            "chart_artifact_id": payload["chart_artifact_id"],
         },
         "retrieval": {
             "retrieval_hits_count": payload["retrieval_hits_count"],

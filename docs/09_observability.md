@@ -206,3 +206,18 @@ Failure-path contract (no silent fallback):
 - narrative retrieval runtime failure -> `retrieval_mode=narrative_error`
 - both produce explicit clarification prompts and debug payload instead of hidden route downgrade
 
+## Update 2026-03-24 (File-Aware Debug Contract)
+`rag_debug` payload now exposes a stable contract (`debug_contract_version=rag_debug_v1`) with a compact `debug_sections` block:
+
+- `routing` (`route`, `selected_route`, `retrieval_mode`, `detected_intent`)
+- `files` (`file_resolution_status`, `requested_file_names`, `resolved_file_ids`, `resolved_file_names`)
+- `tabular` (`matched_columns`, `unmatched_requested_fields`)
+- `retrieval` (`retrieval_filters`, `retrieval_hits_count`, `retrieved_chunks_total`, `collections`, `namespaces`)
+- `fallback` (`fallback_type`, `fallback_reason`)
+- `language` (`detected_language`, `response_language`)
+- `cache` (`cache_hit`, `cache_miss`, `cache_key_version`, `cache_key`)
+- `embedding` (`provider`, `model`, `dimension`)
+- `llm` (`context_tokens`, `llm_tokens_used`, `llm_prompt_tokens_estimate`)
+
+This keeps diagnostics route-aware while preserving backward-compatible top-level debug fields.
+

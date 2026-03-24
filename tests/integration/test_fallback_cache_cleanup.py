@@ -251,6 +251,37 @@ def test_russian_controlled_fallbacks_stay_russian(monkeypatch):
     assert rag_debug["selected_route"] == "unsupported_missing_column"
 
 
+def test_no_context_files_controlled_fallback_preserves_russian_language(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+
+    async def fake_get_conversation_files(db, conversation_id, user_id):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_conversation_files)
+
+    prompt, rag_used, rag_debug, _, _, _ = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Покажи данные по таблице",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert "нет готовых файлов" in prompt.lower()
+    assert isinstance(rag_debug, dict)
+    assert rag_debug["file_resolution_status"] == "no_context_files"
+    assert rag_debug["fallback_type"] == "no_context"
+    assert rag_debug["detected_language"] == "ru"
+    assert rag_debug["response_language"] == "ru"
+    assert rag_debug["selected_route"] == "no_context"
+
+
 def test_cache_key_includes_route_language_and_file_resolution_dimensions():
     base = build_cache_observability(
         user_id="u1",

@@ -44,8 +44,11 @@ def test_standard_rag_debug_payload_contains_filters_and_top_chunks():
     assert payload["top_chunks_limit"] == 8
     assert payload["top_chunks_total"] == 1
     assert payload["retrieved_chunks_total"] == 1
+    assert payload["retrieval_hits_count"] == 1
+    assert payload["retrieval_filters"] == {"file_id": {"$in": ["f1"]}}
     assert payload["retrieval_path"] == "vector"
     assert payload["structured_path_used"] is False
+    assert payload["debug_contract_version"] == "rag_debug_v1"
     assert isinstance(payload["top_similarity_scores"], list)
 
 
@@ -177,3 +180,106 @@ def test_structured_retrieval_debug_path_flag():
     )
     assert payload["retrieval_path"] == "structured"
     assert payload["structured_path_used"] is True
+
+
+def test_rag_debug_contract_stable_defaults_include_file_route_language_and_cache_fields():
+    payload = build_standard_rag_debug_payload(
+        rag_debug={"retrieval_mode": "hybrid"},
+        context_docs=[],
+        rag_sources=[],
+        llm_tokens_used=None,
+        max_items=8,
+    )
+
+    assert payload["selected_route"] == "unknown"
+    assert payload["detected_intent"] == "unknown"
+    assert payload["file_resolution_status"] == "not_requested"
+    assert payload["resolved_file_ids"] == []
+    assert payload["resolved_file_names"] == []
+    assert payload["matched_columns"] == []
+    assert payload["unmatched_requested_fields"] == []
+    assert payload["fallback_type"] == "none"
+    assert payload["fallback_reason"] == "none"
+    assert payload["detected_language"] == "ru"
+    assert payload["response_language"] == "ru"
+    assert payload["cache_hit"] is False
+    assert payload["cache_miss"] is True
+    assert payload["cache_key_version"] == "unknown"
+    assert "debug_sections" in payload
+    assert payload["debug_sections"]["files"]["file_resolution_status"] == "not_requested"
+    assert payload["debug_sections"]["retrieval"]["retrieval_hits_count"] == 0
+
+
+def test_rag_debug_contract_file_aware_tabular_fields_are_preserved():
+    rag_debug = {
+        "retrieval_mode": "tabular_sql",
+        "execution_route": "tabular_sql",
+        "selected_route": "unsupported_missing_column",
+        "detected_intent": "chart",
+        "fallback_type": "unsupported_missing_column",
+        "fallback_reason": "missing_required_columns",
+        "file_resolution_status": "resolved_unique",
+        "resolved_file_ids": ["f-1"],
+        "resolved_file_names": ["employees.xlsx"],
+        "matched_columns": ["city"],
+        "unmatched_requested_fields": ["birth_date"],
+        "detected_language": "ru",
+        "response_language": "ru",
+        "cache_hit": False,
+        "cache_miss": True,
+        "cache_key_version": "v2-route-lang-fileaware",
+        "cache_key": "abc123",
+    }
+    payload = build_standard_rag_debug_payload(
+        rag_debug=rag_debug,
+        context_docs=[],
+        rag_sources=[],
+        llm_tokens_used=None,
+        max_items=8,
+    )
+
+    assert payload["selected_route"] == "unsupported_missing_column"
+    assert payload["detected_intent"] == "chart"
+    assert payload["file_resolution_status"] == "resolved_unique"
+    assert payload["resolved_file_ids"] == ["f-1"]
+    assert payload["resolved_file_names"] == ["employees.xlsx"]
+    assert payload["matched_columns"] == ["city"]
+    assert payload["unmatched_requested_fields"] == ["birth_date"]
+    assert payload["fallback_type"] == "unsupported_missing_column"
+    assert payload["fallback_reason"] == "missing_required_columns"
+    assert payload["response_language"] == "ru"
+    assert payload["cache_key"] == "abc123"
+    assert payload["debug_sections"]["tabular"]["unmatched_requested_fields"] == ["birth_date"]
+
+
+def test_rag_debug_contract_extracts_embedding_and_collection_namespace_details():
+    docs = [
+        {
+            "content": "row payload",
+            "metadata": {
+                "file_id": "f1",
+                "filename": "sales.xlsx",
+                "chunk_index": 0,
+                "collection": "documents_1536d",
+                "namespace": "documents",
+                "embedding_dimension": 1536,
+            },
+            "similarity_score": 0.97,
+        }
+    ]
+    payload = build_standard_rag_debug_payload(
+        rag_debug={"retrieval_mode": "hybrid", "embedding_mode": "aihub", "embedding_model": "qwen3-emb"},
+        context_docs=docs,
+        rag_sources=["sales.xlsx | chunk=0"],
+        llm_tokens_used=321,
+        max_items=8,
+    )
+
+    assert payload["embedding_provider"] == "aihub"
+    assert payload["embedding_model"] == "qwen3-emb"
+    assert payload["embedding_dimension"] == 1536
+    assert payload["embedding_details_available"] is True
+    assert payload["retrieval_collections"] == ["documents_1536d"]
+    assert payload["retrieval_namespaces"] == ["documents"]
+    assert payload["collection"] == "documents_1536d"
+    assert payload["namespace"] == "documents"

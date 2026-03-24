@@ -2,6 +2,8 @@
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.services.chat.language import normalize_preferred_response_language
+
 
 def to_int(value: Any) -> Optional[int]:
     try:
@@ -204,6 +206,71 @@ def estimate_text_tokens(text: str) -> int:
     return max(1, int(len(text) / 4))
 
 
+def _normalized_str_list(values: Any) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    out: List[str] = []
+    seen = set()
+    for item in values:
+        value = str(item or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _collect_unique_meta_values(context_docs: List[Dict[str, Any]], key: str) -> List[str]:
+    values: List[str] = []
+    seen = set()
+    for doc in context_docs:
+        meta = doc.get("metadata") or {}
+        raw_value = str(meta.get(key) or "").strip()
+        if not raw_value or raw_value in seen:
+            continue
+        seen.add(raw_value)
+        values.append(raw_value)
+    return values
+
+
+def _derive_embedding_details(payload: Dict[str, Any], context_docs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    provider = str(payload.get("embedding_provider") or payload.get("embedding_mode") or "").strip() or None
+    model = str(payload.get("embedding_model") or "").strip() or None
+    dimension = to_int(payload.get("embedding_dimension"))
+    if dimension is None:
+        dimension = to_int(payload.get("embedding_dimension_actual"))
+    if dimension is None:
+        dimension = to_int(payload.get("embedding_dimension_expected"))
+    dimension_source = str(payload.get("embedding_dimension_source") or "").strip() or None
+
+    if provider is None and model and ":" in model:
+        inferred = str(model.split(":", 1)[0] or "").strip().lower()
+        if inferred in {"local", "aihub", "openai", "ollama"}:
+            provider = inferred
+
+    if dimension is None:
+        for doc in context_docs:
+            meta = doc.get("metadata") or {}
+            for key in ("embedding_dimension", "vector_dimension", "dimension"):
+                value = to_int(meta.get(key))
+                if value is None:
+                    continue
+                dimension = value
+                if dimension_source is None:
+                    dimension_source = f"context_metadata:{key}"
+                break
+            if dimension is not None:
+                break
+
+    return {
+        "embedding_provider": provider,
+        "embedding_model": model,
+        "embedding_dimension": dimension,
+        "embedding_dimension_source": dimension_source,
+        "embedding_details_available": bool(provider or model or dimension is not None),
+    }
+
+
 def build_standard_rag_debug_payload(
     *,
     rag_debug: Optional[Dict[str, Any]],
@@ -221,8 +288,10 @@ def build_standard_rag_debug_payload(
         else 0.0
     )
     context_tokens = sum(estimate_text_tokens((doc.get("content") or "")) for doc in context_docs)
+    payload["debug_contract_version"] = str(payload.get("debug_contract_version") or "rag_debug_v1")
     payload["filters"] = payload.get("filters") or payload.get("where")
     payload["applied_filters"] = payload["filters"]
+    payload["retrieval_filters"] = payload["filters"]
     payload["route"] = payload.get("execution_route") or payload.get("route") or "unknown"
     payload["strategy_mode"] = payload.get("strategy_mode") or (
         payload.get("planner_decision", {}).get("strategy_mode")
@@ -235,6 +304,7 @@ def build_standard_rag_debug_payload(
     payload["top_chunks_total"] = len(context_docs)
     payload["sources"] = rag_sources
     payload["retrieval_hits"] = int(payload.get("returned_count", len(context_docs)) or 0)
+    payload["retrieval_hits_count"] = int(payload["retrieval_hits"])
     payload["retrieved_chunks_total"] = len(context_docs)
     payload["avg_score"] = float(avg_score)
     payload["avg_similarity"] = float(avg_score)
@@ -247,19 +317,49 @@ def build_standard_rag_debug_payload(
     payload["structured_path_used"] = bool(payload["retrieval_path"] == "structured")
     payload["fallback_type"] = str(payload.get("fallback_type") or "none")
     payload["fallback_reason"] = str(payload.get("fallback_reason") or "none")
-    payload["response_language"] = str(payload.get("response_language") or payload.get("detected_language") or "ru")
+    detected_language = normalize_preferred_response_language(
+        str(payload.get("detected_language") or payload.get("response_language") or "ru")
+    )
+    payload["detected_language"] = detected_language
+    payload["response_language"] = normalize_preferred_response_language(
+        str(payload.get("response_language") or detected_language)
+    )
     payload["detected_intent"] = str(payload.get("detected_intent") or payload.get("intent") or "unknown")
     payload["selected_route"] = str(payload.get("selected_route") or payload.get("route") or "unknown")
+    payload["file_resolution_status"] = str(payload.get("file_resolution_status") or "not_requested")
+    payload["requested_file_names"] = _normalized_str_list(payload.get("requested_file_names"))
+    payload["resolved_file_names"] = _normalized_str_list(payload.get("resolved_file_names"))
+    payload["resolved_file_ids"] = _normalized_str_list(payload.get("resolved_file_ids") or payload.get("file_ids"))
+    payload["matched_columns"] = _normalized_str_list(payload.get("matched_columns"))
+    payload["unmatched_requested_fields"] = _normalized_str_list(payload.get("unmatched_requested_fields"))
     payload["cache_hit"] = bool(payload.get("cache_hit", False))
     payload["cache_miss"] = bool(payload.get("cache_miss", not payload["cache_hit"]))
     payload["cache_key_version"] = str(payload.get("cache_key_version") or "unknown")
-    if payload.get("cache_key") is not None:
-        payload["cache_key"] = str(payload.get("cache_key"))
+    payload["cache_key"] = str(payload.get("cache_key")) if payload.get("cache_key") is not None else None
     filters = payload.get("filters")
     if isinstance(filters, dict):
         processing_filter = filters.get("processing_id")
         if isinstance(processing_filter, dict) and isinstance(processing_filter.get("$in"), list):
             payload["active_processing_ids"] = [str(x) for x in processing_filter.get("$in")]
+
+    collections = _collect_unique_meta_values(context_docs, "collection")
+    namespaces = _collect_unique_meta_values(context_docs, "namespace")
+    if not collections:
+        fallback_collection = str(payload.get("collection") or "").strip()
+        if fallback_collection:
+            collections = [fallback_collection]
+    if not namespaces:
+        fallback_namespace = str(payload.get("namespace") or "").strip()
+        if fallback_namespace:
+            namespaces = [fallback_namespace]
+    payload["retrieval_collections"] = collections
+    payload["retrieval_namespaces"] = namespaces
+    if collections and not payload.get("collection"):
+        payload["collection"] = collections[0]
+    if namespaces and not payload.get("namespace"):
+        payload["namespace"] = namespaces[0]
+
+    payload.update(_derive_embedding_details(payload=payload, context_docs=context_docs))
 
     row_stats = build_row_coverage_stats(context_docs)
     rows_expected = payload.get("rows_expected_total", row_stats["rows_expected_total"])
@@ -289,6 +389,65 @@ def build_standard_rag_debug_payload(
             payload["prompt_chars_configured"] = int(debug_info.get("prompt_chars_configured", 0) or 0)
         if "prompt_chars_limit" in debug_info:
             payload["prompt_chars_limit"] = int(debug_info.get("prompt_chars_limit", 0) or 0)
+    prompt_chars_after = to_int(payload.get("prompt_chars_after"))
+    payload["llm_prompt_tokens_estimate"] = (
+        max(1, int(prompt_chars_after / 4)) if prompt_chars_after and prompt_chars_after > 0 else None
+    )
+
+    payload["debug_sections"] = {
+        "routing": {
+            "route": payload["route"],
+            "selected_route": payload["selected_route"],
+            "retrieval_mode": payload.get("retrieval_mode"),
+            "execution_route": payload.get("execution_route"),
+            "detected_intent": payload["detected_intent"],
+            "retrieval_path": payload["retrieval_path"],
+        },
+        "files": {
+            "file_resolution_status": payload["file_resolution_status"],
+            "requested_file_names": payload["requested_file_names"],
+            "resolved_file_names": payload["resolved_file_names"],
+            "resolved_file_ids": payload["resolved_file_ids"],
+        },
+        "tabular": {
+            "matched_columns": payload["matched_columns"],
+            "unmatched_requested_fields": payload["unmatched_requested_fields"],
+        },
+        "retrieval": {
+            "retrieval_hits_count": payload["retrieval_hits_count"],
+            "retrieved_chunks_total": payload["retrieved_chunks_total"],
+            "retrieval_filters": payload["retrieval_filters"],
+            "top_k": payload.get("top_k"),
+            "fetch_k": payload.get("fetch_k"),
+            "collections": payload["retrieval_collections"],
+            "namespaces": payload["retrieval_namespaces"],
+        },
+        "fallback": {
+            "fallback_type": payload["fallback_type"],
+            "fallback_reason": payload["fallback_reason"],
+        },
+        "language": {
+            "detected_language": payload["detected_language"],
+            "response_language": payload["response_language"],
+        },
+        "cache": {
+            "cache_hit": payload["cache_hit"],
+            "cache_miss": payload["cache_miss"],
+            "cache_key_version": payload["cache_key_version"],
+            "cache_key": payload["cache_key"],
+        },
+        "embedding": {
+            "provider": payload.get("embedding_provider"),
+            "model": payload.get("embedding_model"),
+            "dimension": payload.get("embedding_dimension"),
+            "dimension_source": payload.get("embedding_dimension_source"),
+        },
+        "llm": {
+            "context_tokens": payload["context_tokens"],
+            "llm_tokens_used": payload["llm_tokens_used"],
+            "llm_prompt_tokens_estimate": payload["llm_prompt_tokens_estimate"],
+        },
+    }
     return payload
 
 

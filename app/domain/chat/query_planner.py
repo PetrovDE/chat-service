@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from app.observability.metrics import inc_counter
 from app.observability.slo_metrics import observe_planner_decision
 from app.services.chat.complex_analytics import is_complex_analytics_query
+from app.services.chat.tabular_intent_router import detect_legacy_tabular_intent
 from app.services.tabular.sql_execution import resolve_tabular_dataset
 
 ROUTE_DETERMINISTIC_ANALYTICS = "deterministic_analytics"
@@ -139,6 +140,10 @@ def _is_tabular_file(file_obj: Any) -> bool:
 
 
 def detect_tabular_intent(query: str) -> Optional[str]:
+    route_intent = detect_legacy_tabular_intent(query)
+    if route_intent is not None:
+        return route_intent
+
     q = (query or "").strip().lower()
     if not q:
         return None

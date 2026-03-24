@@ -173,10 +173,9 @@ def test_russian_report_is_localized_without_mojibake():
         include_code=False,
     )
 
-    assert "## Полный аналитический отчет" in report
-    assert "### 2) Контекст процесса" in report
+    assert "## Результат анализа" in report
+    assert "Полный аналитический отчет" not in report
     assert "Вероятно, это операционный процессный датасет" in report
-    assert "идентификатор/ключ" in report
     assert "????" not in report
 
 

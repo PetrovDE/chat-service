@@ -13,16 +13,13 @@ BROAD_ANALYSIS_HINTS = (
     "complete analysis",
     "feature relationship",
     "feature relation",
-    "distribution",
     "statistics",
     "полный анализ",
     "полностью",
     "проанализируй файл полностью",
     "отнош",
     "связ",
-    "распредел",
     "статистик",
-    "график",
 )
 
 LOW_QUALITY_PHRASES = (

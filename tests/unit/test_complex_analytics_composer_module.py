@@ -14,7 +14,8 @@ def test_composer_formats_english_report():
         include_code=False,
         insights=[],
     )
-    assert "Full Analytics Report" in text
+    assert "Analysis Result" in text
+    assert "Full Analytics Report" not in text
 
 
 def test_composer_formats_russian_report():
@@ -28,7 +29,8 @@ def test_composer_formats_russian_report():
         include_code=False,
         insights=[],
     )
-    assert "\u041f\u043e\u043b\u043d\u044b\u0439 \u0430\u043d\u0430\u043b\u0438\u0442\u0438\u0447\u0435\u0441\u043a\u0438\u0439 \u043e\u0442\u0447\u0435\u0442" in text
+    assert "\u0420\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442 \u0430\u043d\u0430\u043b\u0438\u0437\u0430" in text
+    assert "\u041f\u043e\u043b\u043d\u044b\u0439 \u0430\u043d\u0430\u043b\u0438\u0442\u0438\u0447\u0435\u0441\u043a\u0438\u0439 \u043e\u0442\u0447\u0435\u0442" not in text
 
 
 def test_compose_quality_gate_rejects_too_short_llm_output(monkeypatch):

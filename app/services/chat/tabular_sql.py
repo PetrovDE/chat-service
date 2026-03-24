@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import re
 from time import perf_counter
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.core.config import settings
-from app.domain.chat.query_planner import detect_tabular_intent as plan_detect_tabular_intent
 from app.observability.metrics import inc_counter, observe_ms
+from app.services.chat.language import detect_preferred_response_language
+from app.services.chat.tabular_intent_router import (
+    TabularIntentDecision,
+    classify_tabular_query,
+    detect_legacy_tabular_intent,
+    suggest_relevant_alternative_columns,
+)
 from app.services.chat.tabular_sql_pipeline import (
     build_profile_payload_pipeline,
     build_tabular_error_result_pipeline,
@@ -82,7 +89,7 @@ def is_tabular_aggregate_intent(query: str) -> bool:
 
 
 def detect_tabular_intent(query: str) -> Optional[str]:
-    return plan_detect_tabular_intent(query)
+    return detect_legacy_tabular_intent(query)
 
 
 def _norm(text: str) -> str:
@@ -428,15 +435,331 @@ def _build_tabular_error_result(
     )
 
 
+def _route_debug_payload(
+    *,
+    decision: TabularIntentDecision,
+    detected_language: str,
+) -> Dict[str, Any]:
+    return {
+        "detected_intent": decision.detected_intent,
+        "selected_route": decision.selected_route,
+        "matched_columns": list(decision.matched_columns),
+        "unmatched_requested_fields": list(decision.unmatched_requested_fields),
+        "fallback_reason": str(decision.fallback_reason or "none"),
+        "detected_language": detected_language,
+    }
+
+
+def _apply_route_debug(
+    *,
+    payload: Dict[str, Any],
+    decision: TabularIntentDecision,
+    detected_language: str,
+) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+    debug = payload.setdefault("debug", {})
+    if not isinstance(debug, dict):
+        debug = {}
+        payload["debug"] = debug
+    route_debug = _route_debug_payload(decision=decision, detected_language=detected_language)
+    debug.update(route_debug)
+    tabular_debug = debug.setdefault("tabular_sql", {})
+    if isinstance(tabular_debug, dict):
+        tabular_debug.update(route_debug)
+    return payload
+
+
+def _describe_requested_field(field_name: str, *, preferred_lang: str) -> str:
+    normalized = str(field_name or "").strip().lower()
+    if normalized == "birth_date":
+        return "дата рождения" if preferred_lang == "ru" else "birth date"
+    return normalized or field_name
+
+
+def _build_missing_column_response(
+    *,
+    query: str,
+    decision: TabularIntentDecision,
+    dataset: ResolvedTabularDataset,
+    table: ResolvedTabularTable,
+    target_file: Any,
+) -> Dict[str, Any]:
+    preferred_lang = detect_preferred_response_language(query)
+    requested = [_describe_requested_field(item, preferred_lang=preferred_lang) for item in decision.unmatched_requested_fields]
+    alternatives = suggest_relevant_alternative_columns(table, limit=6)
+    if preferred_lang == "ru":
+        requested_text = ", ".join([f"`{item}`" for item in requested]) or "`нужное поле`"
+        available_preview = ", ".join([f"`{col}`" for col in alternatives]) if alternatives else "доступные колонки не определены"
+        clarification_prompt = (
+            f"В таблице нет колонки для запроса ({requested_text}). "
+            f"Могу построить близкий график по доступным полям: {available_preview}. "
+            "Напишите, какой вариант выбрать."
+        )
+    else:
+        requested_text = ", ".join([f"`{item}`" for item in requested]) or "`required field`"
+        available_preview = ", ".join([f"`{col}`" for col in alternatives]) if alternatives else "no suitable columns detected"
+        clarification_prompt = (
+            f"The table does not contain the requested field ({requested_text}). "
+            f"I can build a close alternative using available columns: {available_preview}. "
+            "Tell me which option you want."
+        )
+
+    payload = {
+        "status": "error",
+        "clarification_prompt": clarification_prompt,
+        "prompt_context": (
+            "Deterministic tabular routing blocked by schema validation.\n"
+            f"route=unsupported_missing_column\n"
+            f"unmatched_requested_fields={json.dumps(decision.unmatched_requested_fields, ensure_ascii=False)}\n"
+            f"matched_columns={json.dumps(decision.matched_columns, ensure_ascii=False)}\n"
+            f"available_columns={json.dumps(list(table.columns), ensure_ascii=False)}"
+        ),
+        "debug": {
+            "retrieval_mode": "tabular_sql",
+            "intent": "tabular_missing_column",
+            "deterministic_path": True,
+            "tabular_sql": {
+                "storage_engine": dataset.engine,
+                "dataset_id": dataset.dataset_id,
+                "dataset_version": dataset.dataset_version,
+                "dataset_provenance_id": dataset.dataset_provenance_id,
+                "table_name": table.table_name,
+                "table_version": table.table_version,
+                "table_provenance_id": table.provenance_id,
+                "table_row_count": int(table.row_count or 0),
+                "executed_sql": None,
+                "sql": None,
+                "result": None,
+                "policy_decision": {"allowed": False, "reason": "missing_required_columns"},
+                "guardrail_flags": [],
+                "sql_guardrails": {"valid": False, "reason": "missing_required_columns"},
+            },
+        },
+        "sources": [
+            (
+                f"{getattr(target_file, 'original_filename', 'unknown')} "
+                f"| table={table.table_name} | dataset_v={dataset.dataset_version} "
+                "| sql_error=missing_required_columns"
+            )
+        ],
+        "rows_expected_total": int(table.row_count or 0),
+        "rows_retrieved_total": 0,
+        "rows_used_map_total": 0,
+        "rows_used_reduce_total": 0,
+        "row_coverage_ratio": 0.0,
+    }
+    return _apply_route_debug(payload=payload, decision=decision, detected_language=preferred_lang)
+
+
+def _build_schema_question_payload(
+    *,
+    query: str,
+    dataset: ResolvedTabularDataset,
+    table: ResolvedTabularTable,
+    target_file: Any,
+    decision: TabularIntentDecision,
+) -> Dict[str, Any]:
+    aliases = table.column_aliases if isinstance(table.column_aliases, dict) else {}
+    preferred_lang = detect_preferred_response_language(query)
+    schema_payload = {
+        "table_name": table.table_name,
+        "row_count": int(table.row_count or 0),
+        "columns": list(table.columns),
+        "column_aliases": {str(k): str(v) for k, v in aliases.items()},
+    }
+    prompt_context = (
+        "Deterministic table schema (source of truth):\n"
+        + json.dumps(schema_payload, ensure_ascii=False, indent=2)
+    )
+    payload = {
+        "status": "ok",
+        "prompt_context": prompt_context,
+        "debug": {
+            "retrieval_mode": "tabular_sql",
+            "intent": "tabular_schema_question",
+            "deterministic_path": True,
+            "tabular_sql": {
+                "storage_engine": dataset.engine,
+                "dataset_id": dataset.dataset_id,
+                "dataset_version": dataset.dataset_version,
+                "dataset_provenance_id": dataset.dataset_provenance_id,
+                "table_name": table.table_name,
+                "table_version": table.table_version,
+                "table_provenance_id": table.provenance_id,
+                "table_row_count": int(table.row_count or 0),
+                "executed_sql": [],
+                "sql_guardrails": {"valid": True, "reason": "schema_only_route"},
+                "schema_payload": schema_payload,
+            },
+        },
+        "sources": [
+            (
+                f"{getattr(target_file, 'original_filename', 'unknown')} "
+                f"| table={table.table_name} | dataset_v={dataset.dataset_version} "
+                f"| table_v={table.table_version} | schema"
+            )
+        ],
+        "rows_expected_total": int(table.row_count or 0),
+        "rows_retrieved_total": int(table.row_count or 0),
+        "rows_used_map_total": int(table.row_count or 0),
+        "rows_used_reduce_total": int(table.row_count or 0),
+        "row_coverage_ratio": 1.0 if int(table.row_count or 0) > 0 else 0.0,
+    }
+    return _apply_route_debug(payload=payload, decision=decision, detected_language=preferred_lang)
+
+
+def _is_datetime_like_column(column_name: str, table: ResolvedTabularTable) -> bool:
+    aliases = table.column_aliases if isinstance(table.column_aliases, dict) else {}
+    combined = " ".join([_norm(column_name), _norm(str(aliases.get(column_name, "")))]).strip()
+    return any(token in combined for token in ("date", "time", "month", "year", "birth", "дата", "время", "месяц", "год", "рожд"))
+
+
+def _choose_chart_dimension_column(
+    *,
+    query: str,
+    table: ResolvedTabularTable,
+    decision: TabularIntentDecision,
+) -> Optional[str]:
+    if decision.matched_columns:
+        return str(decision.matched_columns[0])
+    mentioned = _pick_columns_from_query(query, table)
+    if mentioned:
+        return str(mentioned[0])
+    for column in table.columns:
+        if _is_datetime_like_column(str(column), table):
+            return str(column)
+    return str(table.columns[0]) if table.columns else None
+
+
+def _build_chart_sql(
+    *,
+    query: str,
+    table: ResolvedTabularTable,
+    decision: TabularIntentDecision,
+) -> Tuple[str, Dict[str, Any]]:
+    dimension_column = _choose_chart_dimension_column(query=query, table=table, decision=decision)
+    if not dimension_column:
+        raise TabularSQLException(
+            code=SQL_ERROR_EXECUTION_FAILED,
+            message="No suitable chart dimension column found",
+        )
+    dimension_q = _quote_ident(dimension_column)
+    table_q = _quote_ident(table.table_name)
+    q = (query or "").strip().lower()
+    monthly_requested = any(token in q for token in ("month", "месяц", "помесяч", "по месяц"))
+
+    if monthly_requested and _is_datetime_like_column(dimension_column, table):
+        bucket_expr = f"strftime(TRY_CAST({dimension_q} AS TIMESTAMP), '%m')"
+        where_clause = f"WHERE TRY_CAST({dimension_q} AS TIMESTAMP) IS NOT NULL"
+        x_title = "month"
+        chart_title = f"Distribution by month for {dimension_column}"
+    else:
+        bucket_expr = f"CAST({dimension_q} AS VARCHAR)"
+        where_clause = f"WHERE TRIM(COALESCE(CAST({dimension_q} AS VARCHAR), '')) <> ''"
+        x_title = dimension_column
+        chart_title = f"Distribution for {dimension_column}"
+
+    sql = (
+        f"SELECT {bucket_expr} AS bucket, COUNT(*) AS value "
+        f"FROM {table_q} {where_clause} "
+        "GROUP BY bucket "
+        "ORDER BY value DESC LIMIT 24"
+    )
+    chart_spec = {
+        "chart_type": "bar",
+        "title": chart_title,
+        "x": "bucket",
+        "y": "value",
+        "x_title": x_title,
+        "y_title": "count",
+        "requested_dimension_column": dimension_column,
+        "aggregation": "count",
+    }
+    return sql, chart_spec
+
+
+def _execute_chart_sync(
+    *,
+    query: str,
+    dataset: ResolvedTabularDataset,
+    table: ResolvedTabularTable,
+    target_file: Any,
+    timeout_seconds: float,
+    decision: TabularIntentDecision,
+) -> Dict[str, Any]:
+    guardrails = _build_guardrails()
+    execution_limits = _build_execution_limits()
+    sql, chart_spec = _build_chart_sql(query=query, table=table, decision=decision)
+    with TabularExecutionSession(dataset=dataset, table=table, limits=execution_limits) as session:
+        rows, guarded_sql, guard_debug = _run_guarded_query(
+            session=session,
+            guardrails=guardrails,
+            sql=sql,
+            estimated_scan_rows=int(table.row_count or 0),
+            timeout_seconds=timeout_seconds,
+        )
+
+    result_text = rows_to_result_text(rows)
+    prompt_context = (
+        "Deterministic chart data and specification (source of truth):\n"
+        + json.dumps(
+            {
+                "table_name": table.table_name,
+                "executed_sql": guarded_sql,
+                "chart_spec": chart_spec,
+                "rows_preview": rows[:24],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    payload = {
+        "status": "ok",
+        "prompt_context": prompt_context,
+        "debug": {
+            "retrieval_mode": "tabular_sql",
+            "intent": "tabular_chart",
+            "deterministic_path": True,
+            "tabular_sql": {
+                "storage_engine": dataset.engine,
+                "dataset_id": dataset.dataset_id,
+                "dataset_version": dataset.dataset_version,
+                "dataset_provenance_id": dataset.dataset_provenance_id,
+                "table_name": table.table_name,
+                "table_version": table.table_version,
+                "table_provenance_id": table.provenance_id,
+                "table_row_count": int(table.row_count or 0),
+                "executed_sql": guarded_sql,
+                "sql": guarded_sql,
+                "result": result_text,
+                "policy_decision": guard_debug.get("policy_decision"),
+                "guardrail_flags": guard_debug.get("guardrail_flags", []),
+                "sql_guardrails": guard_debug,
+                "chart_spec": chart_spec,
+            },
+        },
+        "sources": [
+            (
+                f"{getattr(target_file, 'original_filename', 'unknown')} "
+                f"| table={table.table_name} | dataset_v={dataset.dataset_version} "
+                f"| table_v={table.table_version} | sql_chart"
+            )
+        ],
+        "rows_expected_total": int(table.row_count or 0),
+        "rows_retrieved_total": int(table.row_count or 0),
+        "rows_used_map_total": int(table.row_count or 0),
+        "rows_used_reduce_total": int(table.row_count or 0),
+        "row_coverage_ratio": 1.0 if int(table.row_count or 0) > 0 else 0.0,
+    }
+    return payload
+
+
 async def execute_tabular_sql_path(
     *,
     query: str,
     files: List[Any],
 ) -> Optional[Dict[str, Any]]:
-    intent_kind = detect_tabular_intent(query)
-    if intent_kind is None:
-        return None
-
     target_file = None
     dataset = None
     for file_obj in files:
@@ -458,10 +781,34 @@ async def execute_tabular_sql_path(
     if table is None:
         return None
 
+    intent_decision = classify_tabular_query(query=query, table=table)
+    intent_kind = intent_decision.legacy_intent
+    if intent_kind is None:
+        return None
+
+    selected_route = str(intent_decision.selected_route or "")
+    if selected_route == "unsupported_missing_column":
+        return _build_missing_column_response(
+            query=query,
+            decision=intent_decision,
+            dataset=dataset,
+            table=table,
+            target_file=target_file,
+        )
+    if selected_route == "schema_question":
+        return _build_schema_question_payload(
+            query=query,
+            dataset=dataset,
+            table=table,
+            target_file=target_file,
+            decision=intent_decision,
+        )
+
+    detected_language = detect_preferred_response_language(query)
     timeout_seconds = float(settings.TABULAR_SQL_TIMEOUT_SECONDS)
     try:
         started = perf_counter()
-        if intent_kind == "profile":
+        if selected_route in {"overview"}:
             payload = await asyncio.wait_for(
                 asyncio.to_thread(
                     _execute_profile_sync,
@@ -472,7 +819,18 @@ async def execute_tabular_sql_path(
                 ),
                 timeout=timeout_seconds,
             )
-        elif intent_kind == "lookup":
+            payload = _apply_route_debug(
+                payload=payload,
+                decision=intent_decision,
+                detected_language=detected_language,
+            )
+            payload_debug = payload.get("debug", {})
+            if isinstance(payload_debug, dict):
+                payload_debug["intent"] = "tabular_overview"
+                tabular_debug = payload_debug.get("tabular_sql")
+                if isinstance(tabular_debug, dict):
+                    tabular_debug["intent"] = "tabular_overview"
+        elif selected_route in {"filtering"} or intent_kind == "lookup":
             payload = await asyncio.wait_for(
                 asyncio.to_thread(
                     _execute_lookup_sync,
@@ -483,6 +841,29 @@ async def execute_tabular_sql_path(
                     timeout_seconds=timeout_seconds,
                 ),
                 timeout=timeout_seconds,
+            )
+            payload = _apply_route_debug(
+                payload=payload,
+                decision=intent_decision,
+                detected_language=detected_language,
+            )
+        elif selected_route in {"chart", "trend", "comparison"}:
+            payload = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _execute_chart_sync,
+                    query=query,
+                    dataset=dataset,
+                    table=table,
+                    target_file=target_file,
+                    timeout_seconds=timeout_seconds,
+                    decision=intent_decision,
+                ),
+                timeout=timeout_seconds,
+            )
+            payload = _apply_route_debug(
+                payload=payload,
+                decision=intent_decision,
+                detected_language=detected_language,
             )
         else:
             payload = await asyncio.wait_for(
@@ -495,6 +876,11 @@ async def execute_tabular_sql_path(
                     timeout_seconds=timeout_seconds,
                 ),
                 timeout=timeout_seconds,
+            )
+            payload = _apply_route_debug(
+                payload=payload,
+                decision=intent_decision,
+                detected_language=detected_language,
             )
         observe_ms("tabular_sql_path_ms", (perf_counter() - started) * 1000.0, intent=intent_kind)
         inc_counter("tabular_sql_path_total", intent=intent_kind, engine=dataset.engine)
@@ -513,12 +899,17 @@ async def execute_tabular_sql_path(
             message="Tabular SQL path timeout",
             details={"timeout_seconds": timeout_seconds},
         )
-        return _build_tabular_error_result(
+        payload = _build_tabular_error_result(
             intent_kind=intent_kind,
             dataset=dataset,
             table=table,
             target_file=target_file,
             error_payload=to_tabular_error_payload(timeout_exc),
+        )
+        return _apply_route_debug(
+            payload=payload,
+            decision=intent_decision,
+            detected_language=detected_language,
         )
     except Exception as exc:
         error_payload = to_tabular_error_payload(exc)
@@ -538,10 +929,15 @@ async def execute_tabular_sql_path(
             error_payload.get("message"),
             exc_info=True,
         )
-        return _build_tabular_error_result(
+        payload = _build_tabular_error_result(
             intent_kind=intent_kind,
             dataset=dataset,
             table=table,
             target_file=target_file,
             error_payload=error_payload,
+        )
+        return _apply_route_debug(
+            payload=payload,
+            decision=intent_decision,
+            detected_language=detected_language,
         )

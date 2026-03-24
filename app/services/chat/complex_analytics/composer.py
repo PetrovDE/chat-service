@@ -95,7 +95,6 @@ def format_complex_analytics_answer(
     elif not process_context:
         process_context = "Likely an operational process dataset."
 
-    column_profile = metrics.get("column_profile") if isinstance(metrics.get("column_profile"), list) else []
     numeric_summary = metrics.get("numeric_summary") if isinstance(metrics.get("numeric_summary"), list) else []
     datetime_summary = metrics.get("datetime_summary") if isinstance(metrics.get("datetime_summary"), list) else []
     categorical_summary = metrics.get("categorical_summary") if isinstance(metrics.get("categorical_summary"), list) else []
@@ -105,166 +104,89 @@ def format_complex_analytics_answer(
 
     lines: List[str] = []
     if is_ru:
-        lines.append("## Полный аналитический отчет")
-        lines.append("### 1) Сводка")
+        lines.append("## Результат анализа")
         lines.append(f"- Таблица: `{table_name}`")
-        lines.append(f"- Строк: **{rows_total}**")
-        lines.append(f"- Колонок: **{columns_total}**")
+        lines.append(f"- Объем: **{rows_total}** строк, **{columns_total}** колонок")
         if columns:
-            lines.append("- Список колонок: " + ", ".join([f"`{c}`" for c in columns]))
-        lines.append("### 2) Контекст процесса")
-        lines.append(f"- {process_context}")
-
-        lines.append("### 3) Колонки и назначение")
-        if column_profile:
-            for item in column_profile[:24]:
-                col = str(item.get("column") or "")
-                purpose = localize_en_to_ru(str(item.get("purpose_hint") or ""), RU_PURPOSE_HINTS) or "не определено"
-                non_null = int(item.get("non_null", 0) or 0)
-                null_count = int(item.get("null_count", 0) or 0)
-                unique_count = int(item.get("unique_count", 0) or 0)
-                sample_values = item.get("sample_values") if isinstance(item.get("sample_values"), list) else []
-                sample_text = ", ".join([str(x) for x in sample_values[:3]]) if sample_values else "-"
-                lines.append(
-                    f"- `{col}`: {purpose}; non_null={non_null}, null={null_count}, unique={unique_count}, sample={sample_text}"
-                )
-        else:
-            lines.append("- Профили колонок не были возвращены исполнителем.")
-
-        lines.append("### 4) Метрики и статистика")
-        lines.append(f"- Числовых метрик: {len(numeric_summary)}")
-        lines.append(f"- Дата/время метрик: {len(datetime_summary)}")
-        lines.append(f"- Категориальных сводок: {len(categorical_summary)}")
-        for item in numeric_summary[:8]:
-            col = str(item.get("column") or "")
-            min_v = item.get("min")
-            max_v = item.get("max")
-            mean_v = item.get("mean")
-            median_v = item.get("median")
-            lines.append(
-                f"- Numeric `{col}`: min={min_v}, max={max_v}, mean={mean_v}, median={median_v}"
-            )
-        for item in datetime_summary[:6]:
-            col = str(item.get("column") or "")
-            lines.append(f"- Datetime `{col}`: {item.get('min')} .. {item.get('max')}")
-        for item in categorical_summary[:6]:
-            col = str(item.get("column") or "")
-            top_values = item.get("top_values") if isinstance(item.get("top_values"), dict) else {}
-            if top_values:
-                preview = ", ".join([f"{k}={v}" for k, v in list(top_values.items())[:6]])
-                lines.append(f"- Categorical `{col}` top values: {preview}")
-        if relationship_findings:
-            lines.append("### 5) Связи между признаками")
-            for item in relationship_findings[:8]:
-                a = str(item.get("feature_a") or "")
-                b = str(item.get("feature_b") or "")
-                corr = item.get("correlation")
-                lines.append(f"- `{a}` <-> `{b}`: correlation={corr}")
-        if all_insights:
-            lines.append("### 6) Ключевые выводы")
-            for insight in all_insights[:10]:
-                insight_text = str(insight).strip()
-                if insight_text:
-                    lines.append(f"- {insight_text}")
-
-        lines.append("### 7) Визуализации")
-        if artifacts:
-            for artifact in artifacts:
-                kind = str(artifact.get("kind", "chart") or "chart")
-                kind_ru = localize_en_to_ru(kind, RU_ARTIFACT_KIND_MAP)
-                name = str(artifact.get("name", "") or "")
-                path = str(artifact.get("path", "") or "")
-                url = str(artifact.get("url", "") or "")
-                ref = url or path or name
-                lines.append(f"- {kind_ru}: `{name}` -> `{ref}`")
-                if url:
-                    lines.append(f"![{kind_ru}]({url})")
-        else:
-            lines.append("- Артефакты графиков не были созданы в этом запуске.")
-
-        if notes:
-            lines.append("### 8) Ограничения / заметки")
-            for note in notes[:6]:
-                note_text = str(note).strip()
-                if note_text:
-                    lines.append(f"- {localize_en_to_ru(note_text, RU_NOTE_MAP)}")
-
-        if include_code:
-            lines.append("### 9) Исполненный Python-код")
-            lines.append("```python")
-            lines.append(executed_code.strip())
-            lines.append("```")
+            lines.append("- Ключевые поля: " + ", ".join([f"`{c}`" for c in columns[:12]]))
+        lines.append(f"- Контекст: {process_context}")
     else:
-        lines.append("## Full Analytics Report")
-        lines.append("### 1) Summary")
+        lines.append("## Analysis Result")
         lines.append(f"- Table: `{table_name}`")
-        lines.append(f"- Rows: **{rows_total}**")
-        lines.append(f"- Columns: **{columns_total}**")
+        lines.append(f"- Scope: **{rows_total}** rows, **{columns_total}** columns")
         if columns:
-            lines.append("- Column list: " + ", ".join([f"`{c}`" for c in columns]))
-        lines.append("### 2) Likely Process Context")
-        lines.append(f"- {process_context}")
-        lines.append("### 3) Columns and Purpose")
-        for item in column_profile[:24]:
-            lines.append(f"- `{item.get('column')}`: {item.get('purpose_hint')}")
-        lines.append("### 4) Metrics and Statistics")
-        lines.append(f"- Numeric metrics count: {len(numeric_summary)}")
-        lines.append(f"- Datetime metrics count: {len(datetime_summary)}")
-        lines.append(f"- Categorical summaries count: {len(categorical_summary)}")
-        for item in numeric_summary[:8]:
-            col = str(item.get("column") or "")
-            min_v = item.get("min")
-            max_v = item.get("max")
-            mean_v = item.get("mean")
-            median_v = item.get("median")
-            lines.append(f"- Numeric `{col}`: min={min_v}, max={max_v}, mean={mean_v}, median={median_v}")
-        for item in datetime_summary[:6]:
-            col = str(item.get("column") or "")
-            lines.append(f"- Datetime `{col}`: {item.get('min')} .. {item.get('max')}")
-        for item in categorical_summary[:6]:
-            col = str(item.get("column") or "")
-            top_values = item.get("top_values") if isinstance(item.get("top_values"), dict) else {}
-            if top_values:
-                preview = ", ".join([f"{k}={v}" for k, v in list(top_values.items())[:6]])
-                lines.append(f"- Categorical `{col}` top values: {preview}")
-        if relationship_findings:
-            lines.append("### 5) Relationships Between Features")
-            for item in relationship_findings[:8]:
-                a = str(item.get("feature_a") or "")
-                b = str(item.get("feature_b") or "")
-                corr = item.get("correlation")
-                lines.append(f"- `{a}` <-> `{b}`: correlation={corr}")
-        if all_insights:
-            lines.append("### 6) Key Insights")
-            for insight in all_insights[:10]:
-                insight_text = str(insight).strip()
-                if insight_text:
-                    lines.append(f"- {insight_text}")
+            lines.append("- Key fields: " + ", ".join([f"`{c}`" for c in columns[:12]]))
+        lines.append(f"- Context: {process_context}")
 
-        lines.append("### 7) Visualizations")
-        if artifacts:
-            for artifact in artifacts:
-                kind = str(artifact.get("kind", "chart") or "chart")
-                name = str(artifact.get("name", "") or "")
-                path = str(artifact.get("path", "") or "")
-                url = str(artifact.get("url", "") or "")
-                ref = url or path or name
-                lines.append(f"- {kind}: `{name}` -> `{ref}`")
-                if url:
-                    lines.append(f"![{kind}]({url})")
-        else:
-            lines.append("- No chart artifacts were created in this execution.")
-        if notes:
-            lines.append("### 8) Notes / Limitations")
-            for note in notes[:6]:
-                note_text = str(note).strip()
-                if note_text:
-                    lines.append(f"- {note_text}")
-        if include_code:
-            lines.append("### 9) Executed Python Code")
-            lines.append("```python")
-            lines.append(executed_code.strip())
-            lines.append("```")
+    highlights: List[str] = []
+    for item in numeric_summary[:4]:
+        col = str(item.get("column") or "")
+        if col:
+            highlights.append(
+                f"{'Числовая метрика' if is_ru else 'Numeric metric'} `{col}`: min={item.get('min')}, max={item.get('max')}, mean={item.get('mean')}"
+            )
+    for item in datetime_summary[:3]:
+        col = str(item.get("column") or "")
+        if col:
+            label = "Временной диапазон" if is_ru else "Datetime range"
+            highlights.append(f"{label} `{col}`: {item.get('min')} .. {item.get('max')}")
+    for item in categorical_summary[:3]:
+        col = str(item.get("column") or "")
+        top_values = item.get("top_values") if isinstance(item.get("top_values"), dict) else {}
+        if col and top_values:
+            preview = ", ".join([f"{k}={v}" for k, v in list(top_values.items())[:4]])
+            label = "Категория" if is_ru else "Category"
+            highlights.append(f"{label} `{col}`: {preview}")
+
+    if highlights:
+        lines.append("### Наблюдения по данным" if is_ru else "### Data Highlights")
+        for item in highlights[:8]:
+            lines.append(f"- {item}")
+
+    if relationship_findings:
+        lines.append("### Связи признаков" if is_ru else "### Feature Relationships")
+        for item in relationship_findings[:6]:
+            a = str(item.get("feature_a") or "")
+            b = str(item.get("feature_b") or "")
+            corr = item.get("correlation")
+            if a and b:
+                if is_ru:
+                    lines.append(f"- `{a}` ↔ `{b}`: correlation={corr}")
+                else:
+                    lines.append(f"- `{a}` <-> `{b}`: correlation={corr}")
+
+    if all_insights:
+        lines.append("### Ключевые выводы" if is_ru else "### Key Insights")
+        for insight in all_insights[:8]:
+            insight_text = str(insight).strip()
+            if insight_text:
+                lines.append(f"- {insight_text}")
+
+    if artifacts:
+        lines.append("### Артефакты визуализации" if is_ru else "### Visualization Artifacts")
+        for artifact in artifacts:
+            kind = str(artifact.get("kind", "chart") or "chart")
+            kind_localized = localize_en_to_ru(kind, RU_ARTIFACT_KIND_MAP) if is_ru else kind
+            name = str(artifact.get("name", "") or "")
+            path = str(artifact.get("path", "") or "")
+            url = str(artifact.get("url", "") or "")
+            ref = url or path or name
+            lines.append(f"- {kind_localized}: `{name}` -> `{ref}`")
+            if url:
+                lines.append(f"![{kind_localized}]({url})")
+
+    if notes:
+        lines.append("### Ограничения" if is_ru else "### Limitations")
+        for note in notes[:6]:
+            note_text = str(note).strip()
+            if note_text:
+                lines.append(f"- {localize_en_to_ru(note_text, RU_NOTE_MAP) if is_ru else note_text}")
+
+    if include_code:
+        lines.append("### Исполненный Python-код" if is_ru else "### Executed Python Code")
+        lines.append("```python")
+        lines.append(executed_code.strip())
+        lines.append("```")
 
     return "\n".join(lines)
 

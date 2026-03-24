@@ -375,6 +375,9 @@ class CRUDFile(CRUDBase[File, dict, dict]):
         file_obj = await self.get(db, id=file_id)
         if not file_obj:
             return None
+        if file_obj.deleted_at is not None or str(file_obj.status or "").lower() in {"deleting", "deleted"}:
+            # Never reactivate processing for tombstoned files.
+            return None
 
         query = select(FileProcessingProfile).where(
             FileProcessingProfile.file_id == file_id,
@@ -419,6 +422,9 @@ class CRUDFile(CRUDBase[File, dict, dict]):
         file_obj = await db.get(File, file_id)
         if not file_obj:
             return None
+        if file_obj.deleted_at is not None or str(file_obj.status or "").lower() in {"deleting", "deleted"}:
+            # Deletion wins against async ingestion updates to avoid status resurrection races.
+            return file_obj
 
         file_obj.status = _normalize_file_status(status)
         file_obj.updated_at = _utcnow()

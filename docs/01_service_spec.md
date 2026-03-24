@@ -52,6 +52,14 @@ Delete flow removes:
 
 Reprocess keeps raw file, creates a new processing profile, builds artifacts/vectors under new `processing_id`, then switches active profile on terminal success.
 
+Embedding preflight validation errors in upload/reprocess are returned as `422` with normalized error envelope.
+
+## Attach/Detach Contract
+
+- Attach is allowed only for file states: `uploaded`, `processing`, `ready`.
+- Attach for non-attachable states (for example `failed`, `deleting`) returns `409`.
+- Detach is idempotent by chat link and returns removed link count.
+
 ## Tabular Runtime
 
 - Deterministic tabular execution uses shared `duckdb_parquet` runtime metadata under `custom_metadata.tabular_dataset`.

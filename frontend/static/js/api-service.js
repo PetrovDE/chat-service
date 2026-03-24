@@ -15,6 +15,9 @@ function extractErrorMessage(responseBody, fallback) {
         if (responseBody.error && typeof responseBody.error.message === 'string' && responseBody.error.message.trim()) {
             return responseBody.error.message.trim();
         }
+        if (Array.isArray(responseBody.error?.details) && responseBody.error.details.length > 0) {
+            return String(responseBody.error.details[0]?.msg || fallback);
+        }
         if (Array.isArray(responseBody.details) && responseBody.details.length > 0) {
             return String(responseBody.details[0]?.msg || fallback);
         }

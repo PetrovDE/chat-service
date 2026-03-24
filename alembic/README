@@ -1,1 +1,26 @@
-Generic single-database configuration.
+Alembic migrations for llama-service.
+
+This repository is in clean-slate migration mode for non-production/test environments.
+Old revision history is intentionally not preserved.
+
+Required env vars:
+- DATABASE_URL (app runtime URL, often asyncpg)
+- ALEMBIC_DATABASE_URL (sync URL used by Alembic)
+
+Standard flow:
+1) Reset test database schema:
+   DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+2) Remove old revision files from alembic/versions/*.py
+   (PowerShell: Remove-Item alembic/versions/*.py)
+3) Generate new initial migration:
+   alembic revision --autogenerate -m "initial clean schema"
+4) Inspect generated migration:
+   rg -n "create_table|create_index|ForeignKeyConstraint|UniqueConstraint|drop_table|drop_index" alembic/versions/*_initial_clean_schema.py
+5) Apply migration:
+   alembic upgrade head
+6) Verify:
+   alembic current
+   alembic check
+
+Do not use `scripts/init_db.py` as migration source of truth.
+Schema lifecycle must go through Alembic revisions.

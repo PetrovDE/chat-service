@@ -339,6 +339,7 @@ export class FilesSidebarManager {
         const connectedChats = Array.isArray(file.chat_ids) ? file.chat_ids.length : 0;
         const uploadedLabel = formatRelativeTimestamp(file.created_at);
         const sizeLabel = this.formatFileSize(file.size_bytes);
+        const statusValue = this.getEffectiveStatus(file);
         const debugRows = this.debugMode
             ? `
                 <div class="file-details-row"><span>File ID</span><code>${this.escapeHtml(String(file.file_id || this.selectedDetailsFileId))}</code></div>
@@ -349,7 +350,7 @@ export class FilesSidebarManager {
         container.innerHTML = `
             <div class="file-details-content">
                 <div class="file-details-row"><span>File</span><strong>${this.escapeHtml(file.original_filename || 'Unknown')}</strong></div>
-                <div class="file-details-row"><span>Status</span><strong>${this.escapeHtml(this.humanStatusLabel(file.status || 'uploaded'))}</strong></div>
+                <div class="file-details-row"><span>Status</span><strong>${this.escapeHtml(this.humanStatusLabel(statusValue || 'uploaded'))}</strong></div>
                 <div class="file-details-row"><span>Uploaded</span><strong>${this.escapeHtml(uploadedLabel || 'unknown')}</strong></div>
                 <div class="file-details-row"><span>Size</span><strong>${this.escapeHtml(sizeLabel)}</strong></div>
                 <div class="file-details-row"><span>Chats linked</span><strong>${connectedChats}</strong></div>

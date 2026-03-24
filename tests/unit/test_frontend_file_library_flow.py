@@ -33,6 +33,7 @@ def test_api_service_supports_persistent_file_lifecycle_endpoints():
     assert "/files/${fileId}/processing" in src
     assert "/files/${fileId}/processing/active" in src
     assert "/files/${fileId}/debug" in src
+    assert "responseBody.error?.details" in src
 
 
 def test_chat_manager_uses_current_chat_links_not_legacy_attachment_state():

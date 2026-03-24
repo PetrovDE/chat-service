@@ -13,6 +13,7 @@ from starlette.datastructures import UploadFile
 
 from app.api.v1.endpoints import files as files_endpoint
 from app.core.config import settings
+from app.crud.file import crud_file as crud_file_repo
 from app.rag.retriever_helpers import build_where
 from app.services.chat import rag_retrieval_helpers
 from app.services.tabular.sql_execution import resolve_tabular_dataset
@@ -218,6 +219,38 @@ def test_attach_and_detach_file_for_multiple_chats(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_attach_rejects_non_attachable_file_status(monkeypatch):
+    async def scenario():
+        user = SimpleNamespace(id=uuid4())
+        file_id = uuid4()
+
+        async def fake_get_chat(*args, **kwargs):  # noqa: ARG001
+            return SimpleNamespace()
+
+        async def fake_get_file(*args, **kwargs):  # noqa: ARG001
+            return SimpleNamespace(id=file_id, status="failed")
+
+        monkeypatch.setattr(files_endpoint, "_get_user_chat_or_404", fake_get_chat)
+        monkeypatch.setattr(files_endpoint, "_get_user_file_or_404", fake_get_file)
+        monkeypatch.setattr(
+            files_endpoint,
+            "crud_file",
+            SimpleNamespace(add_file_to_conversation=lambda *args, **kwargs: None),
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await files_endpoint.attach_file_to_chat(
+                file_id=file_id,
+                request=files_endpoint.FileAttachRequest(chat_id=uuid4()),
+                db=SimpleNamespace(),
+                current_user=user,
+            )
+        assert exc.value.status_code == 409
+        assert "cannot be attached" in str(exc.value.detail).lower()
+
+    asyncio.run(scenario())
+
+
 def test_reprocess_uses_existing_raw_file(monkeypatch, tmp_path: Path):
     async def scenario():
         user = SimpleNamespace(id=uuid4())
@@ -246,6 +279,146 @@ def test_reprocess_uses_existing_raw_file(monkeypatch, tmp_path: Path):
         )
         assert response.status == "scheduled"
         assert response.processing_id == processing_id
+
+    asyncio.run(scenario())
+
+
+def test_upload_preflight_validation_error_returns_422(monkeypatch, tmp_path: Path):
+    async def scenario():
+        monkeypatch.setattr(settings, "RUNTIME_RAW_FILES_DIR", str(tmp_path / "runtime" / "raw"))
+        monkeypatch.setattr(files_endpoint.settings, "RUNTIME_RAW_FILES_DIR", str(tmp_path / "runtime" / "raw"))
+
+        user = SimpleNamespace(id=uuid4())
+        created_holder = {"file": None}
+
+        async def fake_usage(_db, *, user_id):  # noqa: ARG001
+            return int(created_holder["file"].size_bytes if created_holder["file"] else 0)
+
+        async def fake_create_file(_db, **kwargs):
+            file_obj = _mk_file_obj(user_id=kwargs["user_id"], path=Path(kwargs["storage_path"]), status="uploaded")
+            file_obj.original_filename = kwargs["original_filename"]
+            file_obj.stored_filename = kwargs["stored_filename"]
+            file_obj.storage_key = kwargs["storage_key"]
+            file_obj.storage_path = kwargs["storage_path"]
+            file_obj.mime_type = kwargs["mime_type"]
+            file_obj.extension = kwargs["extension"]
+            file_obj.size_bytes = kwargs["size_bytes"]
+            file_obj.checksum = kwargs["checksum"]
+            file_obj.source_kind = kwargs["source_kind"]
+            file_obj.visibility = kwargs["visibility"]
+            file_obj.chunks_count = 0
+            created_holder["file"] = file_obj
+            return file_obj
+
+        async def fake_chat_ids(*args, **kwargs):  # noqa: ARG001
+            return {created_holder["file"].id: []}
+
+        async def fake_get_file_or_404(*args, **kwargs):  # noqa: ARG001
+            return created_holder["file"]
+
+        async def fake_get_active_processing(*args, **kwargs):  # noqa: ARG001
+            return None
+
+        async def fake_process(*args, **kwargs):  # noqa: ARG001
+            raise ValueError("Embedding auth failed: provider=aihub model=qwen3-emb")
+
+        monkeypatch.setattr(
+            files_endpoint,
+            "crud_file",
+            SimpleNamespace(
+                get_user_storage_usage_bytes=fake_usage,
+                create_file=fake_create_file,
+                add_file_to_conversation=lambda *args, **kwargs: None,
+                get_active_processing=fake_get_active_processing,
+            ),
+        )
+        monkeypatch.setattr(files_endpoint, "_chat_ids_by_file", fake_chat_ids)
+        monkeypatch.setattr(files_endpoint, "_get_user_file_or_404", fake_get_file_or_404)
+        monkeypatch.setattr(files_endpoint, "process_file_async", fake_process)
+
+        upload = UploadFile(filename="report.txt", file=io.BytesIO(b"hello"))
+        with pytest.raises(HTTPException) as exc:
+            await files_endpoint.upload_file(
+                file=upload,
+                source_kind="upload",
+                chat_id=None,
+                db=SimpleNamespace(),
+                current_user=user,
+                auto_process=True,
+            )
+        assert exc.value.status_code == 422
+        assert "embedding auth failed" in str(exc.value.detail).lower()
+
+    asyncio.run(scenario())
+
+
+def test_reprocess_preflight_validation_error_returns_422(monkeypatch, tmp_path: Path):
+    async def scenario():
+        user = SimpleNamespace(id=uuid4())
+        file_id = uuid4()
+        raw_path = tmp_path / "raw.txt"
+        raw_path.write_text("raw")
+        file_obj = _mk_file_obj(user_id=user.id, path=raw_path, status="ready")
+        file_obj.id = file_id
+
+        async def fake_get_file(*args, **kwargs):  # noqa: ARG001
+            return file_obj
+
+        async def fake_process(*args, **kwargs):  # noqa: ARG001
+            raise ValueError("Embedding model unavailable/config error: provider=local model=nomic")
+
+        monkeypatch.setattr(files_endpoint, "_get_user_file_or_404", fake_get_file)
+        monkeypatch.setattr(files_endpoint, "process_file_async", fake_process)
+
+        with pytest.raises(HTTPException) as exc:
+            await files_endpoint.reprocess_file(
+                file_id=file_id,
+                request=files_endpoint.FileReprocessRequest(),
+                db=SimpleNamespace(),
+                current_user=user,
+            )
+        assert exc.value.status_code == 422
+        assert "embedding model unavailable" in str(exc.value.detail).lower()
+
+    asyncio.run(scenario())
+
+
+def test_update_processing_status_does_not_resurrect_deleted_file():
+    async def scenario():
+        file_obj = SimpleNamespace(
+            id=uuid4(),
+            status="deleted",
+            deleted_at=_utc_now_naive(),
+            updated_at=_utc_now_naive(),
+        )
+        calls = {"execute": 0, "commit": 0, "refresh": 0}
+
+        class FakeDB:
+            async def get(self, model, file_id):  # noqa: ARG002
+                return file_obj
+
+            async def execute(self, *args, **kwargs):  # noqa: ARG002
+                calls["execute"] += 1
+                raise AssertionError("execute must not be called for deleted file status updates")
+
+            async def commit(self):
+                calls["commit"] += 1
+
+            async def refresh(self, obj):  # noqa: ARG002
+                calls["refresh"] += 1
+
+        result = await crud_file_repo.update_processing_status(
+            FakeDB(),
+            file_id=file_obj.id,
+            status="completed",
+            chunks_count=123,
+            metadata_patch={"ingestion_progress": {"stage": "completed"}},
+        )
+        assert result is file_obj
+        assert file_obj.status == "deleted"
+        assert calls["execute"] == 0
+        assert calls["commit"] == 0
+        assert calls["refresh"] == 0
 
     asyncio.run(scenario())
 

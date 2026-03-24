@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -14,6 +14,15 @@ from app.db.base import Base
 
 class FileProcessingProfile(Base):
     __tablename__ = "file_processing_profiles"
+    __table_args__ = (
+        Index("ix_file_processing_profiles_file_id_is_active", "file_id", "is_active"),
+        Index(
+            "uq_file_processing_profiles_active",
+            "file_id",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     file_id = Column(UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), nullable=False, index=True)

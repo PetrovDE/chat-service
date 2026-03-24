@@ -48,8 +48,8 @@ from app.utils.time import ensure_utc_datetime
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_filename_strip_re = re.compile(r"[^A-Za-z0-9А-Яа-яЁё._() \-\[\]]+")
-
+_filename_strip_re = re.compile(r"[^A-Za-z0-9\u0400-\u04FF._() \-\[\]]+")
+_ATTACHABLE_FILE_STATUSES = {"uploaded", "processing", "ready"}
 
 def _utcnow():
     from datetime import datetime, timezone
@@ -219,6 +219,24 @@ async def _get_user_chat_or_404(db: AsyncSession, *, user_id: UUID, chat_id: UUI
     return chat
 
 
+def _raise_preflight_validation_error(exc: ValueError) -> None:
+    detail = str(exc).strip() or "Embedding preflight validation failed"
+    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from exc
+
+
+def _ensure_file_attachable(file_obj: FileModel) -> None:
+    current_status = str(getattr(file_obj, "status", "") or "").strip().lower()
+    if current_status in _ATTACHABLE_FILE_STATUSES:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "File cannot be attached in current state "
+            f"(status={current_status or 'unknown'}; allowed=uploaded,processing,ready)."
+        ),
+    )
+
+
 async def _chat_ids_by_file(db: AsyncSession, file_ids: List[UUID]) -> Dict[UUID, List[UUID]]:
     if not file_ids:
         return {}
@@ -368,17 +386,20 @@ async def upload_file(
     scheduled_processing: Optional[UUID] = None
     supported_for_ingestion = settings.is_file_supported(original_filename)
     if auto_process and supported_for_ingestion:
-        scheduled_processing = await process_file_async(
-            file_id=file_obj.id,
-            file_path=Path(file_obj.storage_path),
-            embedding_mode=embedding_provider,
-            embedding_model=embedding_model,
-            pipeline_version=pipeline_version,
-            parser_version=parser_version,
-            artifact_version=artifact_version,
-            chunking_strategy=chunking_strategy,
-            retrieval_profile=retrieval_profile,
-        )
+        try:
+            scheduled_processing = await process_file_async(
+                file_id=file_obj.id,
+                file_path=Path(file_obj.storage_path),
+                embedding_mode=embedding_provider,
+                embedding_model=embedding_model,
+                pipeline_version=pipeline_version,
+                parser_version=parser_version,
+                artifact_version=artifact_version,
+                chunking_strategy=chunking_strategy,
+                retrieval_profile=retrieval_profile,
+            )
+        except ValueError as exc:
+            _raise_preflight_validation_error(exc)
     elif auto_process and not supported_for_ingestion:
         _log_file_lifecycle_event(
             "processing_skipped_unsupported_extension",
@@ -532,7 +553,8 @@ async def attach_file_to_chat(
     current_user: User = Depends(get_current_user),
 ):
     await _get_user_chat_or_404(db, user_id=current_user.id, chat_id=request.chat_id)
-    await _get_user_file_or_404(db, user_id=current_user.id, file_id=file_id)
+    file_obj = await _get_user_file_or_404(db, user_id=current_user.id, file_id=file_id)
+    _ensure_file_attachable(file_obj)
     link = await crud_file.add_file_to_conversation(
         db,
         file_id=file_id,
@@ -544,7 +566,7 @@ async def attach_file_to_chat(
         uid=current_user.id,
         chat_id=request.chat_id,
         file_id=file_id,
-        status_value="ready",
+        status_value=file_obj.status,
     )
     return FileAttachResponse(
         status="attached",
@@ -590,17 +612,20 @@ async def reprocess_file(
     if not raw_path.exists():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Raw file is missing on disk")
 
-    processing_id = await process_file_async(
-        file_id=file_obj.id,
-        file_path=raw_path,
-        embedding_mode=request.embedding_provider,
-        embedding_model=request.embedding_model,
-        pipeline_version=request.pipeline_version,
-        parser_version=request.parser_version,
-        artifact_version=request.artifact_version,
-        chunking_strategy=request.chunking_strategy,
-        retrieval_profile=request.retrieval_profile,
-    )
+    try:
+        processing_id = await process_file_async(
+            file_id=file_obj.id,
+            file_path=raw_path,
+            embedding_mode=request.embedding_provider,
+            embedding_model=request.embedding_model,
+            pipeline_version=request.pipeline_version,
+            parser_version=request.parser_version,
+            artifact_version=request.artifact_version,
+            chunking_strategy=request.chunking_strategy,
+            retrieval_profile=request.retrieval_profile,
+        )
+    except ValueError as exc:
+        _raise_preflight_validation_error(exc)
     _log_file_lifecycle_event(
         "file_reprocess_scheduled",
         uid=current_user.id,

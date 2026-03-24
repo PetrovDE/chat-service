@@ -21,6 +21,10 @@ HTTP errors are returned by global handlers in a normalized envelope:
 
 Validation errors (`422`) include `details`.
 
+Current error envelope shape:
+- HTTP/Domain errors: `{"error":{"code":"http_<status>","message":"..."}}`
+- Validation (`422`): `{"error":{"code":"validation_error","message":"Request validation failed","details":[...]}}`
+
 ## File API (persistent user file model)
 
 | Method | Path | Purpose |
@@ -65,6 +69,11 @@ RAG metadata and filters now include:
 
 Retrieval uses chat-linked files and active processing IDs for those files.
 Files without active ready processing are excluded from retrieval/analysis paths.
+
+Notes:
+- `GET /api/v1/files/{file_id}/status` returns file lifecycle status (`uploaded|processing|ready|failed|deleting|deleted`) in `status`.
+- Detailed ingestion phase (`queued|parsing|...`) is exposed via `stage` and counters from active processing progress.
+- `POST /api/v1/files/{file_id}/attach` accepts only file states `uploaded|processing|ready`; otherwise returns `409`.
 
 ## Frontend Integration Notes (2026-03-23)
 

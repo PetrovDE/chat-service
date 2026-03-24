@@ -53,5 +53,10 @@ Configured in `app/core/config.py`, rooted in service folder:
 
 ## Migration
 
-- New schema migration:
-  - `alembic/versions/7f3c2f6b9d11_persistent_user_files_architecture.py`
+- Alembic config:
+  - `alembic.ini`
+  - `alembic/env.py`
+- Current clean-slate initial migration:
+  - `alembic/versions/*_initial_clean_schema.py`
+- Clean reset runbook:
+  - `docs/20_alembic_clean_slate.md`

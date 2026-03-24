@@ -31,7 +31,7 @@ async def get_conversations(
         current_user: User = Depends(get_current_user)
 ):
     """Get user conversations"""
-    logger.info(f"📋 Getting conversations for user {current_user.username} (ID: {current_user.id})")
+    logger.info("Getting conversations for user=%s id=%s", current_user.username, current_user.id)
 
     try:
         conversations = await crud_conversation.get_user_conversations(
@@ -41,10 +41,10 @@ async def get_conversations(
             limit=limit,
             include_archived=include_archived
         )
-        logger.info(f"✅ Found {len(conversations)} conversations")
+        logger.info("Found conversations count=%d", len(conversations))
         return conversations
     except Exception as e:
-        logger.error(f"❌ Error getting conversations: {e}", exc_info=True)
+        logger.error("Error getting conversations: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)

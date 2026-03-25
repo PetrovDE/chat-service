@@ -1,0 +1,21 @@
+---
+description: Runtime boundaries and contract tests
+alwaysApply: true
+---
+
+Runtime boundary rules:
+- API layer handles transport concerns only.
+- Domain/planner logic stays transport- and infrastructure-neutral.
+- Runtime adapters (`rag`, `tabular`, provider clients) do not own user-facing copy.
+- Debug payload assembly must use shared builders/helpers.
+
+Mandatory tests when behavior changes:
+- Routing tests.
+- Fallback tests.
+- Debug contract tests.
+- Matching and schema-resolution tests.
+
+Blocked patterns:
+- Hardcoded domain-specific runtime field hints.
+- Silent guessed column or table fallback.
+- Expanding oversized mixed-responsibility files without extraction rationale.

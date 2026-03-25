@@ -59,7 +59,41 @@ Thumbs.db
 
 docker-compose.db.yml
 .editorconfig
-/.cursor/
 
-# Docs workspace (track selected architecture docs)
+# Cursor workspace (track rule contracts)
+/.cursor/*
+!/.cursor/rules/
+!/.cursor/rules/00-architecture-guardrails.mdc
+!/.cursor/rules/10-doc-reading-order.mdc
+!/.cursor/rules/20-runtime-boundaries.mdc
+
+# Docs workspace (track selected architecture docs + governance layer)
 /docs/*
+!/docs/00_project_map.md
+!/docs/00_system_overview.md
+!/docs/01_architecture_overview.md
+!/docs/01_service_spec.md
+!/docs/02_api_contracts.md
+!/docs/02_service_structure.md
+!/docs/03_rag_pipeline.md
+!/docs/04_frontend_architecture.md
+!/docs/04_ingestion_pipeline.md
+!/docs/05_query_planner.md
+!/docs/06_tabular_runtime.md
+!/docs/07_llm_routing.md
+!/docs/08_sql_guardrails.md
+!/docs/09_observability.md
+!/docs/10_eval_framework.md
+!/docs/12_architecture_decisions.md
+!/docs/13_persistent_user_files_architecture.md
+!/docs/19_big_file_refactor_complex_analytics.md
+!/docs/20_alembic_clean_slate.md
+!/docs/rag_debugging.md
+!/docs/README.md
+!/docs/architecture_guardrails.md
+!/docs/module_boundaries.md
+!/docs/architecture_docs_reconciliation.md
+!/docs/adr/
+!/docs/adr/*.md
+!/docs/runbooks/
+!/docs/runbooks/*.md

@@ -1,0 +1,17 @@
+---
+description: Documentation reading order and source-of-truth enforcement
+alwaysApply: true
+---
+
+Before implementation:
+1. Read `docs/README.md`.
+2. Identify canonical source-of-truth docs for the task.
+3. Treat `docs/archive/*` and `docs/rag_debug/*` as non-canonical context.
+
+When behavior contracts change:
+- Update canonical docs in the same change.
+- Keep ADR references aligned in `docs/12_architecture_decisions.md` when new ADRs are added.
+
+Language policy for engineering artifacts:
+- English only in docs, rules, comments, and developer-facing notes.
+- Do not introduce Cyrillic in engineering artifacts.

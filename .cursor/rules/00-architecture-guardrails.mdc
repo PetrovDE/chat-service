@@ -1,0 +1,19 @@
+---
+description: Architecture guardrails for runtime and refactors
+alwaysApply: true
+---
+
+Read and follow these documents before changing code:
+1. `docs/README.md`
+2. `docs/architecture_guardrails.md`
+3. `docs/module_boundaries.md`
+
+Required constraints:
+- One module, one primary responsibility.
+- Do not mix routing, execution, rendering, localization, fallback, and debug assembly in one module.
+- Low-level runtime modules must not contain user-facing copy.
+- Runtime matching must be schema-first and metadata-driven.
+- No domain-specific hardcoded field hints in runtime matching.
+- No silent fallback guesses.
+- Prefer extraction over appending logic to oversized files.
+- Update canonical docs when architecture contracts change.

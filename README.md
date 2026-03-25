@@ -111,14 +111,7 @@ Do not use `scripts/init_db.py` as migration source of truth for this flow.
 Detailed runbook: [docs/20_alembic_clean_slate.md](docs/20_alembic_clean_slate.md)
 
 ## Canonical Documentation
-- [docs/00_project_map.md](docs/00_project_map.md)
-- [docs/01_service_spec.md](docs/01_service_spec.md)
-- [docs/02_api_contracts.md](docs/02_api_contracts.md)
-- [docs/01_architecture_overview.md](docs/01_architecture_overview.md)
-- [docs/05_query_planner.md](docs/05_query_planner.md)
-- [docs/07_llm_routing.md](docs/07_llm_routing.md)
-- [docs/09_observability.md](docs/09_observability.md)
-- [docs/13_persistent_user_files_architecture.md](docs/13_persistent_user_files_architecture.md)
-- [docs/19_big_file_refactor_complex_analytics.md](docs/19_big_file_refactor_complex_analytics.md)
-- [docs/20_alembic_clean_slate.md](docs/20_alembic_clean_slate.md)
-- [docs/adr/ADR-014-complex-analytics-sandbox-executor.md](docs/adr/ADR-014-complex-analytics-sandbox-executor.md)
+- [docs/README.md](docs/README.md) (index, categories, reading order)
+- [docs/architecture_guardrails.md](docs/architecture_guardrails.md)
+- [docs/module_boundaries.md](docs/module_boundaries.md)
+- [docs/12_architecture_decisions.md](docs/12_architecture_decisions.md)

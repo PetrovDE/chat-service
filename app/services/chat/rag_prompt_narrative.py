@@ -7,8 +7,12 @@ import uuid
 
 from app.core.config import settings
 from app.observability.slo_metrics import observe_retrieval_coverage, observe_tabular_row_coverage
+from app.services.chat.controlled_response_composer import (
+    build_no_retrieval_message,
+    build_runtime_error_message,
+)
 from app.services.chat.embedding_config import group_files_by_embedding_config, resolve_rag_embedding_config
-from app.services.chat.language import apply_language_policy_to_prompt, localized_text
+from app.services.chat.language import apply_language_policy_to_prompt
 from app.services.chat.rag_retrieval_helpers import (
     collect_context_and_debug as _collect_context_and_debug,
     run_grouped_retrieval as _run_grouped_retrieval,
@@ -373,16 +377,8 @@ async def run_narrative_retrieval_path(
             )
         else:
             logger.info("RAG: no relevant chunks")
-            no_retrieval_prompt = localized_text(
+            no_retrieval_prompt = build_no_retrieval_message(
                 preferred_lang=preferred_lang,
-                ru=(
-                    "Не удалось найти релевантные фрагменты в доступных файлах для этого запроса. "
-                    "Уточните формулировку, фильтры или название листа/колонки."
-                ),
-                en=(
-                    "No relevant chunks were found in the available files for this query. "
-                    "Please clarify wording, filters, or sheet/column name."
-                ),
             )
             final_prompt = no_retrieval_prompt
             rag_used = False
@@ -399,19 +395,12 @@ async def run_narrative_retrieval_path(
             rag_debug["selected_route"] = "narrative_no_retrieval"
             rag_debug["fallback_type"] = "retrieval_empty"
             rag_debug["fallback_reason"] = "no_relevant_chunks"
+            rag_debug["controlled_response_state"] = "no_retrieval"
 
     except Exception as exc:
         logger.exception("RAG retrieval failed with strict contract: %s", exc)
-        error_prompt = localized_text(
+        error_prompt = build_runtime_error_message(
             preferred_lang=preferred_lang,
-            ru=(
-                "Ошибка внутреннего контура retrieval по файлам. "
-                "Повторите, пожалуйста, этот же запрос."
-            ),
-            en=(
-                "File context retrieval failed due an internal error. "
-                "Please retry the same request."
-            ),
         )
         final_prompt = error_prompt
         rag_used = False
@@ -435,6 +424,7 @@ async def run_narrative_retrieval_path(
             "selected_route": "narrative_error",
             "fallback_type": "retrieval_runtime_error",
             "fallback_reason": "retrieval_runtime_error",
+            "controlled_response_state": "runtime_error",
             "rag_mode": rag_mode or "auto",
             "rag_mode_effective": "narrative_error",
             "file_ids": rag_file_ids,

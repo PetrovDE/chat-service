@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.crud import crud_message
 from app.schemas import ChatMessage, ChatResponse
-from app.services.chat.language import localized_text
+from app.services.chat.controlled_response_composer import build_runtime_error_message
 from app.services.llm.manager import llm_manager
 
 logger = logging.getLogger(__name__)
@@ -320,21 +320,14 @@ async def stream_chat_events(
     except Exception as exc:
         logger.error("Streaming error: %s", exc, exc_info=True)
         preferred_lang = str(ctx.get("preferred_lang") or "ru")
-        controlled_message = localized_text(
+        controlled_message = build_runtime_error_message(
             preferred_lang=preferred_lang,
-            ru=(
-                "Ошибка внутреннего runtime при формировании ответа по текущему контексту файлов. "
-                "Повторите запрос."
-            ),
-            en=(
-                "Internal runtime error while building an answer from the current file context. "
-                "Please retry the request."
-            ),
         )
         error_payload = {
             "type": "error",
             "message": controlled_message,
             "error_type": type(exc).__name__,
+            "controlled_response_state": "runtime_error",
             "fallback_type": "orchestrator_runtime_error",
             "fallback_reason": "runtime_exception",
             "response_language": preferred_lang,
@@ -522,21 +515,14 @@ async def run_nonstream_chat(
     except Exception as exc:
         logger.error("Non-stream generation error: %s", exc, exc_info=True)
         preferred_lang = str(ctx.get("preferred_lang") or "ru")
-        response_text = localized_text(
+        response_text = build_runtime_error_message(
             preferred_lang=preferred_lang,
-            ru=(
-                "Ошибка внутреннего runtime при формировании ответа по текущему контексту файлов. "
-                "Повторите запрос."
-            ),
-            en=(
-                "Internal runtime error while building an answer from the current file context. "
-                "Please retry the request."
-            ),
         )
         rag_debug_ctx = ctx.get("rag_debug")
         if isinstance(rag_debug_ctx, dict):
             rag_debug_ctx["fallback_type"] = "orchestrator_runtime_error"
             rag_debug_ctx["fallback_reason"] = "runtime_exception"
+            rag_debug_ctx["controlled_response_state"] = "runtime_error"
             rag_debug_ctx["response_language"] = preferred_lang
             rag_debug_ctx["requires_clarification"] = True
             rag_debug_ctx["clarification_prompt"] = response_text

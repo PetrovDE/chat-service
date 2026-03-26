@@ -126,6 +126,7 @@ def build_missing_column_response(
             "matched_column": decision.matched_column,
             "match_score": decision.match_score,
             "match_strategy": decision.match_strategy or "none",
+            "controlled_response_state": "missing_column",
         },
     )
     return apply_route_debug(payload=payload, decision=decision, detected_language=preferred_lang)

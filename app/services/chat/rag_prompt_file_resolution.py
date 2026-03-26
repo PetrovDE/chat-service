@@ -7,7 +7,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.chat.language import localized_text
+from app.services.chat.controlled_response_composer import (
+    build_ambiguous_file_message,
+    build_file_not_found_message,
+    build_no_context_message as build_no_context_controlled_message,
+)
 
 logger = logging.getLogger(__name__)
 RagPromptResult = Tuple[str, bool, Optional[Dict[str, Any]], List[Dict[str, Any]], List[str], List[str]]
@@ -128,17 +132,9 @@ def _format_match_option(file_obj: Any, *, preferred_lang: str) -> str:
 
 
 def _build_not_found_message(*, missing_candidates: List[str], preferred_lang: str) -> str:
-    listed = ", ".join([f"`{item}`" for item in missing_candidates[:5]])
-    return localized_text(
+    return build_file_not_found_message(
         preferred_lang=preferred_lang,
-        ru=(
-            f"\u041d\u0435 \u043d\u0430\u0448\u0451\u043b \u0444\u0430\u0439\u043b(\u044b) {listed} \u0441\u0440\u0435\u0434\u0438 \u0432\u0430\u0448\u0438\u0445 \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043d\u044b\u0445 \u0444\u0430\u0439\u043b\u043e\u0432. "
-            "\u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u0438\u043c\u044f \u0444\u0430\u0439\u043b\u0430 \u0438\u043b\u0438 \u0434\u043e\u0436\u0434\u0438\u0442\u0435\u0441\u044c \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0438\u044f \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0438."
-        ),
-        en=(
-            f"I could not find file(s) {listed} among your processed files. "
-            "Please verify the filename or wait until processing is complete."
-        ),
+        missing_candidates=missing_candidates,
     )
 
 
@@ -147,35 +143,21 @@ def _build_ambiguous_message(
     ambiguous: Dict[str, List[Any]],
     preferred_lang: str,
 ) -> str:
-    lines: List[str] = []
+    ambiguous_options: Dict[str, List[str]] = {}
     for candidate, matches in list(ambiguous.items())[:3]:
-        if preferred_lang == "ru":
-            lines.append(
-                f"\u0414\u043b\u044f `{candidate}` \u043d\u0430\u0439\u0434\u0435\u043d\u043e \u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0432\u0430\u0440\u0438\u0430\u043d\u0442\u043e\u0432:"
-            )
-        else:
-            lines.append(f"Multiple matches were found for `{candidate}`:")
-        for idx, file_obj in enumerate(matches[:5], start=1):
-            lines.append(f"{idx}. {_format_match_option(file_obj, preferred_lang=preferred_lang)}")
-    header = localized_text(
+        ambiguous_options[candidate] = [
+            _format_match_option(file_obj, preferred_lang=preferred_lang)
+            for file_obj in matches[:5]
+        ]
+    return build_ambiguous_file_message(
         preferred_lang=preferred_lang,
-        ru="\u0423\u0442\u043e\u0447\u043d\u0438\u0442\u0435, \u043a\u0430\u043a\u043e\u0439 \u0444\u0430\u0439\u043b \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u044c:",
-        en="Please clarify which file should be used:",
+        ambiguous_options=ambiguous_options,
     )
-    return "\n".join([header, *lines]).strip()
 
 
 def build_no_context_message(*, preferred_lang: str) -> str:
-    return localized_text(
+    return build_no_context_controlled_message(
         preferred_lang=preferred_lang,
-        ru=(
-            "\u0412 \u044d\u0442\u043e\u043c \u0447\u0430\u0442\u0435 \u043d\u0435\u0442 \u0433\u043e\u0442\u043e\u0432\u044b\u0445 \u0444\u0430\u0439\u043b\u043e\u0432 \u0434\u043b\u044f \u043e\u0442\u0432\u0435\u0442\u0430 \u043f\u043e \u0434\u0430\u043d\u043d\u044b\u043c. "
-            "\u041f\u0440\u0438\u043a\u0440\u0435\u043f\u0438\u0442\u0435 \u0444\u0430\u0439\u043b \u043a \u0447\u0430\u0442\u0443 \u0438\u043b\u0438 \u0443\u043a\u0430\u0436\u0438\u0442\u0435 \u0444\u0430\u0439\u043b \u043f\u043e \u0438\u043c\u0435\u043d\u0438, \u0438 \u044f \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0443."
-        ),
-        en=(
-            "There are no ready files in this chat for file-based answering. "
-            "Attach a file to this chat or reference a filename, and I will continue."
-        ),
     )
 
 
@@ -188,12 +170,19 @@ def _build_file_resolution_clarification_result(
     files: List[Any],
     resolution_meta: Dict[str, Any],
 ) -> RagPromptResult:
+    resolution_status = str(resolution_meta.get("file_resolution_status") or "not_requested")
+    controlled_state = {
+        "not_found": "file_not_found",
+        "ambiguous": "ambiguous_file",
+        "no_context_files": "no_context",
+    }.get(resolution_status, "clarification")
     rag_debug: Dict[str, Any] = {
         "intent": "file_resolution",
         "retrieval_mode": "file_resolution",
         "execution_route": "clarification",
         "requires_clarification": True,
         "clarification_prompt": prompt,
+        "controlled_response_state": controlled_state,
         "executor_attempted": False,
         "executor_status": "not_attempted",
         "executor_error_code": None,

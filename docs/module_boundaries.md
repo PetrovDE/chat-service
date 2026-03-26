@@ -27,6 +27,7 @@ The project currently uses these shared contract points:
 - Error envelope mapping: `app/core/error_handlers.py`
 - Transport contracts: `app/schemas/*`
 - Domain planner contracts: `app/domain/chat/query_planner.py`
+- Controlled user-facing fallback/clarification composition: `app/services/chat/controlled_response_composer.py`
 
 If a dedicated shared contracts package is introduced later, it must preserve the same dependency direction (inward-only for business logic).
 

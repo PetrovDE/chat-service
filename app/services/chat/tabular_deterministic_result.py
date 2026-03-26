@@ -6,7 +6,7 @@ import uuid
 
 from app.domain.chat.query_planner import QueryPlanDecision
 from app.observability.slo_metrics import observe_retrieval_coverage, observe_tabular_row_coverage
-from app.services.chat.language import apply_language_policy_to_prompt, localized_text
+from app.services.chat.language import apply_language_policy_to_prompt
 from app.services.chat.tabular_response_composer import build_chart_response_text
 
 
@@ -69,23 +69,6 @@ def _build_chart_short_circuit_response(
     tabular_debug = rag_debug.get("tabular_sql") if isinstance(rag_debug.get("tabular_sql"), dict) else {}
     result_text = str(tabular_debug.get("result") or "").strip()
     chart_artifact_available = bool(rag_debug.get("chart_artifact_available"))
-    if not chart_artifact_available:
-        return localized_text(
-            preferred_lang=preferred_lang,
-            ru=(
-                "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0434\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c "
-                "\u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0435 \u0433\u0440\u0430\u0444\u0438\u043a\u0430. "
-                f"\u0414\u0435\u0442\u0435\u0440\u043c\u0438\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0435 "
-                f"\u0434\u0430\u043d\u043d\u044b\u0435 \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f "
-                f"\u043e\u0441\u0442\u0430\u044e\u0442\u0441\u044f \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u044b (reason={chart_delivery_reason}). "
-                f"\u0414\u0430\u043d\u043d\u044b\u0435 \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f: {result_text}"
-            ),
-            en=(
-                "The chart image could not be delivered. "
-                f"Deterministic distribution data is still available (reason={chart_delivery_reason}). "
-                f"Distribution data: {result_text}"
-            ),
-        )
     response_text = build_chart_response_text(
         preferred_lang=preferred_lang,
         column_label=column_label,
@@ -159,9 +142,11 @@ def build_tabular_success_route_result(
         if chart_artifact_exists:
             rag_debug["fallback_type"] = "none"
             rag_debug["fallback_reason"] = "none"
+            rag_debug["controlled_response_state"] = "chart_render_success"
         else:
             rag_debug["fallback_type"] = "tabular_chart_render_failed"
             rag_debug["fallback_reason"] = str(rag_debug.get("chart_fallback_reason") or "chart_render_failed")
+            rag_debug["controlled_response_state"] = "chart_render_failed"
             rag_debug["artifacts"] = []
             rag_debug["artifacts_count"] = 0
     else:

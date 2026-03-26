@@ -189,6 +189,7 @@ def _build_no_context_debug_payload(
         "execution_route": "clarification",
         "requires_clarification": True,
         "clarification_prompt": no_context_prompt,
+        "controlled_response_state": "no_context",
         "executor_attempted": False,
         "executor_status": "not_attempted",
         "executor_error_code": None,

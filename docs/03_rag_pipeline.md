@@ -91,3 +91,16 @@ Boundary intent:
 - `rag_prompt_routes` remains route orchestration and branch selection.
 - deterministic success debug/fallback/chart short-circuit shaping is centralized in a shared helper.
 - route behavior and debug contract fields stay backward compatible.
+
+## Update 2026-03-26 (Response Composition Boundary Cleanup)
+
+Controlled response wording for file-aware, narrative fallback, deterministic
+chart fallback, and runtime error states is centralized in:
+
+- `app/services/chat/controlled_response_composer.py`
+
+Boundary intent:
+- runtime/execution modules return structured states and reasons,
+- chat response-composition layer owns final user-facing RU/EN wording,
+- controlled fallback wording stays consistent across file resolution, no-retrieval,
+  missing-column, chart-delivery-failed, and runtime-error states.

@@ -372,13 +372,16 @@ def _build_tabular_error_result(
                 "chart_artifact_available": False,
                 "chart_artifact_exists": False,
                 "chart_fallback_reason": "requested_field_not_matched",
+                "controlled_response_state": "chart_unmatched_field",
                 "response_language": preferred_lang,
             },
         )
         return payload
 
+    controlled_state = "tabular_execution_error"
     if error_code == SQL_ERROR_TIMEOUT:
         payload["clarification_prompt"] = build_timeout_message(preferred_lang=preferred_lang)
+        controlled_state = "tabular_timeout"
     elif requested_field_text or candidate_columns:
         payload["clarification_prompt"] = build_missing_column_message(
             preferred_lang=preferred_lang,
@@ -386,6 +389,7 @@ def _build_tabular_error_result(
             alternatives=[str(item) for item in candidate_columns],
             ambiguous=False,
         )
+        controlled_state = "missing_column"
     else:
         payload["clarification_prompt"] = build_execution_error_message(preferred_lang=preferred_lang)
 
@@ -395,6 +399,7 @@ def _build_tabular_error_result(
             "requested_field_text": requested_field_text or None,
             "candidate_columns": [str(item) for item in candidate_columns],
             "scored_candidates": list(scored_candidates),
+            "controlled_response_state": controlled_state,
         },
     )
     return payload

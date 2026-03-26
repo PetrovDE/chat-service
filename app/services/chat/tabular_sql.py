@@ -453,7 +453,7 @@ def _build_schema_question_payload(
     *,
     query: str,
     dataset: ResolvedTabularDataset,
-    table: ResolvedTabularTable,
+    table: Optional[ResolvedTabularTable],
     target_file: Any,
     decision: TabularIntentDecision,
 ) -> Dict[str, Any]:
@@ -859,11 +859,21 @@ async def execute_tabular_sql_path(
         resolve_dataset_fn=resolve_tabular_dataset,
     )
     scope_debug_fields = dict(scope_decision.debug_fields or {})
+    parsed_query = parse_tabular_query(query)
     if scope_decision.status == "no_tabular_dataset":
         return None
 
-    if scope_decision.status in {"ambiguous_file", "ambiguous_table"}:
-        scope_kind = "file" if scope_decision.status == "ambiguous_file" else "sheet/table"
+    if scope_decision.status == "ambiguous_file":
+        scope_kind = "file"
+        return build_scope_clarification_route_payload(
+            query=query,
+            scope_kind=scope_kind,
+            scope_options=list(scope_decision.clarification_options or []),
+            scope_debug=scope_debug_fields,
+        )
+
+    if scope_decision.status == "ambiguous_table" and parsed_query.route != "schema_question":
+        scope_kind = "sheet/table"
         return build_scope_clarification_route_payload(
             query=query,
             scope_kind=scope_kind,
@@ -874,7 +884,7 @@ async def execute_tabular_sql_path(
     target_file = scope_decision.target_file
     dataset = scope_decision.dataset
     table = scope_decision.table
-    if target_file is None or dataset is None or table is None:
+    if target_file is None or dataset is None:
         return None
 
     intent_decision = classify_tabular_query(query=query, table=table)

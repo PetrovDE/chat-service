@@ -11,6 +11,16 @@ SCHEMA_HINTS: Tuple[str, ...] = (
     "column names",
     "list columns",
     "what columns",
+    "which fields are important",
+    "what is in this file",
+    "tell me about this file",
+    "what can i analyze here",
+    "which sheets",
+    "what sheets",
+    "sheets available",
+    "which tables",
+    "what tables",
+    "tables available",
     "какие колонки",
     "какие столбцы",
     "какие поля",
@@ -316,4 +326,3 @@ def parse_tabular_query(query: str) -> ParsedTabularQuery:
         lookup_value_text=lookup_value_text,
         requested_fields=requested_fields,
     )
-

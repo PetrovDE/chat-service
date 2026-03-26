@@ -95,6 +95,7 @@ Deterministic tabular scope selection (file + sheet/table) now applies explicit 
   - `no_tabular_dataset`
 - ambiguous file/sheet scope now returns controlled clarification (concise options), instead of implicit first-file/first-sheet selection.
 - deterministic route keeps explicit no-guess behavior for columns/tables/sheets/files.
+- schema/file-summary queries (`schema_question`) are allowed to return a multi-sheet summary context for the selected file when sheet ranking is ambiguous, so users can see available sheets/tables and pick a next step without silent sheet selection.
 
 Scope observability fields (debug, additive and backward compatible):
 

@@ -183,3 +183,75 @@ def test_regression_route_telemetry_contains_new_fields(monkeypatch):
     assert "matched_columns" in debug
     assert "unmatched_requested_fields" in debug
     assert "fallback_reason" in debug
+
+
+def test_which_sheets_are_available_returns_multi_sheet_schema_summary(monkeypatch):
+    dataset = ResolvedTabularDataset(
+        engine="duckdb_parquet",
+        dataset_id="ds-routing",
+        dataset_version=1,
+        dataset_provenance_id="prov-routing",
+        tables=[
+            ResolvedTabularTable(
+                table_name="north_sheet",
+                sheet_name="North",
+                row_count=120,
+                columns=["request_id", "created_at", "city", "amount_rub"],
+                column_aliases={},
+                table_version=1,
+                provenance_id="tbl-north",
+                parquet_path=None,
+            ),
+            ResolvedTabularTable(
+                table_name="south_sheet",
+                sheet_name="South",
+                row_count=120,
+                columns=["request_id", "created_at", "city", "amount_rub"],
+                column_aliases={},
+                table_version=1,
+                provenance_id="tbl-south",
+                parquet_path=None,
+            ),
+        ],
+        catalog_path=None,
+    )
+    file_obj = _file_obj()
+    monkeypatch.setattr(tsql, "resolve_tabular_dataset", lambda _: dataset)
+
+    result = asyncio.run(
+        tsql.execute_tabular_sql_path(
+            query="which sheets are available in this file?",
+            files=[file_obj],
+        )
+    )
+
+    assert result is not None
+    assert result["status"] == "ok"
+    assert result["debug"]["selected_route"] == "schema_question"
+    assert result["debug"]["scope_selection_status"] == "ambiguous_table"
+    prompt_context = str(result.get("prompt_context") or "")
+    assert '"tables_total": 2' in prompt_context
+    assert '"sheet_name": "North"' in prompt_context
+    assert '"sheet_name": "South"' in prompt_context
+    assert '"next_question_suggestions"' in prompt_context
+
+
+def test_tell_me_about_this_file_routes_to_schema_summary(monkeypatch):
+    dataset = _build_dataset(["request_id", "created_at", "city", "status", "amount_rub"])
+    file_obj = _file_obj()
+    monkeypatch.setattr(tsql, "resolve_tabular_dataset", lambda _: dataset)
+
+    result = asyncio.run(
+        tsql.execute_tabular_sql_path(
+            query="tell me about this file",
+            files=[file_obj],
+        )
+    )
+
+    assert result is not None
+    assert result["status"] == "ok"
+    assert result["debug"]["selected_route"] == "schema_question"
+    prompt_context = str(result.get("prompt_context") or "")
+    assert '"summary_statement"' in prompt_context
+    assert '"relevant_fields"' in prompt_context
+    assert '"next_question_suggestions"' in prompt_context

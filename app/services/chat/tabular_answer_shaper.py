@@ -103,43 +103,47 @@ def _source_scope_hint(rag_sources: Sequence[str]) -> str:
     return f"Primary source scope: {sources[0]}."
 
 
-def _schema_relevant_fields(columns: Sequence[str]) -> List[str]:
-    if not columns:
+def _schema_tables(schema_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    tables_raw = schema_payload.get("tables")
+    if not isinstance(tables_raw, list):
         return []
+    return [item for item in tables_raw if isinstance(item, dict)]
 
-    time_tokens = ("date", "time", "month", "year", "day", "timestamp")
-    measure_tokens = ("amount", "total", "sum", "avg", "price", "cost", "revenue", "sales", "qty", "quantity", "score", "rate", "value")
-    identifier_tokens = ("id", "uuid", "key")
 
-    time_fields: List[str] = []
-    measure_fields: List[str] = []
-    category_fields: List[str] = []
-    id_fields: List[str] = []
-    seen = set()
-    for raw in columns:
-        field = str(raw or "").strip()
-        if not field:
-            continue
-        key = field.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        lowered = key
-        if any(token in lowered for token in time_tokens):
-            time_fields.append(field)
-            continue
-        if any(token in lowered for token in measure_tokens):
-            measure_fields.append(field)
-            continue
-        if any(token in lowered for token in identifier_tokens):
-            id_fields.append(field)
-            continue
-        category_fields.append(field)
+def _preferred_schema_table(schema_payload: Dict[str, Any]) -> Dict[str, Any]:
+    tables = _schema_tables(schema_payload)
+    selected_scope = schema_payload.get("selected_scope")
+    selected_table_name = None
+    if isinstance(selected_scope, dict):
+        selected_table_name = str(selected_scope.get("table_name") or "").strip().lower()
+    if selected_table_name:
+        for table in tables:
+            table_name = str(table.get("table_name") or "").strip().lower()
+            if table_name == selected_table_name:
+                return table
+    return tables[0] if tables else {}
 
-    ranked = [*time_fields, *measure_fields, *category_fields, *id_fields]
-    if not ranked:
-        return []
-    return ranked[:6]
+
+def _render_relevant_fields(preferred_table: Dict[str, Any]) -> str:
+    relevant = preferred_table.get("relevant_fields")
+    if not isinstance(relevant, list):
+        return ""
+    rendered: List[str] = []
+    for item in relevant[:6]:
+        if not isinstance(item, dict):
+            continue
+        field_name = str(item.get("name") or "").strip()
+        if not field_name:
+            continue
+        reasons = item.get("reasons")
+        reasons_text = ""
+        if isinstance(reasons, list) and reasons:
+            reasons_text = "; ".join([str(reason).strip() for reason in reasons if str(reason).strip()][:2])
+        if reasons_text:
+            rendered.append(f"{field_name} ({reasons_text})")
+        else:
+            rendered.append(field_name)
+    return ", ".join(rendered)
 
 
 def _schema_hint_block(tabular_sql_result: Dict[str, Any]) -> str:
@@ -149,20 +153,45 @@ def _schema_hint_block(tabular_sql_result: Dict[str, Any]) -> str:
     if not schema_payload:
         return ""
 
-    table_name = str(schema_payload.get("table_name") or "").strip()
-    row_count = schema_payload.get("row_count")
-    columns = schema_payload.get("columns") if isinstance(schema_payload.get("columns"), list) else []
-    selected_fields = _schema_relevant_fields(columns)
+    file_name = str(schema_payload.get("file_name") or "").strip()
+    summary_statement = str(schema_payload.get("summary_statement") or "").strip()
+    tables_total = int(schema_payload.get("tables_total", 0) or 0)
+    rows_total = int(schema_payload.get("rows_total", 0) or 0)
+    selected_scope = schema_payload.get("selected_scope") if isinstance(schema_payload.get("selected_scope"), dict) else {}
+    selected_scope_label = str(selected_scope.get("scope_label") or "").strip()
+    preferred_table = _preferred_schema_table(schema_payload)
+    table_scope = str(preferred_table.get("scope_label") or "").strip()
+    relevant_fields_preview = _render_relevant_fields(preferred_table)
+    next_questions = schema_payload.get("next_question_suggestions")
+    next_questions_preview = (
+        " | ".join([str(item).strip() for item in list(next_questions or []) if str(item).strip()][:3])
+        if isinstance(next_questions, list)
+        else ""
+    )
+    tables_preview = []
+    for table in _schema_tables(schema_payload)[:4]:
+        scope = str(table.get("scope_label") or "").strip()
+        row_count = int(table.get("row_count", 0) or 0)
+        if scope:
+            tables_preview.append(f"{scope}, rows={row_count}")
 
     lines: List[str] = []
-    if table_name:
-        lines.append(f"- Table: {table_name}")
-    if row_count is not None:
-        lines.append(f"- Row count: {row_count}")
-    if columns:
-        lines.append(f"- Columns total: {len(columns)}")
-    if selected_fields:
-        lines.append(f"- Most relevant analysis fields (max 6): {', '.join(selected_fields)}")
+    if file_name:
+        lines.append(f"- File: {file_name}")
+    if selected_scope_label:
+        lines.append(f"- Selected scope: {selected_scope_label}")
+    elif table_scope:
+        lines.append(f"- Preferred scope for examples: {table_scope}")
+    if summary_statement:
+        lines.append(f"- First-impression summary: {summary_statement}")
+    if tables_total > 1:
+        lines.append(f"- Tables/sheets total: {tables_total} (rows total across tables: {rows_total})")
+    if tables_preview:
+        lines.append(f"- Available scopes preview: {' | '.join(tables_preview)}")
+    if relevant_fields_preview:
+        lines.append(f"- Most relevant analysis fields (max 6): {relevant_fields_preview}")
+    if next_questions_preview:
+        lines.append(f"- Suggested next questions: {next_questions_preview}")
     if not lines:
         return ""
     return "Schema summary hint:\n" + "\n".join(lines)
@@ -207,7 +236,11 @@ def build_tabular_answer_quality_guidance(
     if route == "schema_question":
         lines.extend(
             [
-                "- For schema/file summary requests, describe available data first, then list only the most relevant fields.",
+                "- For schema/file summary requests, open with a one-sentence first impression of the file and current scope.",
+                "- Explain what kind of data is present before listing fields.",
+                "- Prioritize only the most analysis-relevant fields with brief evidence; do not dump every column by default.",
+                "- If multiple sheets/tables exist, name them clearly and do not guess one silently.",
+                "- End with one or two concrete next-step questions tailored to available fields/scope.",
                 "- Keep schema summaries concise; avoid full column dumps unless the user explicitly asks for all columns.",
             ]
         )

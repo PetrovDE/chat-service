@@ -14,6 +14,7 @@ from app.services.chat.tabular_intent_router import (
     TabularIntentDecision,
     suggest_relevant_alternative_columns,
 )
+from app.services.chat.tabular_schema_summary_shaper import build_schema_summary_context
 from app.services.chat.tabular_response_composer import (
     build_missing_column_message,
     build_scope_clarification_message,
@@ -230,22 +231,99 @@ def build_schema_question_payload(
     *,
     query: str,
     dataset: ResolvedTabularDataset,
-    table: ResolvedTabularTable,
+    table: ResolvedTabularTable | None,
     target_file: Any,
     decision: TabularIntentDecision,
 ) -> Dict[str, Any]:
-    aliases = table.column_aliases if isinstance(table.column_aliases, dict) else {}
     preferred_lang = detect_preferred_response_language(query)
+    selected_table = table
+    selected_aliases = selected_table.column_aliases if (selected_table and isinstance(selected_table.column_aliases, dict)) else {}
+    selected_columns = list(selected_table.columns) if selected_table is not None else []
+    selected_row_count = int(selected_table.row_count or 0) if selected_table is not None else 0
+    selected_table_name = str(selected_table.table_name) if selected_table is not None else None
+    selected_sheet_name = str(selected_table.sheet_name) if selected_table is not None else None
+
+    schema_summary_context = build_schema_summary_context(
+        query=query,
+        dataset=dataset,
+        target_file=target_file,
+        selected_table=selected_table,
+    )
     schema_payload = {
-        "table_name": table.table_name,
-        "row_count": int(table.row_count or 0),
-        "columns": list(table.columns),
-        "column_aliases": {str(key): str(value) for key, value in aliases.items()},
+        "table_name": selected_table_name,
+        "sheet_name": selected_sheet_name,
+        "row_count": selected_row_count,
+        "columns": selected_columns,
+        "column_aliases": {str(key): str(value) for key, value in selected_aliases.items()},
+        **schema_summary_context,
     }
-    prompt_context = "Deterministic table schema (source of truth):\n" + json.dumps(
+    prompt_context = "Deterministic schema/file summary context (source of truth):\n" + json.dumps(
         schema_payload,
         ensure_ascii=False,
         indent=2,
+    )
+    rows_total = int(schema_summary_context.get("rows_total", selected_row_count) or 0)
+    source_label = (
+        f"{getattr(target_file, 'original_filename', 'unknown')} "
+        f"| table={selected_table_name} | dataset_v={dataset.dataset_version} "
+        f"| table_v={selected_table.table_version} | schema"
+        if selected_table is not None
+        else (
+            f"{getattr(target_file, 'original_filename', 'unknown')} "
+            f"| dataset_v={dataset.dataset_version} | schema_multi_table"
+        )
+    )
+    dataset_debug_fields = (
+        build_dataset_debug_fields(dataset=dataset, table=selected_table)
+        if selected_table is not None
+        else {
+            "storage_engine": getattr(dataset, "engine", None),
+            "dataset_id": getattr(dataset, "dataset_id", None),
+            "dataset_version": getattr(dataset, "dataset_version", None),
+            "dataset_provenance_id": getattr(dataset, "dataset_provenance_id", None),
+            "table_name": None,
+            "sheet_name": None,
+            "table_version": None,
+            "table_provenance_id": None,
+            "table_row_count": 0,
+            "column_metadata_contract_version": getattr(dataset, "column_metadata_contract_version", None),
+            "column_metadata_present": bool(
+                int((getattr(dataset, "column_metadata_stats", {}) or {}).get("columns_with_metadata", 0) or 0) > 0
+            ),
+            "column_metadata_columns_total": int(
+                (getattr(dataset, "column_metadata_stats", {}) or {}).get("columns_total", 0) or 0
+            ),
+            "column_metadata_columns_with_metadata": int(
+                (getattr(dataset, "column_metadata_stats", {}) or {}).get("columns_with_metadata", 0) or 0
+            ),
+            "column_metadata_aliases_total": int(
+                (getattr(dataset, "column_metadata_stats", {}) or {}).get("aliases_total", 0) or 0
+            ),
+            "column_metadata_sample_values_total": int(
+                (getattr(dataset, "column_metadata_stats", {}) or {}).get("sample_values_total", 0) or 0
+            ),
+            "column_metadata_aliases_trimmed_total": int(
+                (getattr(dataset, "column_metadata_stats", {}) or {}).get("aliases_trimmed_total", 0) or 0
+            ),
+            "column_metadata_sample_values_trimmed_total": int(
+                (getattr(dataset, "column_metadata_stats", {}) or {}).get("sample_values_trimmed_total", 0) or 0
+            ),
+            "column_metadata_budget_enforced": bool(
+                (getattr(dataset, "column_metadata_stats", {}) or {}).get("metadata_budget_enforced", False)
+            ),
+            "dataset_column_metadata_columns_total": int(
+                (getattr(dataset, "column_metadata_stats", {}) or {}).get("columns_total", 0) or 0
+            ),
+            "dataset_column_metadata_columns_with_metadata": int(
+                (getattr(dataset, "column_metadata_stats", {}) or {}).get("columns_with_metadata", 0) or 0
+            ),
+            "dataset_column_metadata_aliases_total": int(
+                (getattr(dataset, "column_metadata_stats", {}) or {}).get("aliases_total", 0) or 0
+            ),
+            "dataset_column_metadata_sample_values_total": int(
+                (getattr(dataset, "column_metadata_stats", {}) or {}).get("sample_values_total", 0) or 0
+            ),
+        }
     )
     payload = {
         "status": "ok",
@@ -255,23 +333,17 @@ def build_schema_question_payload(
             "intent": "tabular_schema_question",
             "deterministic_path": True,
             "tabular_sql": {
-                **build_dataset_debug_fields(dataset=dataset, table=table),
+                **dataset_debug_fields,
                 "executed_sql": [],
                 "sql_guardrails": {"valid": True, "reason": "schema_only_route"},
                 "schema_payload": schema_payload,
             },
         },
-        "sources": [
-            (
-                f"{getattr(target_file, 'original_filename', 'unknown')} "
-                f"| table={table.table_name} | dataset_v={dataset.dataset_version} "
-                f"| table_v={table.table_version} | schema"
-            )
-        ],
-        "rows_expected_total": int(table.row_count or 0),
-        "rows_retrieved_total": int(table.row_count or 0),
-        "rows_used_map_total": int(table.row_count or 0),
-        "rows_used_reduce_total": int(table.row_count or 0),
-        "row_coverage_ratio": 1.0 if int(table.row_count or 0) > 0 else 0.0,
+        "sources": [source_label],
+        "rows_expected_total": rows_total,
+        "rows_retrieved_total": rows_total,
+        "rows_used_map_total": rows_total,
+        "rows_used_reduce_total": rows_total,
+        "row_coverage_ratio": 1.0 if rows_total > 0 else 0.0,
     }
     return apply_route_debug(payload=payload, decision=decision, detected_language=preferred_lang)

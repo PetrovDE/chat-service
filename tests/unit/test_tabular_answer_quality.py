@@ -163,6 +163,34 @@ def test_schema_summary_prompt_guidance_stays_concise_and_relevant() -> None:
                         "discount_rate",
                         "currency",
                     ],
+                    "file_name": "orders.xlsx",
+                    "summary_statement": "Single table file with rows=308 and columns=7.",
+                    "tables_total": 1,
+                    "rows_total": 308,
+                    "selected_scope": {
+                        "table_name": "orders",
+                        "sheet_name": "Orders",
+                        "scope_label": "sheet Orders (table orders)",
+                    },
+                    "tables": [
+                        {
+                            "table_name": "orders",
+                            "sheet_name": "Orders",
+                            "scope_label": "sheet Orders (table orders)",
+                            "row_count": 308,
+                            "columns_total": 7,
+                            "relevant_fields": [
+                                {"name": "created_at", "reasons": ["date/time values"]},
+                                {"name": "amount_total", "reasons": ["numeric values"]},
+                                {"name": "status", "reasons": ["low cardinality"]},
+                                {"name": "city", "reasons": ["sample values available"]},
+                            ],
+                        }
+                    ],
+                    "next_question_suggestions": [
+                        "In sheet Orders (table orders), show amount_total by created_at.",
+                        "List all columns if you want a complete schema dump.",
+                    ],
                 },
             },
         },
@@ -194,4 +222,140 @@ def test_schema_summary_prompt_guidance_stays_concise_and_relevant() -> None:
 
     assert "For schema/file summary requests" in prompt
     assert "Most relevant analysis fields (max 6)" in prompt
+    assert "Suggested next questions:" in prompt
+    assert "open with a one-sentence first impression" in prompt
+    assert "do not guess one silently" in prompt
     assert "Keep schema summaries concise" in prompt
+
+
+def test_schema_summary_guidance_limits_field_dump_and_keeps_priority() -> None:
+    planner = _planner_decision()
+    planner_payload = planner.as_dict()
+    relevant_fields = [
+        {"name": f"field_{index}", "reasons": ["schema column"]}
+        for index in range(1, 11)
+    ]
+    tabular_sql_result = {
+        "status": "ok",
+        "prompt_context": "Deterministic schema/file summary context (source of truth): ...",
+        "debug": {
+            "selected_route": "schema_question",
+            "tabular_sql": {
+                "schema_payload": {
+                    "file_name": "wide.xlsx",
+                    "summary_statement": "Single table file with rows=120 and columns=20.",
+                    "tables_total": 1,
+                    "rows_total": 120,
+                    "tables": [
+                        {
+                            "table_name": "wide",
+                            "sheet_name": "Sheet1",
+                            "scope_label": "sheet Sheet1 (table wide)",
+                            "row_count": 120,
+                            "columns_total": 20,
+                            "relevant_fields": relevant_fields,
+                        }
+                    ],
+                    "next_question_suggestions": ["Use sheet Sheet1 (table wide) and list its key columns."],
+                }
+            },
+        },
+        "sources": ["wide.xlsx | table=wide | dataset_v=1 | table_v=1 | schema"],
+        "rows_expected_total": 120,
+        "rows_retrieved_total": 120,
+        "rows_used_map_total": 120,
+        "rows_used_reduce_total": 120,
+        "row_coverage_ratio": 1.0,
+    }
+
+    prompt, _rag_used, _rag_debug, _docs, _caveats, _sources = build_tabular_success_route_result(
+        query="which fields are important?",
+        user_id=uuid.uuid4(),
+        conversation_id=uuid.uuid4(),
+        files=[SimpleNamespace(id="f-wide")],
+        planner_decision=planner,
+        planner_decision_payload=planner_payload,
+        expected_chunks_total=0,
+        rag_mode="auto",
+        top_k=8,
+        preferred_lang="en",
+        is_combined_intent=False,
+        tabular_sql_result=tabular_sql_result,
+        processing_ids_by_file={},
+        combined_context_docs=[],
+        combined_debug={},
+    )
+
+    assert "field_1 (schema column)" in prompt
+    assert "field_6 (schema column)" in prompt
+    assert "field_7 (schema column)" not in prompt
+
+
+def test_schema_summary_guidance_for_multi_sheet_scope_includes_preview() -> None:
+    planner = _planner_decision()
+    planner_payload = planner.as_dict()
+    tabular_sql_result = {
+        "status": "ok",
+        "prompt_context": "Deterministic schema/file summary context (source of truth): ...",
+        "debug": {
+            "selected_route": "schema_question",
+            "tabular_sql": {
+                "schema_payload": {
+                    "file_name": "regions.xlsx",
+                    "summary_statement": "Workbook with 2 table(s)/sheet(s), total rows=240.",
+                    "tables_total": 2,
+                    "rows_total": 240,
+                    "tables": [
+                        {
+                            "table_name": "north_sheet",
+                            "sheet_name": "North",
+                            "scope_label": "sheet North (table north_sheet)",
+                            "row_count": 120,
+                            "columns_total": 4,
+                            "relevant_fields": [{"name": "amount_rub", "reasons": ["numeric values"]}],
+                        },
+                        {
+                            "table_name": "south_sheet",
+                            "sheet_name": "South",
+                            "scope_label": "sheet South (table south_sheet)",
+                            "row_count": 120,
+                            "columns_total": 4,
+                            "relevant_fields": [{"name": "amount_rub", "reasons": ["numeric values"]}],
+                        },
+                    ],
+                    "next_question_suggestions": [
+                        "Use sheet North (table north_sheet) and list its key columns.",
+                        "Compare row counts between sheet North (table north_sheet) and sheet South (table south_sheet).",
+                    ],
+                }
+            },
+        },
+        "sources": ["regions.xlsx | dataset_v=1 | schema_multi_table"],
+        "rows_expected_total": 240,
+        "rows_retrieved_total": 240,
+        "rows_used_map_total": 240,
+        "rows_used_reduce_total": 240,
+        "row_coverage_ratio": 1.0,
+    }
+
+    prompt, _rag_used, _rag_debug, _docs, _caveats, _sources = build_tabular_success_route_result(
+        query="what tables are available?",
+        user_id=uuid.uuid4(),
+        conversation_id=uuid.uuid4(),
+        files=[SimpleNamespace(id="f-regions")],
+        planner_decision=planner,
+        planner_decision_payload=planner_payload,
+        expected_chunks_total=0,
+        rag_mode="auto",
+        top_k=8,
+        preferred_lang="en",
+        is_combined_intent=False,
+        tabular_sql_result=tabular_sql_result,
+        processing_ids_by_file={},
+        combined_context_docs=[],
+        combined_debug={},
+    )
+
+    assert "Tables/sheets total: 2" in prompt
+    assert "sheet North (table north_sheet), rows=120" in prompt
+    assert "sheet South (table south_sheet), rows=120" in prompt

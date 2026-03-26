@@ -4,8 +4,12 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
+from app.services.tabular.column_metadata_contract import (
+    TABULAR_COLUMN_METADATA_CONTRACT_VERSION,
+    build_dataframe_column_metadata,
+)
 from app.services.tabular.parsing import read_csv_with_detection, read_excel_sheets
 
 logger = logging.getLogger(__name__)
@@ -18,7 +22,9 @@ class NormalizedTabularTable:
     row_count: int
     columns: List[str]
     column_aliases: Dict[str, str]
-    column_metadata: Dict[str, Dict[str, object]]
+    column_metadata: Dict[str, Dict[str, Any]]
+    column_metadata_contract_version: str
+    column_metadata_stats: Dict[str, Any]
     dataframe: object
 
 
@@ -50,40 +56,12 @@ def normalize_dataframe_columns(df) -> Tuple[List[str], Dict[str, str]]:
     return final_columns, aliases
 
 
-def build_column_metadata(df, *, columns: List[str], aliases: Dict[str, str]) -> Dict[str, Dict[str, object]]:
-    metadata: Dict[str, Dict[str, object]] = {}
-    for column in columns:
-        display_name = str(aliases.get(column) or column).strip()
-        dtype = str(getattr(df[column], "dtype", "") or "").strip().lower() if column in df.columns else ""
-        sample_values: List[str] = []
-        if column in df.columns:
-            try:
-                series = df[column].dropna().astype(str).map(lambda value: value.strip())
-                unique_values = []
-                seen = set()
-                for value in series:
-                    if not value:
-                        continue
-                    if value in seen:
-                        continue
-                    seen.add(value)
-                    unique_values.append(value)
-                    if len(unique_values) >= 6:
-                        break
-                sample_values = unique_values
-            except Exception:
-                sample_values = []
-
-        entry: Dict[str, object] = {
-            "display_name": display_name,
-            "aliases": [display_name] if display_name else [],
-        }
-        if dtype:
-            entry["dtype"] = dtype
-        if sample_values:
-            entry["sample_values"] = sample_values
-        metadata[column] = entry
-    return metadata
+def build_column_metadata(df, *, columns: List[str], aliases: Dict[str, str]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
+    return build_dataframe_column_metadata(
+        df=df,
+        columns=columns,
+        aliases=aliases,
+    )
 
 
 def _read_csv(file_path: Path):
@@ -134,7 +112,7 @@ def load_normalized_tables(file_path: Path, file_type: str) -> List[NormalizedTa
         if df is None or df.empty:
             return []
         columns, aliases = normalize_dataframe_columns(df)
-        column_metadata = build_column_metadata(df, columns=columns, aliases=aliases)
+        column_metadata, column_metadata_stats = build_column_metadata(df, columns=columns, aliases=aliases)
         table_fallback = "csv_data" if file_type == "csv" else "tsv_data"
         table_name = safe_sql_identifier(table_fallback, fallback=table_fallback)
         tables.append(
@@ -145,6 +123,8 @@ def load_normalized_tables(file_path: Path, file_type: str) -> List[NormalizedTa
                 columns=columns,
                 column_aliases=aliases,
                 column_metadata=column_metadata,
+                column_metadata_contract_version=TABULAR_COLUMN_METADATA_CONTRACT_VERSION,
+                column_metadata_stats=column_metadata_stats,
                 dataframe=df,
             )
         )
@@ -156,7 +136,7 @@ def load_normalized_tables(file_path: Path, file_type: str) -> List[NormalizedTa
         if df is None or df.empty:
             continue
         columns, aliases = normalize_dataframe_columns(df)
-        column_metadata = build_column_metadata(df, columns=columns, aliases=aliases)
+        column_metadata, column_metadata_stats = build_column_metadata(df, columns=columns, aliases=aliases)
         table_name = safe_sql_identifier(f"sheet_{idx}_{sheet}", fallback=f"sheet_{idx}")
         tables.append(
             NormalizedTabularTable(
@@ -166,6 +146,8 @@ def load_normalized_tables(file_path: Path, file_type: str) -> List[NormalizedTa
                 columns=columns,
                 column_aliases=aliases,
                 column_metadata=column_metadata,
+                column_metadata_contract_version=TABULAR_COLUMN_METADATA_CONTRACT_VERSION,
+                column_metadata_stats=column_metadata_stats,
                 dataframe=df,
             )
         )

@@ -3,9 +3,13 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from app.services.chat.tabular_sql import execute_tabular_sql_path
+from app.services.chat.tabular_schema_resolver import resolve_requested_field
+from app.services.tabular.column_metadata_contract import TABULAR_COLUMN_METADATA_CONTRACT_VERSION
+from app.services.tabular.sql_execution import resolve_tabular_dataset
 from app.services.tabular.storage_adapter import SharedDuckDBParquetStorageAdapter
 
 
@@ -124,3 +128,78 @@ def test_tabular_sql_ignores_legacy_sqlite_sidecar_metadata(tmp_path: Path):
         )
     )
     assert result is None
+
+
+def test_tabular_metadata_contract_propagates_to_runtime_and_bounds_payload(tmp_path: Path):
+    pytest.importorskip("duckdb")
+    pytest.importorskip("openpyxl")
+
+    adapter = SharedDuckDBParquetStorageAdapter(
+        dataset_root=tmp_path / "datasets",
+        catalog_path=tmp_path / "catalog.duckdb",
+    )
+
+    csv_path = tmp_path / "orders.csv"
+    _write_csv(
+        csv_path,
+        [
+            "Order ID,Total Amount,State",
+            "REQ-1,10.5,open",
+            "REQ-2,20.0,closed",
+            "REQ-3,11.2,open",
+        ],
+    )
+    csv_dataset = adapter.ingest(file_id="file-csv", file_path=csv_path, file_type="csv", source_filename="orders.csv")
+    assert csv_dataset is not None
+    assert csv_dataset["column_metadata_contract_version"] == TABULAR_COLUMN_METADATA_CONTRACT_VERSION
+    assert csv_dataset["column_metadata_stats"]["columns_with_metadata"] > 0
+
+    table_payload = csv_dataset["tables"][0]
+    assert table_payload["column_metadata_contract_version"] == TABULAR_COLUMN_METADATA_CONTRACT_VERSION
+    column_metadata = table_payload["column_metadata"]
+    assert "order_id" in column_metadata
+    assert column_metadata["order_id"]["display_name"] == "Order ID"
+    assert isinstance(column_metadata["order_id"]["aliases"], list)
+    assert column_metadata["total_amount"]["dtype"] in {"numeric", "integer", "text"}
+    assert len(column_metadata["state"].get("sample_values", [])) <= 5
+    metadata_bytes = len(json.dumps(column_metadata, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    assert metadata_bytes <= int(table_payload["column_metadata_stats"]["metadata_budget_bytes"])
+
+    xlsx_path = tmp_path / "orders.xlsx"
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+        pd.DataFrame(
+            {
+                "Order ID": ["REQ-1", "REQ-2", "REQ-3"],
+                "Total Amount": ["10.5", "20.0", "11.2"],
+                "State": ["open", "closed", "open"],
+            }
+        ).to_excel(writer, index=False, sheet_name="Orders")
+
+    xlsx_dataset = adapter.ingest(
+        file_id="file-xlsx",
+        file_path=xlsx_path,
+        file_type="xlsx",
+        source_filename="orders.xlsx",
+    )
+    assert xlsx_dataset is not None
+    xlsx_table = xlsx_dataset["tables"][0]
+    assert xlsx_table["column_metadata_contract_version"] == TABULAR_COLUMN_METADATA_CONTRACT_VERSION
+    assert set(xlsx_table["column_metadata"].keys()) == set(column_metadata.keys())
+    assert xlsx_table["column_metadata"]["order_id"]["display_name"] == "Order ID"
+    assert xlsx_table["column_metadata"]["state"]["dtype"] == column_metadata["state"]["dtype"]
+
+    file_obj = SimpleNamespace(
+        id="file-csv",
+        file_type="csv",
+        original_filename="orders.csv",
+        custom_metadata={"tabular_dataset": csv_dataset},
+    )
+    resolved = resolve_tabular_dataset(file_obj)
+    assert resolved is not None
+    assert resolved.column_metadata_contract_version == TABULAR_COLUMN_METADATA_CONTRACT_VERSION
+    assert resolved.column_metadata_stats["columns_with_metadata"] > 0
+
+    table = resolved.tables[0]
+    resolution = resolve_requested_field(requested_field_text="total amount", table=table)
+    assert resolution.status == "matched"
+    assert resolution.matched_column == "total_amount"

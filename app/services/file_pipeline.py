@@ -458,12 +458,27 @@ async def process_file_pipeline(
                     )
                     if tabular_dataset:
                         extra_metadata["tabular_dataset"] = tabular_dataset
+                        metadata_stats = (
+                            tabular_dataset.get("column_metadata_stats")
+                            if isinstance(tabular_dataset.get("column_metadata_stats"), dict)
+                            else {}
+                        )
                         logger_obj.info(
-                            "Tabular dataset generated: file_id=%s dataset_version=%s tables=%d engine=%s",
+                            (
+                                "Tabular dataset generated: file_id=%s dataset_version=%s tables=%d engine=%s "
+                                "metadata_contract=%s metadata_columns=%d aliases=%d sample_values=%d "
+                                "aliases_trimmed=%d sample_values_trimmed=%d"
+                            ),
                             file_id,
                             tabular_dataset.get("dataset_version"),
                             len(tabular_dataset.get("tables", [])),
                             tabular_dataset.get("engine"),
+                            tabular_dataset.get("column_metadata_contract_version"),
+                            int(metadata_stats.get("columns_with_metadata", 0) or 0),
+                            int(metadata_stats.get("aliases_total", 0) or 0),
+                            int(metadata_stats.get("sample_values_total", 0) or 0),
+                            int(metadata_stats.get("aliases_trimmed_total", 0) or 0),
+                            int(metadata_stats.get("sample_values_trimmed_total", 0) or 0),
                         )
                 except Exception:
                     logger_obj.warning("Tabular dataset generation failed for file_id=%s", file_id, exc_info=True)

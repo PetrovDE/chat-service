@@ -249,3 +249,24 @@ Tabular runtime field matching now emits explicit schema-resolution diagnostics 
 - `fallback_reason` (when unresolved or blocked)
 
 Matching failures now remain explicit (`no_match`/`ambiguous`) and do not silently substitute guessed columns.
+
+## Update 2026-03-26 (Tabular Metadata Contract Diagnostics)
+Ingestion/runtime now expose explicit tabular schema-metadata contract diagnostics:
+
+- ingestion structured log `Tabular dataset generated` includes:
+  - `metadata_contract`
+  - `metadata_columns`
+  - `aliases`
+  - `sample_values`
+  - `aliases_trimmed`
+  - `sample_values_trimmed`
+- deterministic tabular debug fields include:
+  - `column_metadata_contract_version`
+  - `column_metadata_present`
+  - `column_metadata_columns_total`
+  - `column_metadata_columns_with_metadata`
+  - `column_metadata_aliases_total`
+  - `column_metadata_sample_values_total`
+  - `column_metadata_aliases_trimmed_total`
+  - `column_metadata_sample_values_trimmed_total`
+  - `column_metadata_budget_enforced`

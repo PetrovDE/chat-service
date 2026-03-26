@@ -5,6 +5,11 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from app.services.tabular.column_metadata_contract import (
+    TABULAR_COLUMN_METADATA_CONTRACT_VERSION,
+    aggregate_tabular_column_metadata_stats,
+    sanitize_tabular_column_metadata,
+)
 from app.services.tabular.sql_errors import (
     SQL_ERROR_EXECUTION_FAILED,
     SQL_ERROR_RESULT_LIMIT_EXCEEDED,
@@ -37,6 +42,8 @@ class ResolvedTabularTable:
     provenance_id: Optional[str]
     parquet_path: Optional[Path]
     column_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    column_metadata_contract_version: Optional[str] = None
+    column_metadata_stats: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -47,6 +54,8 @@ class ResolvedTabularDataset:
     dataset_provenance_id: Optional[str]
     tables: List[ResolvedTabularTable]
     catalog_path: Optional[Path]
+    column_metadata_contract_version: Optional[str] = None
+    column_metadata_stats: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -175,7 +184,11 @@ class TabularExecutionSession:
         raise RuntimeError("TabularExecutionSession is not initialized")
 
 
-def _parse_table_entry(raw: Dict[str, Any]) -> Optional[ResolvedTabularTable]:
+def _parse_table_entry(
+    raw: Dict[str, Any],
+    *,
+    dataset_metadata_contract_version: Optional[str],
+) -> Optional[ResolvedTabularTable]:
     table_name = str(raw.get("table_name") or "").strip()
     if not table_name:
         return None
@@ -192,32 +205,17 @@ def _parse_table_entry(raw: Dict[str, Any]) -> Optional[ResolvedTabularTable]:
     else:
         column_aliases = {}
 
-    column_metadata: Dict[str, Dict[str, Any]] = {}
     raw_metadata = raw.get("column_metadata")
-    if isinstance(raw_metadata, dict):
-        for key, value in raw_metadata.items():
-            column_key = str(key)
-            if not isinstance(value, dict):
-                continue
-            parsed: Dict[str, Any] = {}
-            display_name = str(value.get("display_name") or "").strip()
-            if display_name:
-                parsed["display_name"] = display_name
-            dtype = str(value.get("dtype") or "").strip().lower()
-            if dtype:
-                parsed["dtype"] = dtype
-            aliases_raw = value.get("aliases")
-            if isinstance(aliases_raw, list):
-                aliases = [str(item).strip() for item in aliases_raw if str(item).strip()]
-                if aliases:
-                    parsed["aliases"] = aliases
-            sample_values_raw = value.get("sample_values")
-            if isinstance(sample_values_raw, list):
-                sample_values = [str(item).strip() for item in sample_values_raw if str(item).strip()]
-                if sample_values:
-                    parsed["sample_values"] = sample_values[:12]
-            if parsed:
-                column_metadata[column_key] = parsed
+    column_metadata, column_metadata_stats = sanitize_tabular_column_metadata(
+        raw_metadata=raw_metadata,
+        columns=columns,
+        aliases=column_aliases,
+    )
+    metadata_contract_version = str(
+        raw.get("column_metadata_contract_version")
+        or dataset_metadata_contract_version
+        or TABULAR_COLUMN_METADATA_CONTRACT_VERSION
+    )
 
     parquet_path = None
     raw_path = raw.get("parquet_path")
@@ -236,6 +234,8 @@ def _parse_table_entry(raw: Dict[str, Any]) -> Optional[ResolvedTabularTable]:
         table_version=int(raw.get("table_version", 1) or 1),
         provenance_id=str(raw.get("provenance_id")) if raw.get("provenance_id") else None,
         parquet_path=parquet_path,
+        column_metadata_contract_version=metadata_contract_version,
+        column_metadata_stats=column_metadata_stats,
     )
 
 
@@ -246,6 +246,9 @@ def resolve_tabular_dataset(file_obj: Any) -> Optional[ResolvedTabularDataset]:
 
     dataset = metadata.get("tabular_dataset")
     if isinstance(dataset, dict):
+        dataset_metadata_contract_version = str(
+            dataset.get("column_metadata_contract_version") or TABULAR_COLUMN_METADATA_CONTRACT_VERSION
+        )
         tables_raw = dataset.get("tables")
         if not isinstance(tables_raw, list):
             tables_raw = []
@@ -253,10 +256,16 @@ def resolve_tabular_dataset(file_obj: Any) -> Optional[ResolvedTabularDataset]:
         for raw in tables_raw:
             if not isinstance(raw, dict):
                 continue
-            parsed = _parse_table_entry(raw)
+            parsed = _parse_table_entry(
+                raw,
+                dataset_metadata_contract_version=dataset_metadata_contract_version,
+            )
             if parsed is not None and parsed.parquet_path is not None:
                 tables.append(parsed)
         if tables:
+            dataset_metadata_stats = aggregate_tabular_column_metadata_stats(
+                [table.column_metadata_stats for table in tables if isinstance(table.column_metadata_stats, dict)]
+            )
             catalog_path = None
             if dataset.get("catalog_path"):
                 candidate = Path(str(dataset.get("catalog_path"))).expanduser()
@@ -269,6 +278,8 @@ def resolve_tabular_dataset(file_obj: Any) -> Optional[ResolvedTabularDataset]:
                 dataset_provenance_id=str(dataset.get("dataset_provenance_id") or ""),
                 tables=tables,
                 catalog_path=catalog_path,
+                column_metadata_contract_version=dataset_metadata_contract_version,
+                column_metadata_stats=dataset_metadata_stats,
             )
 
     return None

@@ -44,6 +44,31 @@ flowchart LR
 - optional column summaries
 - workbook-level schema snapshot
 
+## Update 2026-03-26: Tabular Column Metadata Contract
+
+Tabular ingestion now emits an explicit schema metadata contract for runtime field resolution:
+
+- dataset-level:
+  - `tabular_dataset.column_metadata_contract_version` (`tabular_column_metadata_v1`)
+  - `tabular_dataset.column_metadata_stats` (aggregated counts/budget/sanitization)
+- table-level:
+  - `tables[].column_metadata_contract_version`
+  - `tables[].column_metadata_stats`
+  - `tables[].column_metadata.<normalized_column>` with:
+    - `raw_name`
+    - `normalized_name`
+    - `display_name`
+    - `aliases[]` (sanitized and bounded)
+    - `dtype` (lightweight inferred hint)
+    - optional `sample_values[]` (sanitized and bounded)
+    - optional `cardinality_hint` (`empty|single|low|medium|high`)
+
+Budget/sanitization policy (deterministic and lightweight):
+
+- alias and sample-value lists are deduplicated, trimmed, and capped per column,
+- oversized table metadata is reduced in phases (drop samples -> reduce aliases -> drop low-priority hints -> drop trailing column metadata entries),
+- per-table and per-dataset metadata stats capture trimming and budget-enforcement outcomes.
+
 ## Selective Indexing Strategy
 - Always index:
   - `file_summary`

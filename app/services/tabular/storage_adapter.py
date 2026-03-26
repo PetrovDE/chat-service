@@ -12,6 +12,10 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from app.core.config import settings
+from app.services.tabular.column_metadata_contract import (
+    TABULAR_COLUMN_METADATA_CONTRACT_VERSION,
+    aggregate_tabular_column_metadata_stats,
+)
 from app.services.tabular.normalization import NormalizedTabularTable, load_normalized_tables
 
 logger = logging.getLogger(__name__)
@@ -99,6 +103,9 @@ class SharedDuckDBParquetStorageAdapter:
                     row_count BIGINT NOT NULL,
                     columns_json VARCHAR NOT NULL,
                     column_aliases_json VARCHAR NOT NULL,
+                    column_metadata_json VARCHAR NOT NULL,
+                    column_metadata_contract_version VARCHAR NOT NULL,
+                    column_metadata_stats_json VARCHAR NOT NULL,
                     table_version BIGINT NOT NULL,
                     table_provenance_id VARCHAR NOT NULL,
                     parquet_path VARCHAR NOT NULL,
@@ -107,8 +114,35 @@ class SharedDuckDBParquetStorageAdapter:
                 )
                 """
             )
+            self._ensure_optional_tabular_table_columns(conn)
         finally:
             conn.close()
+
+    def _ensure_optional_tabular_table_columns(self, conn) -> None:
+        try:
+            rows = conn.execute("PRAGMA table_info('tabular_tables')").fetchall()
+        except Exception:
+            return
+
+        existing_columns = {
+            str(row[1]).strip().lower()
+            for row in rows
+            if isinstance(row, (list, tuple)) and len(row) > 1
+        }
+
+        if "column_metadata_json" not in existing_columns:
+            conn.execute("ALTER TABLE tabular_tables ADD COLUMN column_metadata_json VARCHAR")
+            conn.execute("UPDATE tabular_tables SET column_metadata_json = '{}' WHERE column_metadata_json IS NULL")
+        if "column_metadata_contract_version" not in existing_columns:
+            conn.execute("ALTER TABLE tabular_tables ADD COLUMN column_metadata_contract_version VARCHAR")
+            conn.execute(
+                "UPDATE tabular_tables SET column_metadata_contract_version = ? "
+                "WHERE column_metadata_contract_version IS NULL",
+                [TABULAR_COLUMN_METADATA_CONTRACT_VERSION],
+            )
+        if "column_metadata_stats_json" not in existing_columns:
+            conn.execute("ALTER TABLE tabular_tables ADD COLUMN column_metadata_stats_json VARCHAR")
+            conn.execute("UPDATE tabular_tables SET column_metadata_stats_json = '{}' WHERE column_metadata_stats_json IS NULL")
 
     def _next_dataset_version(self, conn, dataset_id: str) -> int:
         row = conn.execute(
@@ -178,10 +212,19 @@ class SharedDuckDBParquetStorageAdapter:
                     )
                     table_payloads.append(payload)
 
+                dataset_metadata_stats = aggregate_tabular_column_metadata_stats(
+                    [
+                        payload.get("column_metadata_stats")
+                        for payload in table_payloads
+                        if isinstance(payload, dict)
+                    ]
+                )
                 return {
                     "engine": "duckdb_parquet",
                     "runtime": "shared_duckdb_parquet",
                     "runtime_schema_version": 1,
+                    "column_metadata_contract_version": TABULAR_COLUMN_METADATA_CONTRACT_VERSION,
+                    "column_metadata_stats": dataset_metadata_stats,
                     "catalog_path": str(self.catalog_path),
                     "dataset_root": str(self.dataset_root),
                     "dataset_id": dataset_id,
@@ -227,10 +270,11 @@ class SharedDuckDBParquetStorageAdapter:
             """
             INSERT INTO tabular_tables (
                 dataset_id, dataset_version, table_name, sheet_name, row_count,
-                columns_json, column_aliases_json, table_version,
+                columns_json, column_aliases_json, column_metadata_json,
+                column_metadata_contract_version, column_metadata_stats_json, table_version,
                 table_provenance_id, parquet_path, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 dataset_id,
@@ -240,6 +284,9 @@ class SharedDuckDBParquetStorageAdapter:
                 int(table.row_count),
                 json.dumps(table.columns, ensure_ascii=False),
                 json.dumps(table.column_aliases, ensure_ascii=False),
+                json.dumps(table.column_metadata, ensure_ascii=False),
+                str(table.column_metadata_contract_version or TABULAR_COLUMN_METADATA_CONTRACT_VERSION),
+                json.dumps(table.column_metadata_stats, ensure_ascii=False),
                 table_version,
                 table_provenance_id,
                 str(parquet_path),
@@ -254,6 +301,10 @@ class SharedDuckDBParquetStorageAdapter:
             "columns": list(table.columns),
             "column_aliases": dict(table.column_aliases),
             "column_metadata": dict(table.column_metadata),
+            "column_metadata_contract_version": str(
+                table.column_metadata_contract_version or TABULAR_COLUMN_METADATA_CONTRACT_VERSION
+            ),
+            "column_metadata_stats": dict(table.column_metadata_stats),
             "table_version": table_version,
             "provenance_id": table_provenance_id,
             "parquet_path": str(parquet_path),

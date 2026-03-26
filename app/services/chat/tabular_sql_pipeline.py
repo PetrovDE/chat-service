@@ -4,6 +4,7 @@ import json
 from time import perf_counter
 from typing import Any, Callable, Dict, List, Tuple
 
+from app.services.chat.tabular_debug_contract import build_dataset_debug_fields
 from app.services.tabular.sql_execution import ResolvedTabularDataset, ResolvedTabularTable, TabularExecutionSession
 
 
@@ -69,13 +70,7 @@ def execute_aggregate_sync_pipeline(
             "intent": "tabular_aggregate",
             "deterministic_path": True,
             "tabular_sql": {
-                "storage_engine": dataset.engine,
-                "dataset_id": dataset.dataset_id,
-                "dataset_version": dataset.dataset_version,
-                "dataset_provenance_id": dataset.dataset_provenance_id,
-                "table_name": table.table_name,
-                "table_version": table.table_version,
-                "table_provenance_id": table.provenance_id,
+                **build_dataset_debug_fields(dataset=dataset, table=table),
                 "table_row_count": rows_total,
                 "executed_sql": guarded_sql,
                 "policy_decision": guard_debug.get("policy_decision"),
@@ -147,13 +142,7 @@ def execute_lookup_sync_pipeline(
             "intent": "tabular_lookup",
             "deterministic_path": True,
             "tabular_sql": {
-                "storage_engine": dataset.engine,
-                "dataset_id": dataset.dataset_id,
-                "dataset_version": dataset.dataset_version,
-                "dataset_provenance_id": dataset.dataset_provenance_id,
-                "table_name": table.table_name,
-                "table_version": table.table_version,
-                "table_provenance_id": table.provenance_id,
+                **build_dataset_debug_fields(dataset=dataset, table=table),
                 "table_row_count": rows_total,
                 "rows_retrieved": rows_retrieved,
                 "executed_sql": guarded_sql,
@@ -353,13 +342,7 @@ def execute_profile_sync_pipeline(
             "intent": "tabular_profile",
             "deterministic_path": True,
             "tabular_sql": {
-                "storage_engine": dataset.engine,
-                "dataset_id": dataset.dataset_id,
-                "dataset_version": dataset.dataset_version,
-                "dataset_provenance_id": dataset.dataset_provenance_id,
-                "table_name": table.table_name,
-                "table_version": table.table_version,
-                "table_provenance_id": table.provenance_id,
+                **build_dataset_debug_fields(dataset=dataset, table=table),
                 "table_row_count": rows_total,
                 "executed_sql": profile_debug.get("executed_sql", []),
                 "policy_decision": profile_debug.get("policy_decision"),
@@ -419,13 +402,7 @@ def build_tabular_error_result_pipeline(
             "deterministic_path": True,
             "deterministic_error": error_payload,
             "tabular_sql": {
-                "storage_engine": dataset.engine,
-                "dataset_id": dataset.dataset_id,
-                "dataset_version": dataset.dataset_version,
-                "dataset_provenance_id": dataset.dataset_provenance_id,
-                "table_name": table.table_name,
-                "table_version": table.table_version,
-                "table_provenance_id": table.provenance_id,
+                **build_dataset_debug_fields(dataset=dataset, table=table),
                 "table_row_count": int(table.row_count or 0),
                 "executed_sql": executed_sql or None,
                 "policy_decision": policy_decision,

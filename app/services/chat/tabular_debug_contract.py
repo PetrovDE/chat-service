@@ -65,6 +65,15 @@ def build_route_debug_fields(
 
 
 def build_dataset_debug_fields(*, dataset: Any, table: Any) -> Dict[str, Any]:
+    dataset_stats_raw = getattr(dataset, "column_metadata_stats", None)
+    table_stats_raw = getattr(table, "column_metadata_stats", None)
+    dataset_metadata_stats = dataset_stats_raw if isinstance(dataset_stats_raw, dict) else {}
+    table_metadata_stats = table_stats_raw if isinstance(table_stats_raw, dict) else {}
+    effective_stats = table_metadata_stats or dataset_metadata_stats
+    contract_version = (
+        getattr(dataset, "column_metadata_contract_version", None)
+        or getattr(table, "column_metadata_contract_version", None)
+    )
     return {
         "storage_engine": getattr(dataset, "engine", None),
         "dataset_id": getattr(dataset, "dataset_id", None),
@@ -74,5 +83,17 @@ def build_dataset_debug_fields(*, dataset: Any, table: Any) -> Dict[str, Any]:
         "table_version": getattr(table, "table_version", None),
         "table_provenance_id": getattr(table, "provenance_id", None),
         "table_row_count": int(getattr(table, "row_count", 0) or 0),
+        "column_metadata_contract_version": contract_version,
+        "column_metadata_present": bool(int(effective_stats.get("columns_with_metadata", 0) or 0) > 0),
+        "column_metadata_columns_total": int(effective_stats.get("columns_total", 0) or 0),
+        "column_metadata_columns_with_metadata": int(effective_stats.get("columns_with_metadata", 0) or 0),
+        "column_metadata_aliases_total": int(effective_stats.get("aliases_total", 0) or 0),
+        "column_metadata_sample_values_total": int(effective_stats.get("sample_values_total", 0) or 0),
+        "column_metadata_aliases_trimmed_total": int(effective_stats.get("aliases_trimmed_total", 0) or 0),
+        "column_metadata_sample_values_trimmed_total": int(effective_stats.get("sample_values_trimmed_total", 0) or 0),
+        "column_metadata_budget_enforced": bool(effective_stats.get("metadata_budget_enforced", False)),
+        "dataset_column_metadata_columns_total": int(dataset_metadata_stats.get("columns_total", 0) or 0),
+        "dataset_column_metadata_columns_with_metadata": int(dataset_metadata_stats.get("columns_with_metadata", 0) or 0),
+        "dataset_column_metadata_aliases_total": int(dataset_metadata_stats.get("aliases_total", 0) or 0),
+        "dataset_column_metadata_sample_values_total": int(dataset_metadata_stats.get("sample_values_total", 0) or 0),
     }
-

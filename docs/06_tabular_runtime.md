@@ -7,13 +7,21 @@ Resolved from `file.custom_metadata`:
 ## Dataset Metadata Contract
 `custom_metadata.tabular_dataset` includes:
 - `dataset_id`, `dataset_version`, `dataset_provenance_id`
+- `column_metadata_contract_version` (`tabular_column_metadata_v1`)
+- `column_metadata_stats` (aggregated alias/sample/budget counts)
 - `catalog_path`, `dataset_root`
 - tables: `table_name`, `sheet_name`, `row_count`, `columns`, `column_aliases`, `table_version`, `provenance_id`, `parquet_path`
+- table metadata contract fields:
+  - `tables[].column_metadata_contract_version`
+  - `tables[].column_metadata_stats`
 - optional per-column metadata for schema-first resolution:
+  - `column_metadata.<column>.raw_name`
+  - `column_metadata.<column>.normalized_name`
   - `column_metadata.<column>.display_name`
   - `column_metadata.<column>.aliases[]`
   - `column_metadata.<column>.dtype`
   - `column_metadata.<column>.sample_values[]`
+  - `column_metadata.<column>.cardinality_hint` (`empty|single|low|medium|high`)
 
 ## Execution Session
 `TabularExecutionSession`:
@@ -43,6 +51,12 @@ Runtime field selection is schema-first and metadata-driven:
   - close competing candidates -> `ambiguous`
 - weak/ambiguous outcomes must return controlled mismatch/clarification flows
 - no silent guessed substitution to first column or "best effort" defaults
+
+Metadata parsing contract:
+
+- runtime sanitizes incoming column metadata through one shared parser/sanitizer path,
+- runtime preserves explicit budget bounds from ingestion (no ad-hoc unbounded reconstruction),
+- if metadata is missing/partial, runtime keeps explicit schema fields and returns controlled no-match/ambiguous outcomes.
 
 ## Bounded Execution
 - Timeout via `TABULAR_SQL_TIMEOUT_SECONDS`.

@@ -5,6 +5,8 @@ from difflib import SequenceMatcher
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from app.services.tabular.column_metadata_contract import sanitize_tabular_column_metadata
+
 
 _NORM_RE = re.compile(r"[_\W]+", flags=re.UNICODE)
 _ID_TOKENS = {"id", "uuid", "guid", "identifier"}
@@ -55,30 +57,13 @@ def _column_aliases(table: Any) -> Dict[str, str]:
 
 def _column_metadata(table: Any) -> Dict[str, Dict[str, Any]]:
     raw = getattr(table, "column_metadata", None)
-    if not isinstance(raw, dict):
-        return {}
-    metadata: Dict[str, Dict[str, Any]] = {}
-    for key, payload in raw.items():
-        if not isinstance(payload, dict):
-            continue
-        parsed: Dict[str, Any] = {}
-        display_name = str(payload.get("display_name") or "").strip()
-        if display_name:
-            parsed["display_name"] = display_name
-        dtype = str(payload.get("dtype") or "").strip().lower()
-        if dtype:
-            parsed["dtype"] = dtype
-        aliases_raw = payload.get("aliases")
-        if isinstance(aliases_raw, list):
-            aliases = [str(item).strip() for item in aliases_raw if str(item).strip()]
-            if aliases:
-                parsed["aliases"] = aliases
-        sample_values_raw = payload.get("sample_values")
-        if isinstance(sample_values_raw, list):
-            sample_values = [str(item).strip() for item in sample_values_raw if str(item).strip()]
-            if sample_values:
-                parsed["sample_values"] = sample_values[:12]
-        metadata[str(key)] = parsed
+    columns = [str(col) for col in list(getattr(table, "columns", []) or [])]
+    aliases = _column_aliases(table)
+    metadata, _stats = sanitize_tabular_column_metadata(
+        raw_metadata=raw,
+        columns=columns,
+        aliases=aliases,
+    )
     return metadata
 
 
@@ -139,7 +124,7 @@ def _dtype_family_from_text(dtype_text: str) -> str:
     text = normalize_text(dtype_text)
     if not text:
         return "unknown"
-    if any(token in text for token in ("int", "float", "double", "decimal", "numeric")):
+    if any(token in text for token in ("int", "float", "double", "decimal", "numeric", "number")):
         return "numeric"
     if any(token in text for token in ("date", "time", "timestamp")):
         return "datetime"

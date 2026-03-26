@@ -4,6 +4,7 @@ import uuid
 from types import SimpleNamespace
 
 from app.domain.chat.query_planner import QueryPlanDecision
+from app.services.chat.tabular_answer_shaper import extract_chart_highlights
 from app.services.chat.tabular_deterministic_result import build_tabular_success_route_result
 from app.services.chat.tabular_response_composer import (
     build_chart_response_text,
@@ -37,9 +38,9 @@ def test_chart_answer_includes_source_field_and_useful_highlights() -> None:
 
     assert "Chart ready: distribution of 'Status Code'." in message
     assert "Used data: orders.xlsx | sheet=Orders | table=orders." in message
-    assert "Top bucket: `200` (10)." in message
-    assert "Second bucket: `500` (2)." in message
-    assert "Top 3 buckets cover 100.0% of counted rows." in message
+    assert "Top bucket: `200` (10, 76.9% of total)." in message
+    assert "Shape: concentrated." in message
+    assert "Key contrast: `200` exceeds `500` by 8 (61.5% points)." in message
 
 
 def test_chart_answer_does_not_claim_success_when_artifact_is_missing() -> None:
@@ -56,7 +57,68 @@ def test_chart_answer_does_not_claim_success_when_artifact_is_missing() -> None:
     assert "could not be delivered" in message.lower()
     assert "chart ready" not in message.lower()
     assert "reason=artifact_not_accessible" in message
-    assert "Top bucket: `200` (10)." in message
+    assert "Top bucket: `200` (10, 83.3% of total)." in message
+
+
+def test_chart_highlights_dominant_category_and_concentration_quality() -> None:
+    highlights = extract_chart_highlights(result_text='[["A", 90], ["B", 5], ["C", 5]]', max_items=3)
+
+    assert len(highlights) <= 3
+    assert "Top bucket: `A` (90, 90.0% of total)." in highlights[0]
+    assert any("Shape: concentrated." in item for item in highlights)
+    assert any("Key contrast: `A` exceeds `B` by 85 (85.0% points)." in item for item in highlights)
+
+
+def test_chart_highlights_balanced_distribution_quality() -> None:
+    highlights = extract_chart_highlights(result_text='[["A", 26], ["B", 25], ["C", 24], ["D", 25]]', max_items=3)
+
+    assert len(highlights) <= 3
+    assert "Top bucket: `A` (26, 26.0%); `B` is close at 25.0%." in highlights[0]
+    assert any("Shape: flat across leading buckets" in item for item in highlights)
+    assert not any("Shape: concentrated." in item for item in highlights)
+
+
+def test_chart_highlights_long_tail_top_n_concentration_quality() -> None:
+    highlights = extract_chart_highlights(
+        result_text='[["A", 60], ["B", 20], ["C", 8], ["D", 4], ["E", 3], ["F", 2], ["G", 1], ["H", 1], ["I", 1]]',
+        max_items=3,
+    )
+
+    assert len(highlights) <= 3
+    assert any("Shape: long-tail." in item for item in highlights)
+    assert any("Top 3 buckets account for 88.0%" in item for item in highlights)
+
+
+def test_chart_highlights_time_series_trend_wording_quality() -> None:
+    highlights = extract_chart_highlights(
+        result_text='[["2024-01", 80], ["2024-02", 100], ["2024-03", 120], ["2024-04", 140]]',
+        max_items=3,
+    )
+
+    assert len(highlights) <= 3
+    assert any("Trend: increasing over time" in item for item in highlights)
+    assert any("2024-01" in item and "2024-04" in item for item in highlights)
+
+
+def test_chart_highlights_do_not_overclaim_weak_time_signal() -> None:
+    highlights = extract_chart_highlights(
+        result_text='[["2024-01", 100], ["2024-02", 101], ["2024-03", 99], ["2024-04", 100]]',
+        max_items=3,
+    )
+
+    assert len(highlights) <= 3
+    assert any("Trend: no clear directional trend across time buckets." in item for item in highlights)
+    assert not any("Trend: increasing over time" in item for item in highlights)
+    assert not any("Trend: decreasing over time" in item for item in highlights)
+
+
+def test_chart_highlights_remain_concise() -> None:
+    highlights = extract_chart_highlights(
+        result_text='[["A", 50], ["B", 30], ["C", 20], ["D", 10], ["E", 5], ["F", 3]]',
+        max_items=3,
+    )
+
+    assert 1 <= len(highlights) <= 3
 
 
 def test_missing_column_answer_prioritizes_alternatives_and_next_question() -> None:

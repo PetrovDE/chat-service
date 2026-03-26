@@ -84,5 +84,5 @@ def test_chart_response_text_includes_source_and_top_bucket_hint() -> None:
 
     assert "Status Code" in message
     assert "Used data: orders.xlsx | sheet=Orders | table=orders_sheet." in message
-    assert "Top bucket: `200` (10)." in message
-    assert "Top 2 buckets cover 100.0% of counted rows." in message
+    assert "Top bucket: `200` (10, 83.3% of total)." in message
+    assert "Shape: sparse (2 buckets)" in message

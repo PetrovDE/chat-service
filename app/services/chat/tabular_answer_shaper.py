@@ -3,25 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Sequence
 
-
-def _to_number(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return float(text)
-    except Exception:
-        return None
-
-
-def _format_number(value: float) -> str:
-    if float(value).is_integer():
-        return str(int(value))
-    return f"{value:.2f}".rstrip("0").rstrip(".")
+from app.services.chat.chart_insight_shaper import extract_chart_highlights
 
 
 def _parse_tabular_rows(result_text: str) -> List[List[Any]]:
@@ -39,40 +21,6 @@ def _parse_tabular_rows(result_text: str) -> List[List[Any]]:
         if isinstance(item, list):
             rows.append(item)
     return rows
-
-
-def extract_chart_highlights(*, result_text: str, max_items: int = 3) -> List[str]:
-    rows = _parse_tabular_rows(result_text)
-    if not rows:
-        return ["No non-empty buckets were returned by the deterministic chart query."]
-
-    ranked: List[Dict[str, Any]] = []
-    for row in rows:
-        if len(row) < 2:
-            continue
-        bucket = str(row[0]).strip()
-        value = _to_number(row[1])
-        if not bucket or value is None:
-            continue
-        ranked.append({"bucket": bucket, "value": value})
-
-    if not ranked:
-        return ["No numeric chart buckets were returned by the deterministic chart query."]
-
-    max_items = max(1, int(max_items))
-    top = ranked[:max_items]
-    highlights: List[str] = []
-    first = top[0]
-    highlights.append(f"Top bucket: `{first['bucket']}` ({_format_number(float(first['value']))}).")
-    if len(top) > 1:
-        second = top[1]
-        highlights.append(f"Second bucket: `{second['bucket']}` ({_format_number(float(second['value']))}).")
-    total = sum(float(item["value"]) for item in ranked)
-    top_total = sum(float(item["value"]) for item in top)
-    if total > 0 and len(top) > 1:
-        coverage = (top_total / total) * 100.0
-        highlights.append(f"Top {len(top)} buckets cover {coverage:.1f}% of counted rows.")
-    return highlights
 
 
 def build_column_followup_suggestion(

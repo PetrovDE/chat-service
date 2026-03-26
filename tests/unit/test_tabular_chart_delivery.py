@@ -91,6 +91,7 @@ def test_execute_chart_sync_success_includes_artifact_and_chart_debug(monkeypatc
         "_render_chart_artifact",
         lambda **kwargs: {
             "chart_rendered": True,
+            "chart_artifact_available": True,
             "chart_artifact_exists": True,
             "chart_fallback_reason": "none",
             "chart_artifact_path": "uploads/tabular_sql/run/chart.png",
@@ -121,9 +122,11 @@ def test_execute_chart_sync_success_includes_artifact_and_chart_debug(monkeypatc
     assert payload["debug"]["matched_chart_field"] == "status_code"
     assert payload["debug"]["chart_spec_generated"] is True
     assert payload["debug"]["chart_rendered"] is True
+    assert payload["debug"]["chart_artifact_available"] is True
     assert payload["debug"]["chart_artifact_exists"] is True
     assert payload["debug"]["chart_fallback_reason"] == "none"
     assert "status_code" in payload["debug"]["tabular_sql"]["chart_spec"]["matched_chart_field"]
+    assert payload["artifacts"][0]["url"].endswith(payload["artifacts"][0]["path"].replace("uploads/", ""))
 
 
 def test_execute_chart_sync_render_failure_returns_controlled_fallback(monkeypatch):
@@ -151,6 +154,7 @@ def test_execute_chart_sync_render_failure_returns_controlled_fallback(monkeypat
         "_render_chart_artifact",
         lambda **kwargs: {
             "chart_rendered": False,
+            "chart_artifact_available": False,
             "chart_artifact_exists": False,
             "chart_fallback_reason": "renderer_unavailable",
             "chart_artifact_path": None,
@@ -171,6 +175,7 @@ def test_execute_chart_sync_render_failure_returns_controlled_fallback(monkeypat
     assert payload["status"] == "ok"
     assert payload["artifacts"] == []
     assert payload["debug"]["chart_rendered"] is False
+    assert payload["debug"]["chart_artifact_available"] is False
     assert payload["debug"]["chart_artifact_exists"] is False
     assert payload["debug"]["chart_fallback_reason"] == "renderer_unavailable"
     assert "Не удалось сформировать изображение графика" in payload["chart_response_text"]
@@ -204,6 +209,7 @@ def test_deterministic_route_sets_short_circuit_and_artifacts_for_chart():
             "selected_route": "chart",
             "chart_spec_generated": True,
             "chart_rendered": True,
+            "chart_artifact_available": True,
             "chart_artifact_exists": True,
             "chart_fallback_reason": "none",
             "tabular_sql": {"chart_spec": {"matched_chart_field": "status_code"}},
@@ -235,3 +241,131 @@ def test_deterministic_route_sets_short_circuit_and_artifacts_for_chart():
     assert "График распределения" in rag_debug["short_circuit_response_text"]
     assert rag_debug["artifacts_count"] == 1
     assert rag_debug["artifacts"][0]["url"].startswith("/uploads/")
+
+
+def test_deterministic_route_missing_artifact_forces_honest_fallback_text():
+    planner_decision = QueryPlanDecision(
+        route="deterministic_analytics",
+        intent=INTENT_TABULAR_AGGREGATE,
+        strategy_mode="analytical",
+        confidence=0.9,
+        requires_clarification=False,
+        reason_codes=["tabular_dataset_available"],
+    )
+    planner_payload = planner_decision.as_dict()
+    fake_result = {
+        "status": "ok",
+        "prompt_context": "chart context",
+        "chart_response_text": "The distribution chart for 'Status Code' was generated and is available in Charts.",
+        "artifacts": [{"url": "/uploads/tabular_sql/run/chart.png", "path": "uploads/tabular_sql/run/chart.png", "kind": "tabular_chart"}],
+        "sources": ["requests.csv | sql_chart"],
+        "rows_expected_total": 100,
+        "rows_retrieved_total": 2,
+        "rows_used_map_total": 2,
+        "rows_used_reduce_total": 2,
+        "row_coverage_ratio": 0.02,
+        "debug": {
+            "retrieval_mode": "tabular_sql",
+            "intent": "tabular_chart",
+            "selected_route": "chart",
+            "chart_spec_generated": True,
+            "chart_rendered": True,
+            "chart_artifact_available": False,
+            "chart_artifact_exists": False,
+            "chart_fallback_reason": "artifact_not_accessible",
+            "response_language": "en",
+            "tabular_sql": {"chart_spec": {"matched_chart_field": "status_code"}},
+        },
+    }
+
+    async def _fake_tabular_executor(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return fake_result
+
+    _prompt, _rag_used, rag_debug, _docs, _caveats, _sources = asyncio.run(
+        maybe_run_deterministic_route(
+            query="show the distribution chart by Status Code",
+            user_id=uuid.uuid4(),
+            conversation_id=uuid.uuid4(),
+            files=[SimpleNamespace(id="f-1")],
+            planner_decision=planner_decision,
+            planner_decision_payload=planner_payload,
+            expected_chunks_total=0,
+            rag_mode="auto",
+            top_k=3,
+            preferred_lang="en",
+            tabular_sql_executor=_fake_tabular_executor,
+            rag_retriever_client=None,
+            is_combined_intent=False,
+        )
+    )
+
+    assert rag_debug["short_circuit_response"] is True
+    assert "could not be delivered" in rag_debug["short_circuit_response_text"].lower()
+    assert "generated and is available" not in rag_debug["short_circuit_response_text"].lower()
+    assert rag_debug["fallback_type"] == "tabular_chart_render_failed"
+    assert rag_debug["chart_artifact_available"] is False
+    assert rag_debug["artifacts_count"] == 0
+    assert rag_debug["artifacts"] == []
+
+
+def test_deterministic_route_missing_artifact_keeps_russian_user_text():
+    planner_decision = QueryPlanDecision(
+        route="deterministic_analytics",
+        intent=INTENT_TABULAR_AGGREGATE,
+        strategy_mode="analytical",
+        confidence=0.9,
+        requires_clarification=False,
+        reason_codes=["tabular_dataset_available"],
+    )
+    planner_payload = planner_decision.as_dict()
+    fake_result = {
+        "status": "ok",
+        "prompt_context": "chart context",
+        "chart_response_text": "",
+        "artifacts": [{"url": "/uploads/tabular_sql/run/chart.png", "path": "uploads/tabular_sql/run/chart.png", "kind": "tabular_chart"}],
+        "sources": ["requests.csv | sql_chart"],
+        "rows_expected_total": 100,
+        "rows_retrieved_total": 2,
+        "rows_used_map_total": 2,
+        "rows_used_reduce_total": 2,
+        "row_coverage_ratio": 0.02,
+        "debug": {
+            "retrieval_mode": "tabular_sql",
+            "intent": "tabular_chart",
+            "selected_route": "chart",
+            "chart_spec_generated": True,
+            "chart_rendered": True,
+            "chart_artifact_available": False,
+            "chart_artifact_exists": False,
+            "chart_fallback_reason": "artifact_not_accessible",
+            "response_language": "ru",
+            "tabular_sql": {"chart_spec": {"matched_chart_field": "status_code"}},
+        },
+    }
+
+    async def _fake_tabular_executor(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return fake_result
+
+    _prompt, _rag_used, rag_debug, _docs, _caveats, _sources = asyncio.run(
+        maybe_run_deterministic_route(
+            query="\u043f\u043e\u043a\u0430\u0436\u0438 chart \u043f\u043e Status Code",
+            user_id=uuid.uuid4(),
+            conversation_id=uuid.uuid4(),
+            files=[SimpleNamespace(id="f-1")],
+            planner_decision=planner_decision,
+            planner_decision_payload=planner_payload,
+            expected_chunks_total=0,
+            rag_mode="auto",
+            top_k=3,
+            preferred_lang="ru",
+            tabular_sql_executor=_fake_tabular_executor,
+            rag_retriever_client=None,
+            is_combined_intent=False,
+        )
+    )
+
+    assert "could not be delivered" not in rag_debug["short_circuit_response_text"].lower()
+    assert "\u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c" in rag_debug["short_circuit_response_text"].lower()
+    assert rag_debug["chart_artifact_available"] is False

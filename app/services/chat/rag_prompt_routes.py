@@ -455,12 +455,18 @@ async def maybe_run_deterministic_route(
                 "chart_rendered",
                 "chart_artifact_path",
                 "chart_artifact_id",
+                "chart_artifact_available",
                 "chart_artifact_exists",
                 "chart_fallback_reason",
                 "response_language",
             ):
                 if rag_debug.get(key) is None and isinstance(tabular_debug, dict) and key in tabular_debug:
                     rag_debug[key] = tabular_debug.get(key)
+            chart_artifact_available = bool(
+                rag_debug.get("chart_artifact_available", rag_debug.get("chart_artifact_exists", False))
+            )
+            rag_debug["chart_artifact_available"] = chart_artifact_available
+            rag_debug["chart_artifact_exists"] = chart_artifact_available
             if not chart_response_text:
                 chart_response_text = localized_text(
                     preferred_lang=preferred_lang,
@@ -468,8 +474,26 @@ async def maybe_run_deterministic_route(
                     en="Chart request was handled by deterministic route. See data and artifacts in the response.",
                 )
             rag_debug["short_circuit_response"] = True
+            if not chart_artifact_available:
+                reason = str(rag_debug.get("chart_fallback_reason") or "chart_render_failed")
+                chart_response_text = localized_text(
+                    preferred_lang=preferred_lang,
+                    ru=(
+                        "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0434\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c "
+                        "\u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0435 \u0433\u0440\u0430\u0444\u0438\u043a\u0430. "
+                        f"\u0414\u0435\u0442\u0435\u0440\u043c\u0438\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0435 "
+                        f"\u0434\u0430\u043d\u043d\u044b\u0435 \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f "
+                        f"\u043e\u0441\u0442\u0430\u044e\u0442\u0441\u044f \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u044b (reason={reason})."
+                    ),
+                    en=(
+                        "The chart image could not be delivered. "
+                        f"Deterministic distribution data is still available (reason={reason})."
+                    ),
+                )
             rag_debug["short_circuit_response_text"] = chart_response_text
-            chart_artifact_exists = bool(rag_debug.get("chart_artifact_exists", False))
+            chart_artifact_exists = bool(
+                rag_debug.get("chart_artifact_available", rag_debug.get("chart_artifact_exists", False))
+            )
             if chart_artifact_exists:
                 rag_debug["fallback_type"] = "none"
                 rag_debug["fallback_reason"] = "none"
@@ -478,6 +502,8 @@ async def maybe_run_deterministic_route(
                 rag_debug["fallback_reason"] = str(
                     rag_debug.get("chart_fallback_reason") or "chart_render_failed"
                 )
+                rag_debug["artifacts"] = []
+                rag_debug["artifacts_count"] = 0
         else:
             rag_debug["fallback_type"] = "none"
             rag_debug["fallback_reason"] = "none"

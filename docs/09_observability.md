@@ -221,3 +221,18 @@ Failure-path contract (no silent fallback):
 
 This keeps diagnostics route-aware while preserving backward-compatible top-level debug fields.
 
+## Update 2026-03-26 (Deterministic Chart Delivery State)
+Deterministic tabular chart diagnostics now separate chart generation from chart delivery:
+
+- `requested_chart_field`
+- `matched_chart_field`
+- `chart_spec_generated`
+- `chart_rendered`
+- `chart_artifact_available` (authoritative delivery flag)
+- `chart_artifact_exists` (backward-compatible alias to `chart_artifact_available`)
+- `chart_artifact_path`
+- `chart_artifact_id`
+- `chart_fallback_reason`
+
+`debug_sections.chart` includes `chart_artifact_available` and keeps `chart_artifact_exists` for compatibility.
+This prevents fake-success chart wording when image delivery fails after spec generation.

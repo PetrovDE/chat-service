@@ -5,15 +5,10 @@ import json
 import logging
 from time import perf_counter
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-from uuid import uuid4
 
 from app.core.config import settings
 from app.observability.metrics import inc_counter, observe_ms
-from app.services.chat.complex_analytics.artifacts import (
-    artifact_public_url,
-    artifact_relative_path,
-    to_safe_filename,
-)
+from app.services.chat.tabular_chart_delivery import render_chart_artifact
 from app.services.chat.language import detect_preferred_response_language
 from app.services.chat.tabular_debug_contract import (
     apply_tabular_debug_fields,
@@ -520,6 +515,7 @@ def _build_tabular_error_result(
                 "chart_rendered": False,
                 "chart_artifact_path": None,
                 "chart_artifact_id": None,
+                "chart_artifact_available": False,
                 "chart_artifact_exists": False,
                 "chart_fallback_reason": "requested_field_not_matched",
                 "response_language": preferred_lang,
@@ -736,24 +732,6 @@ def _choose_chart_dimension_column(
     table: ResolvedTabularTable,
     decision: TabularIntentDecision,
 ) -> Tuple[Optional[str], Dict[str, Any]]:
-    if decision.matched_column:
-        return str(decision.matched_column), {
-            "candidate_columns": list(decision.candidate_columns),
-            "scored_candidates": list(decision.scored_candidates),
-            "match_score": decision.match_score,
-            "match_strategy": decision.match_strategy,
-            "requested_field_text": decision.requested_field_text,
-        }
-
-    if decision.matched_columns:
-        return str(decision.matched_columns[0]), {
-            "candidate_columns": list(decision.candidate_columns),
-            "scored_candidates": list(decision.scored_candidates),
-            "match_score": decision.match_score,
-            "match_strategy": decision.match_strategy,
-            "requested_field_text": decision.requested_field_text,
-        }
-
     requested_field = _extract_requested_chart_field(query)
     if requested_field:
         resolution = resolve_requested_field(requested_field_text=requested_field, table=table)
@@ -771,6 +749,24 @@ def _choose_chart_dimension_column(
             "match_score": resolution.match_score,
             "match_strategy": resolution.match_strategy,
             "requested_field_text": requested_field,
+        }
+
+    if decision.matched_column:
+        return str(decision.matched_column), {
+            "candidate_columns": list(decision.candidate_columns),
+            "scored_candidates": list(decision.scored_candidates),
+            "match_score": decision.match_score,
+            "match_strategy": decision.match_strategy,
+            "requested_field_text": decision.requested_field_text,
+        }
+
+    if decision.matched_columns:
+        return str(decision.matched_columns[0]), {
+            "candidate_columns": list(decision.candidate_columns),
+            "scored_candidates": list(decision.scored_candidates),
+            "match_score": decision.match_score,
+            "match_strategy": decision.match_strategy,
+            "requested_field_text": decision.requested_field_text,
         }
 
     direct_mentions = find_direct_column_mentions(query, table)
@@ -870,112 +866,12 @@ def _build_chart_sql(
     return sql, chart_spec
 
 
-def _coerce_chart_value(value: Any) -> float:
-    if value is None:
-        return 0.0
-    try:
-        return float(value)
-    except Exception:
-        try:
-            return float(str(value).replace(",", "."))
-        except Exception:
-            return 0.0
-
-
 def _render_chart_artifact(
     *,
     rows: Sequence[Tuple[Any, ...]],
     chart_spec: Dict[str, Any],
 ) -> Dict[str, Any]:
-    delivery: Dict[str, Any] = {
-        "chart_rendered": False,
-        "chart_artifact_exists": False,
-        "chart_fallback_reason": "none",
-        "chart_artifact_path": None,
-        "chart_artifact_id": None,
-        "artifact": None,
-    }
-    if not rows:
-        delivery["chart_fallback_reason"] = "no_data_for_chart"
-        return delivery
-
-    try:
-        import matplotlib  # noqa: PLC0415
-
-        matplotlib.use("Agg", force=True)
-        import matplotlib.pyplot as plt  # noqa: PLC0415
-    except Exception:
-        delivery["chart_fallback_reason"] = "renderer_unavailable"
-        return delivery
-
-    points: List[Tuple[str, float]] = []
-    for row in rows:
-        if not row:
-            continue
-        label = str(row[0] if len(row) > 0 else "").strip()
-        if not label:
-            continue
-        points.append((label, _coerce_chart_value(row[1] if len(row) > 1 else 0)))
-    if not points:
-        delivery["chart_fallback_reason"] = "no_plot_points"
-        return delivery
-
-    artifact_id = uuid4().hex[:12]
-    column_hint = str(
-        chart_spec.get("matched_chart_field")
-        or chart_spec.get("requested_dimension_column")
-        or "dimension"
-    )
-    artifact_name = to_safe_filename(f"tabular_chart_{column_hint}_{artifact_id}.png")
-    artifacts_dir = (settings.get_public_uploads_dir() / "tabular_sql" / uuid4().hex).resolve()
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-    artifact_path = (artifacts_dir / artifact_name).resolve()
-
-    fig = None
-    try:
-        labels = [item[0] for item in points]
-        values = [item[1] for item in points]
-        fig, ax = plt.subplots(figsize=(10.5, 4.8))
-        ax.bar(range(len(labels)), values, color="#2B6CB0")
-        ax.set_title(str(chart_spec.get("title") or "Distribution"), fontsize=12)
-        ax.set_xlabel(str(chart_spec.get("x_title") or "bucket"))
-        ax.set_ylabel(str(chart_spec.get("y_title") or "count"))
-        ax.set_xticks(range(len(labels)))
-        ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=9)
-        fig.tight_layout()
-        fig.savefig(artifact_path, dpi=150, bbox_inches="tight")
-    except Exception:
-        delivery["chart_fallback_reason"] = "render_exception"
-        return delivery
-    finally:
-        if fig is not None:
-            plt.close(fig)
-
-    artifact_exists = artifact_path.exists() and artifact_path.is_file() and artifact_path.stat().st_size > 0
-    if not artifact_exists:
-        delivery["chart_fallback_reason"] = "artifact_missing_after_render"
-        return delivery
-
-    public_url = artifact_public_url(str(artifact_path))
-    relative_path = artifact_relative_path(str(artifact_path))
-    if not public_url or not relative_path:
-        delivery["chart_fallback_reason"] = "artifact_not_public"
-        return delivery
-
-    delivery["chart_rendered"] = True
-    delivery["chart_artifact_exists"] = True
-    delivery["chart_fallback_reason"] = "none"
-    delivery["chart_artifact_path"] = relative_path
-    delivery["chart_artifact_id"] = artifact_id
-    delivery["artifact"] = {
-        "kind": "tabular_chart",
-        "name": artifact_name,
-        "path": relative_path,
-        "url": public_url,
-        "content_type": "image/png",
-        "column": str(chart_spec.get("matched_chart_field") or chart_spec.get("requested_dimension_column") or ""),
-    }
-    return delivery
+    return render_chart_artifact(rows=rows, chart_spec=chart_spec)
 
 
 def _build_chart_response_text(
@@ -988,6 +884,7 @@ def _build_chart_response_text(
     column_label = str(
         chart_spec.get("matched_chart_field_alias")
         or chart_spec.get("matched_chart_field")
+        or chart_spec.get("requested_chart_field")
         or chart_spec.get("requested_dimension_column")
         or "field"
     )
@@ -995,7 +892,9 @@ def _build_chart_response_text(
         preferred_lang=preferred_lang,
         column_label=column_label,
         chart_rendered=bool(chart_delivery.get("chart_rendered")),
-        chart_artifact_exists=bool(chart_delivery.get("chart_artifact_exists")),
+        chart_artifact_available=bool(
+            chart_delivery.get("chart_artifact_available", chart_delivery.get("chart_artifact_exists"))
+        ),
         chart_fallback_reason=str(chart_delivery.get("chart_fallback_reason") or "none"),
         result_text=result_text,
     )
@@ -1037,19 +936,29 @@ def _execute_chart_sync(
     chart_artifact_path = chart_delivery.get("chart_artifact_path")
     chart_artifact_id = chart_delivery.get("chart_artifact_id")
     chart_rendered = bool(chart_delivery.get("chart_rendered"))
-    chart_artifact_exists = bool(chart_delivery.get("chart_artifact_exists"))
+    chart_artifact_available = bool(
+        chart_delivery.get("chart_artifact_available", chart_delivery.get("chart_artifact_exists"))
+    )
+    chart_artifact_exists = bool(chart_artifact_available)
     chart_fallback_reason = str(chart_delivery.get("chart_fallback_reason") or "none")
     requested_chart_field = chart_spec.get("requested_chart_field")
     matched_chart_field = chart_spec.get("matched_chart_field")
+    selected_route = "chart"
+
+    if not chart_artifact_available:
+        artifacts = []
 
     logger.info(
         (
-            "tabular_chart_delivery requested_chart_field=%s matched_chart_field=%s "
-            "chart_spec_generated=true chart_rendered=%s chart_artifact_exists=%s chart_fallback_reason=%s"
+            "tabular_chart_delivery selected_route=%s requested_chart_field=%s matched_chart_field=%s "
+            "chart_spec_generated=true chart_rendered=%s chart_artifact_available=%s "
+            "chart_artifact_exists=%s chart_fallback_reason=%s"
         ),
+        selected_route,
         requested_chart_field,
         matched_chart_field,
         str(chart_rendered).lower(),
+        str(chart_artifact_available).lower(),
         str(chart_artifact_exists).lower(),
         chart_fallback_reason,
     )
@@ -1066,6 +975,7 @@ def _execute_chart_sync(
                 "chart_rendered": chart_rendered,
                 "chart_artifact_path": chart_artifact_path,
                 "chart_artifact_id": chart_artifact_id,
+                "chart_artifact_available": chart_artifact_available,
                 "chart_artifact_exists": chart_artifact_exists,
                 "chart_fallback_reason": chart_fallback_reason,
                 "response_language": preferred_lang,
@@ -1127,6 +1037,7 @@ def _execute_chart_sync(
             "chart_rendered": chart_rendered,
             "chart_artifact_path": chart_artifact_path,
             "chart_artifact_id": chart_artifact_id,
+            "chart_artifact_available": chart_artifact_available,
             "chart_artifact_exists": chart_artifact_exists,
             "chart_fallback_reason": chart_fallback_reason,
             "response_language": preferred_lang,

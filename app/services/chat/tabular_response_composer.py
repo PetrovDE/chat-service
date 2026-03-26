@@ -95,11 +95,11 @@ def build_chart_response_text(
     preferred_lang: str,
     column_label: str,
     chart_rendered: bool,
-    chart_artifact_exists: bool,
+    chart_artifact_available: bool,
     chart_fallback_reason: str,
     result_text: str,
 ) -> str:
-    rendered = bool(chart_rendered and chart_artifact_exists)
+    rendered = bool(chart_rendered and chart_artifact_available)
     if rendered:
         return localized_text(
             preferred_lang=preferred_lang,

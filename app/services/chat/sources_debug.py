@@ -351,7 +351,10 @@ def build_standard_rag_debug_payload(
         payload["match_score"] = None
     payload["chart_spec_generated"] = bool(payload.get("chart_spec_generated", False))
     payload["chart_rendered"] = bool(payload.get("chart_rendered", False))
-    payload["chart_artifact_exists"] = bool(payload.get("chart_artifact_exists", False))
+    payload["chart_artifact_available"] = bool(
+        payload.get("chart_artifact_available", payload.get("chart_artifact_exists", False))
+    )
+    payload["chart_artifact_exists"] = bool(payload.get("chart_artifact_available", False))
     payload["chart_artifact_path"] = (
         str(payload.get("chart_artifact_path")).strip()
         if payload.get("chart_artifact_path") is not None
@@ -452,6 +455,7 @@ def build_standard_rag_debug_payload(
         "chart": {
             "chart_spec_generated": payload["chart_spec_generated"],
             "chart_rendered": payload["chart_rendered"],
+            "chart_artifact_available": payload["chart_artifact_available"],
             "chart_artifact_exists": payload["chart_artifact_exists"],
             "chart_artifact_path": payload["chart_artifact_path"],
             "chart_artifact_id": payload["chart_artifact_id"],

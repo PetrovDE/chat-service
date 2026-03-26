@@ -205,8 +205,11 @@ def test_rag_debug_contract_stable_defaults_include_file_route_language_and_cach
     assert payload["cache_hit"] is False
     assert payload["cache_miss"] is True
     assert payload["cache_key_version"] == "unknown"
+    assert payload["chart_artifact_available"] is False
+    assert payload["chart_artifact_exists"] is False
     assert "debug_sections" in payload
     assert payload["debug_sections"]["files"]["file_resolution_status"] == "not_requested"
+    assert payload["debug_sections"]["chart"]["chart_artifact_available"] is False
     assert payload["debug_sections"]["retrieval"]["retrieval_hits_count"] == 0
 
 
@@ -266,6 +269,7 @@ def test_rag_debug_contract_includes_schema_match_and_chart_fields():
         "match_strategy": "alias_match",
         "chart_spec_generated": True,
         "chart_rendered": False,
+        "chart_artifact_available": False,
         "chart_artifact_exists": False,
         "chart_artifact_path": None,
         "chart_artifact_id": None,
@@ -284,6 +288,9 @@ def test_rag_debug_contract_includes_schema_match_and_chart_fields():
     assert payload["match_strategy"] == "alias_match"
     assert payload["chart_spec_generated"] is True
     assert payload["chart_rendered"] is False
+    assert payload["chart_artifact_available"] is False
+    assert payload["chart_artifact_exists"] is False
+    assert payload["debug_sections"]["chart"]["chart_artifact_available"] is False
     assert payload["debug_sections"]["chart"]["chart_artifact_exists"] is False
 
 

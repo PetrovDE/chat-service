@@ -270,3 +270,27 @@ Ingestion/runtime now expose explicit tabular schema-metadata contract diagnosti
   - `column_metadata_aliases_trimmed_total`
   - `column_metadata_sample_values_trimmed_total`
   - `column_metadata_budget_enforced`
+
+## Update 2026-03-26 (Scope Selection Diagnostics)
+
+Deterministic tabular route now emits explicit file/sheet/table scope-selection diagnostics:
+
+- `scope_selection_status` (`selected|ambiguous_file|ambiguous_table|no_tabular_dataset|not_applicable`)
+- `scope_selected_file_id`
+- `scope_selected_file_name`
+- `scope_selected_table_name`
+- `scope_selected_sheet_name`
+- `scope_file_candidates` (ranked file candidates with score/reasons, bounded list)
+- `table_scope_candidates` (ranked table/sheet candidates with score/reasons, bounded list)
+
+`debug_sections` now includes additive `scope` section:
+
+- `scope_selection_status`
+- `selected_file_id`
+- `selected_file_name`
+- `selected_table_name`
+- `selected_sheet_name`
+- `file_candidates`
+- `table_candidates`
+
+The stable debug contract remains backward compatible; existing sections/fields are unchanged.

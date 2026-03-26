@@ -58,6 +58,26 @@ def _normalize_chart_debug_fields(*, rag_debug: Dict[str, Any]) -> Dict[str, Any
     return rag_debug
 
 
+def _resolve_source_scope(*, rag_debug: Dict[str, Any]) -> str:
+    file_name = str(rag_debug.get("scope_selected_file_name") or "").strip()
+    table_name = str(rag_debug.get("scope_selected_table_name") or "").strip()
+    sheet_name = str(rag_debug.get("scope_selected_sheet_name") or "").strip()
+    if not table_name:
+        tabular_debug = rag_debug.get("tabular_sql") if isinstance(rag_debug.get("tabular_sql"), dict) else {}
+        table_name = str(tabular_debug.get("table_name") or "").strip()
+    if not sheet_name:
+        tabular_debug = rag_debug.get("tabular_sql") if isinstance(rag_debug.get("tabular_sql"), dict) else {}
+        sheet_name = str(tabular_debug.get("sheet_name") or "").strip()
+    parts: List[str] = []
+    if file_name:
+        parts.append(file_name)
+    if sheet_name:
+        parts.append(f"sheet={sheet_name}")
+    if table_name:
+        parts.append(f"table={table_name}")
+    return " | ".join(parts)
+
+
 def _build_chart_short_circuit_response(
     *,
     preferred_lang: str,
@@ -76,6 +96,7 @@ def _build_chart_short_circuit_response(
         chart_artifact_available=chart_artifact_available,
         chart_fallback_reason=chart_delivery_reason,
         result_text=result_text,
+        source_scope=_resolve_source_scope(rag_debug=rag_debug),
     )
     if not response_text:
         response_text = str(tabular_sql_result.get("chart_response_text") or "").strip()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Mapping, Sequence
 
 from app.services.chat.language import localized_text
@@ -15,6 +16,7 @@ STATE_MISSING_COLUMN = "missing_column"
 STATE_NO_CONTEXT = "no_context"
 STATE_NO_RETRIEVAL = "no_retrieval"
 STATE_RUNTIME_ERROR = "runtime_error"
+STATE_SCOPE_AMBIGUITY = "scope_ambiguity"
 STATE_TABULAR_EXECUTION_ERROR = "tabular_execution_error"
 STATE_TABULAR_TIMEOUT = "tabular_timeout"
 
@@ -26,6 +28,28 @@ def _to_preview(items: Sequence[str], *, fallback_en: str, fallback_ru: str, pre
     return fallback_ru if str(preferred_lang or "").lower().startswith("ru") else fallback_en
 
 
+def _summarize_distribution(result_text: str) -> str:
+    text = str(result_text or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return ""
+    if not isinstance(parsed, list) or not parsed:
+        return ""
+    first = parsed[0]
+    if not isinstance(first, list) or len(first) < 2:
+        return ""
+    bucket = str(first[0]).strip()
+    value = str(first[1]).strip()
+    if not bucket:
+        return ""
+    if value:
+        return f"Top bucket: `{bucket}` ({value})."
+    return f"Top bucket: `{bucket}`."
+
+
 def compose_controlled_response(
     *,
     state: str,
@@ -35,14 +59,20 @@ def compose_controlled_response(
     missing_candidates: Sequence[str] | None = None,
     ambiguous_options: Mapping[str, Sequence[str]] | None = None,
     requested_field: str | None = None,
+    chart_alternatives: Sequence[str] | None = None,
     column_label: str | None = None,
+    source_scope: str | None = None,
     chart_fallback_reason: str | None = None,
     result_text: str | None = None,
+    scope_kind: str | None = None,
+    scope_options: Sequence[str] | None = None,
 ) -> str:
     requested_fields = list(requested_fields or [])
     alternatives = list(alternatives or [])
     missing_candidates = list(missing_candidates or [])
     ambiguous_options = dict(ambiguous_options or {})
+    chart_alternatives = list(chart_alternatives or [])
+    scope_options = list(scope_options or [])
     normalized_state = str(state or "").strip().lower()
 
     if normalized_state == STATE_NO_CONTEXT:
@@ -118,6 +148,26 @@ def compose_controlled_response(
             ),
         )
 
+    if normalized_state == STATE_SCOPE_AMBIGUITY:
+        options_preview = _to_preview(
+            scope_options,
+            fallback_en="`no options available`",
+            fallback_ru="`no options available`",
+            preferred_lang=preferred_lang,
+        )
+        scope_label = str(scope_kind or "dataset scope").strip() or "dataset scope"
+        return localized_text(
+            preferred_lang=preferred_lang,
+            ru=(
+                f"I found multiple possible {scope_label} matches. "
+                f"Please pick one so I can run deterministic analysis: {options_preview}."
+            ),
+            en=(
+                f"I found multiple possible {scope_label} matches. "
+                f"Please pick one so I can run deterministic analysis: {options_preview}."
+            ),
+        )
+
     if normalized_state == STATE_MISSING_COLUMN or normalized_state == STATE_AMBIGUOUS_COLUMN:
         requested_preview = _to_preview(
             requested_fields,
@@ -143,7 +193,8 @@ def compose_controlled_response(
                 ),
                 en=(
                     f"Multiple columns matched the request ({requested_preview}) with similar confidence. "
-                    f"Please clarify the exact field. Available options: {alternatives_preview}."
+                    f"Please clarify the exact field. Available options: {alternatives_preview}. "
+                    f"Try one directly in your next query."
                 ),
             )
         return localized_text(
@@ -157,24 +208,28 @@ def compose_controlled_response(
             ),
             en=(
                 f"No confident schema match was found for field ({requested_preview}). "
-                f"Please clarify the column name. Available options: {alternatives_preview}."
+                f"Please clarify the column name. Available options: {alternatives_preview}. "
+                f"Try one directly in your next query."
             ),
         )
 
     if normalized_state == STATE_CHART_UNMATCHED_FIELD:
         requested = str(requested_field or "").strip() or "requested field"
+        alternatives_preview = _to_preview(
+            chart_alternatives,
+            fallback_en="no close column matches",
+            fallback_ru="no close column matches",
+            preferred_lang=preferred_lang,
+        )
         return localized_text(
             preferred_lang=preferred_lang,
             ru=(
-                f"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c "
-                f"\u043f\u043e\u043b\u0435 \u0433\u0440\u0430\u0444\u0438\u043a\u0430 '{requested}' "
-                "\u0441 \u043a\u043e\u043b\u043e\u043d\u043a\u0430\u043c\u0438 \u0442\u0430\u0431\u043b\u0438\u0446\u044b. "
-                "\u0423\u0442\u043e\u0447\u043d\u0438\u0442\u0435 \u0442\u043e\u0447\u043d\u043e\u0435 \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 "
-                "\u043a\u043e\u043b\u043e\u043d\u043a\u0438 \u0438\u0437 \u0441\u0445\u0435\u043c\u044b \u0444\u0430\u0439\u043b\u0430."
+                f"The chart field '{requested}' was not matched to table columns. "
+                f"Closest options: {alternatives_preview}. Please name one explicitly."
             ),
             en=(
                 f"The chart field '{requested}' was not matched to table columns. "
-                "Please clarify the exact column name from the file schema."
+                f"Closest options: {alternatives_preview}. Please name one explicitly."
             ),
         )
 
@@ -213,37 +268,40 @@ def compose_controlled_response(
     if normalized_state == STATE_CHART_RENDER_SUCCESS:
         label = str(column_label or "field").strip() or "field"
         values = str(result_text or "").strip()
+        top_bucket = _summarize_distribution(values)
+        source_prefix = f"Source: {str(source_scope).strip()}. " if str(source_scope or "").strip() else ""
         return localized_text(
             preferred_lang=preferred_lang,
             ru=(
-                f"\u0413\u0440\u0430\u0444\u0438\u043a \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f "
+                f"{source_prefix}\u0413\u0440\u0430\u0444\u0438\u043a \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f "
                 f"\u043f\u043e \u00ab{label}\u00bb \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u043f\u043e\u0441\u0442\u0440\u043e\u0435\u043d "
                 "\u0438 \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u0432 \u0431\u043b\u043e\u043a\u0435 Charts. "
-                f"\u0414\u0430\u043d\u043d\u044b\u0435 \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f: {values}"
+                f"{top_bucket} \u0414\u0430\u043d\u043d\u044b\u0435 \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f: {values}"
             ),
             en=(
-                f"The distribution chart for '{label}' was generated and is available in Charts. "
-                f"Distribution data: {values}"
+                f"{source_prefix}The distribution chart for '{label}' was generated and is available in Charts. "
+                f"{top_bucket} Distribution data: {values}"
             ),
         )
 
     if normalized_state == STATE_CHART_RENDER_FAILED:
         reason = str(chart_fallback_reason or "chart_render_failed")
         values = str(result_text or "").strip()
+        top_bucket = _summarize_distribution(values)
+        source_prefix = f"Source: {str(source_scope).strip()}. " if str(source_scope or "").strip() else ""
         return localized_text(
             preferred_lang=preferred_lang,
             ru=(
-                "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0434\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c "
+                f"{source_prefix}\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0434\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c "
                 "\u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0435 \u0433\u0440\u0430\u0444\u0438\u043a\u0430, "
                 f"\u043d\u043e \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u0435 "
                 f"\u0440\u0430\u0441\u0441\u0447\u0438\u0442\u0430\u043d\u043e \u043f\u043e \u0434\u0430\u043d\u043d\u044b\u043c "
-                f"\u0442\u0430\u0431\u043b\u0438\u0446\u044b (reason={reason}). "
+                f"\u0442\u0430\u0431\u043b\u0438\u0446\u044b (reason={reason}). {top_bucket} "
                 f"\u0414\u0430\u043d\u043d\u044b\u0435 \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f: {values}"
             ),
             en=(
-                "The chart image could not be delivered, "
-                f"but distribution data was computed from the table (reason={reason}). "
-                f"Distribution data: {values}"
+                f"{source_prefix}The chart image could not be delivered, but distribution data was computed "
+                f"from the table (reason={reason}). {top_bucket} Distribution data: {values}"
             ),
         )
 
@@ -281,11 +339,17 @@ def build_missing_column_message(
     )
 
 
-def build_chart_unmatched_field_message(*, preferred_lang: str, requested_field: str) -> str:
+def build_chart_unmatched_field_message(
+    *,
+    preferred_lang: str,
+    requested_field: str,
+    alternatives: Sequence[str] | None = None,
+) -> str:
     return compose_controlled_response(
         state=STATE_CHART_UNMATCHED_FIELD,
         preferred_lang=preferred_lang,
         requested_field=requested_field,
+        chart_alternatives=list(alternatives or []),
     )
 
 
@@ -311,6 +375,7 @@ def build_chart_response_text(
     chart_artifact_available: bool,
     chart_fallback_reason: str,
     result_text: str,
+    source_scope: str | None = None,
 ) -> str:
     state = (
         STATE_CHART_RENDER_SUCCESS
@@ -321,8 +386,23 @@ def build_chart_response_text(
         state=state,
         preferred_lang=preferred_lang,
         column_label=column_label,
+        source_scope=source_scope,
         chart_fallback_reason=chart_fallback_reason,
         result_text=result_text,
+    )
+
+
+def build_scope_clarification_message(
+    *,
+    preferred_lang: str,
+    scope_kind: str,
+    scope_options: Sequence[str],
+) -> str:
+    return compose_controlled_response(
+        state=STATE_SCOPE_AMBIGUITY,
+        preferred_lang=preferred_lang,
+        scope_kind=scope_kind,
+        scope_options=scope_options,
     )
 
 
@@ -365,4 +445,3 @@ def build_runtime_error_message(*, preferred_lang: str) -> str:
         state=STATE_RUNTIME_ERROR,
         preferred_lang=preferred_lang,
     )
-

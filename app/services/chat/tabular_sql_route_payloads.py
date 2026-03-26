@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any, Dict, List, Sequence
 
 from app.services.chat.language import detect_preferred_response_language
 from app.services.chat.tabular_debug_contract import (
@@ -14,7 +14,10 @@ from app.services.chat.tabular_intent_router import (
     TabularIntentDecision,
     suggest_relevant_alternative_columns,
 )
-from app.services.chat.tabular_response_composer import build_missing_column_message
+from app.services.chat.tabular_response_composer import (
+    build_missing_column_message,
+    build_scope_clarification_message,
+)
 from app.services.tabular.sql_execution import ResolvedTabularDataset, ResolvedTabularTable
 
 
@@ -72,7 +75,7 @@ def build_missing_column_response(
     requested_fields = list(decision.unmatched_requested_fields)
     if not requested_fields and decision.requested_field_text:
         requested_fields = [str(decision.requested_field_text)]
-    alternatives = suggest_relevant_alternative_columns(table, limit=6)
+    alternatives = _build_missing_column_alternatives(decision=decision, table=table, limit=6)
     clarification_prompt = build_missing_column_message(
         preferred_lang=preferred_lang,
         requested_fields=requested_fields,
@@ -130,6 +133,97 @@ def build_missing_column_response(
         },
     )
     return apply_route_debug(payload=payload, decision=decision, detected_language=preferred_lang)
+
+
+def _build_missing_column_alternatives(
+    *,
+    decision: TabularIntentDecision,
+    table: ResolvedTabularTable,
+    limit: int,
+) -> List[str]:
+    ranked = [str(item) for item in list(decision.candidate_columns or []) if str(item or "").strip()]
+    broad = suggest_relevant_alternative_columns(table, limit=max(1, int(limit) * 2))
+    merged: List[str] = []
+    seen = set()
+    for item in [*ranked, *broad]:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(value)
+        if len(merged) >= max(1, int(limit)):
+            break
+    return merged
+
+
+def build_scope_clarification_response(
+    *,
+    query: str,
+    scope_kind: str,
+    scope_options: Sequence[str],
+    scope_debug: Dict[str, Any],
+) -> Dict[str, Any]:
+    preferred_lang = detect_preferred_response_language(query)
+    clarification_prompt = build_scope_clarification_message(
+        preferred_lang=preferred_lang,
+        scope_kind=scope_kind,
+        scope_options=scope_options,
+    )
+    payload = {
+        "status": "error",
+        "clarification_prompt": clarification_prompt,
+        "prompt_context": (
+            "Deterministic tabular scope resolution requires clarification.\n"
+            f"scope_kind={scope_kind}\n"
+            f"scope_options={json.dumps(list(scope_options), ensure_ascii=False)}"
+        ),
+        "debug": {
+            "retrieval_mode": "tabular_sql",
+            "intent": "tabular_scope_selection",
+            "deterministic_path": True,
+            "tabular_sql": {
+                "executed_sql": None,
+                "sql": None,
+                "result": None,
+                "policy_decision": {"allowed": False, "reason": "scope_ambiguity"},
+                "guardrail_flags": [],
+                "sql_guardrails": {"valid": False, "reason": "scope_ambiguity"},
+            },
+        },
+        "sources": [],
+        "rows_expected_total": 0,
+        "rows_retrieved_total": 0,
+        "rows_used_map_total": 0,
+        "rows_used_reduce_total": 0,
+        "row_coverage_ratio": 0.0,
+    }
+    fields = {
+        "selected_route": "ambiguous_data_scope",
+        "detected_intent": "tabular_scope_selection",
+        "fallback_type": "tabular_scope_ambiguity",
+        "fallback_reason": "scope_ambiguity",
+        "controlled_response_state": "scope_ambiguity",
+        "detected_language": preferred_lang,
+        "response_language": preferred_lang,
+        "scope_kind": str(scope_kind or "dataset_scope"),
+        "scope_options": [str(item) for item in list(scope_options or [])],
+    }
+    if isinstance(scope_debug, dict):
+        fields.update(
+            {
+                "scope_selection_status": str(scope_debug.get("scope_selection_status") or "scope_ambiguity"),
+                "scope_selected_file_id": scope_debug.get("scope_selected_file_id"),
+                "scope_selected_file_name": scope_debug.get("scope_selected_file_name"),
+                "scope_selected_table_name": scope_debug.get("scope_selected_table_name"),
+                "scope_selected_sheet_name": scope_debug.get("scope_selected_sheet_name"),
+                "scope_file_candidates": list(scope_debug.get("scope_file_candidates") or []),
+                "table_scope_candidates": list(scope_debug.get("table_scope_candidates") or []),
+            }
+        )
+    return apply_tabular_debug_fields(payload, fields=fields)
 
 
 def build_schema_question_payload(

@@ -359,11 +359,15 @@ async def maybe_run_deterministic_route(
             rag_debug["artifacts_count"] = 0
             rag_debug["analytical_mode_used"] = True
             rag_debug["strategy_mode"] = "combined" if is_combined_intent else "analytical"
-            rag_debug["fallback_type"] = (
-                "unsupported_missing_column"
-                if str(rag_debug.get("selected_route") or "") == "unsupported_missing_column"
-                else "tabular_executor_error"
-            )
+            existing_fallback_type = str(rag_debug.get("fallback_type") or "").strip()
+            if existing_fallback_type and existing_fallback_type != "none":
+                rag_debug["fallback_type"] = existing_fallback_type
+            else:
+                rag_debug["fallback_type"] = (
+                    "unsupported_missing_column"
+                    if str(rag_debug.get("selected_route") or "") == "unsupported_missing_column"
+                    else "tabular_executor_error"
+                )
             rag_debug["fallback_reason"] = str(
                 rag_debug.get("fallback_reason")
                 or rag_debug.get("executor_error_code")

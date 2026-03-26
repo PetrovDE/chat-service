@@ -69,3 +69,19 @@ def test_tabular_composer_wrappers_match_centralized_templates() -> None:
     central = controlled_composer.build_timeout_message(preferred_lang="en")
 
     assert wrapped == central
+
+
+def test_chart_response_text_includes_source_and_top_bucket_hint() -> None:
+    message = tabular_composer.build_chart_response_text(
+        preferred_lang="en",
+        column_label="Status Code",
+        chart_rendered=True,
+        chart_artifact_available=True,
+        chart_fallback_reason="none",
+        result_text='[["200", 10], ["500", 2]]',
+        source_scope="orders.xlsx | sheet=Orders | table=orders_sheet",
+    )
+
+    assert "Status Code" in message
+    assert "Source: orders.xlsx | sheet=Orders | table=orders_sheet." in message
+    assert "Top bucket: `200` (10)." in message

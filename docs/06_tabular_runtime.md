@@ -78,3 +78,30 @@ Compatibility contract:
 - `execute_tabular_sql_path(...)` remains the stable deterministic entrypoint.
 - Existing tabular debug/fallback fields are preserved.
 - No silent fallback guesses were introduced.
+
+## Update 2026-03-26 (Tabular Scope Selection UX Pass)
+
+Deterministic tabular scope selection (file + sheet/table) now applies explicit ranking and ambiguity handling:
+
+- ranking signals:
+  - filename mention overlap,
+  - table/sheet surface-name overlap,
+  - column mention overlap,
+  - bounded row-count bonus only as tie support.
+- scope selection outcomes:
+  - `selected`
+  - `ambiguous_file`
+  - `ambiguous_table`
+  - `no_tabular_dataset`
+- ambiguous file/sheet scope now returns controlled clarification (concise options), instead of implicit first-file/first-sheet selection.
+- deterministic route keeps explicit no-guess behavior for columns/tables/sheets/files.
+
+Scope observability fields (debug, additive and backward compatible):
+
+- `scope_selection_status`
+- `scope_selected_file_id`
+- `scope_selected_file_name`
+- `scope_selected_table_name`
+- `scope_selected_sheet_name`
+- `scope_file_candidates`
+- `table_scope_candidates`

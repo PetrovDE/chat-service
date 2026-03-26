@@ -250,3 +250,29 @@ def test_stream_nonstream_contract_parity_for_stabilized_fields():
     )
 
     assert nonstream.response_contract.model_dump() == stream_fields["response_contract"]
+
+
+def test_scope_ambiguity_clarification_keeps_response_contract_stable():
+    result = _build_response(
+        rag_debug_ctx={
+            "selected_route": "ambiguous_data_scope",
+            "retrieval_mode": "tabular_sql",
+            "execution_route": "tabular_sql",
+            "file_resolution_status": "conversation_match",
+            "fallback_type": "tabular_scope_ambiguity",
+            "fallback_reason": "scope_ambiguity",
+            "controlled_response_state": "scope_ambiguity",
+            "requires_clarification": True,
+        },
+        artifacts_payload=[],
+        execution_route="tabular_sql",
+        artifacts_count=0,
+    )
+
+    contract = result.response_contract
+    assert contract.contract_version == "chat_response_v1"
+    assert contract.response_mode == "clarification"
+    assert contract.selected_route == "ambiguous_data_scope"
+    assert contract.retrieval_mode == "tabular_sql"
+    assert contract.clarification_required is True
+    assert contract.controlled_fallback is True

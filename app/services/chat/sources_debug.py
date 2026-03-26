@@ -332,6 +332,32 @@ def build_standard_rag_debug_payload(
     payload["resolved_file_ids"] = _normalized_str_list(payload.get("resolved_file_ids") or payload.get("file_ids"))
     payload["matched_columns"] = _normalized_str_list(payload.get("matched_columns"))
     payload["unmatched_requested_fields"] = _normalized_str_list(payload.get("unmatched_requested_fields"))
+    tabular_payload = payload.get("tabular_sql") if isinstance(payload.get("tabular_sql"), dict) else {}
+    payload["scope_selection_status"] = str(payload.get("scope_selection_status") or "not_applicable")
+    payload["scope_selected_file_id"] = (
+        str(payload.get("scope_selected_file_id")).strip()
+        if payload.get("scope_selected_file_id") is not None
+        else None
+    )
+    payload["scope_selected_file_name"] = (
+        str(payload.get("scope_selected_file_name")).strip()
+        if payload.get("scope_selected_file_name") is not None
+        else None
+    )
+    payload["scope_selected_table_name"] = (
+        str(payload.get("scope_selected_table_name") or tabular_payload.get("table_name") or "").strip() or None
+    )
+    payload["scope_selected_sheet_name"] = (
+        str(payload.get("scope_selected_sheet_name") or tabular_payload.get("sheet_name") or "").strip() or None
+    )
+    scope_file_candidates = payload.get("scope_file_candidates")
+    payload["scope_file_candidates"] = scope_file_candidates if isinstance(scope_file_candidates, list) else []
+    table_scope_candidates = payload.get("table_scope_candidates")
+    payload["table_scope_candidates"] = table_scope_candidates if isinstance(table_scope_candidates, list) else []
+    if payload["scope_selected_file_id"] is None and payload["resolved_file_ids"]:
+        payload["scope_selected_file_id"] = payload["resolved_file_ids"][0]
+    if payload["scope_selected_file_name"] is None and payload["resolved_file_names"]:
+        payload["scope_selected_file_name"] = payload["resolved_file_names"][0]
     requested_field_text = str(payload.get("requested_field_text") or "").strip()
     payload["requested_field_text"] = requested_field_text or None
     payload["candidate_columns"] = _normalized_str_list(payload.get("candidate_columns"))
@@ -459,6 +485,15 @@ def build_standard_rag_debug_payload(
             "chart_artifact_exists": payload["chart_artifact_exists"],
             "chart_artifact_path": payload["chart_artifact_path"],
             "chart_artifact_id": payload["chart_artifact_id"],
+        },
+        "scope": {
+            "scope_selection_status": payload["scope_selection_status"],
+            "selected_file_id": payload["scope_selected_file_id"],
+            "selected_file_name": payload["scope_selected_file_name"],
+            "selected_table_name": payload["scope_selected_table_name"],
+            "selected_sheet_name": payload["scope_selected_sheet_name"],
+            "file_candidates": payload["scope_file_candidates"],
+            "table_candidates": payload["table_scope_candidates"],
         },
         "retrieval": {
             "retrieval_hits_count": payload["retrieval_hits_count"],

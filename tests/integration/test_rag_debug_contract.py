@@ -294,6 +294,33 @@ def test_rag_debug_contract_includes_schema_match_and_chart_fields():
     assert payload["debug_sections"]["chart"]["chart_artifact_exists"] is False
 
 
+def test_rag_debug_contract_includes_scope_section_without_breaking_existing_sections():
+    rag_debug = {
+        "retrieval_mode": "tabular_sql",
+        "scope_selection_status": "selected",
+        "scope_selected_file_id": "f-1",
+        "scope_selected_file_name": "north.xlsx",
+        "scope_selected_table_name": "north_sheet",
+        "scope_selected_sheet_name": "North",
+        "scope_file_candidates": [{"file_id": "f-1", "score": 1.2}],
+        "table_scope_candidates": [{"table_name": "north_sheet", "score": 1.1}],
+    }
+    payload = build_standard_rag_debug_payload(
+        rag_debug=rag_debug,
+        context_docs=[],
+        rag_sources=[],
+        llm_tokens_used=0,
+        max_items=8,
+    )
+
+    assert payload["debug_sections"]["routing"]["retrieval_mode"] == "tabular_sql"
+    assert payload["debug_sections"]["files"]["file_resolution_status"] == "not_requested"
+    assert payload["debug_sections"]["scope"]["scope_selection_status"] == "selected"
+    assert payload["debug_sections"]["scope"]["selected_file_name"] == "north.xlsx"
+    assert payload["debug_sections"]["scope"]["selected_sheet_name"] == "North"
+    assert payload["debug_sections"]["scope"]["selected_table_name"] == "north_sheet"
+
+
 def test_rag_debug_contract_extracts_embedding_and_collection_namespace_details():
     docs = [
         {

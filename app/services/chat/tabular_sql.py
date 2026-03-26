@@ -27,6 +27,7 @@ from app.services.chat.tabular_response_composer import (
     build_missing_column_message,
     build_timeout_message,
 )
+from app.services.chat.tabular_scope_selector import select_tabular_scope
 from app.services.chat.tabular_schema_resolver import (
     normalize_text,
     resolve_requested_field,
@@ -40,6 +41,7 @@ from app.services.chat.tabular_sql_route_payloads import (
     build_missing_column_response as build_missing_column_route_payload,
     build_route_debug_payload,
     build_schema_question_payload as build_schema_question_route_payload,
+    build_scope_clarification_response as build_scope_clarification_route_payload,
 )
 from app.services.chat.tabular_sql_pipeline import (
     build_profile_payload_pipeline,
@@ -355,6 +357,7 @@ def _build_tabular_error_result(
         payload["clarification_prompt"] = build_chart_unmatched_field_message(
             preferred_lang=preferred_lang,
             requested_field=requested_chart_field,
+            alternatives=[str(item) for item in candidate_columns],
         )
         payload = apply_tabular_debug_fields(
             payload,
@@ -636,6 +639,7 @@ def _build_chart_response_text(
     chart_spec: Dict[str, Any],
     chart_delivery: Dict[str, Any],
     result_text: str,
+    source_scope: str,
 ) -> str:
     column_label = str(
         chart_spec.get("matched_chart_field_alias")
@@ -653,7 +657,38 @@ def _build_chart_response_text(
         ),
         chart_fallback_reason=str(chart_delivery.get("chart_fallback_reason") or "none"),
         result_text=result_text,
+        source_scope=source_scope,
     )
+
+
+def _build_scope_label(*, target_file: Any, table: ResolvedTabularTable) -> str:
+    file_name = str(getattr(target_file, "original_filename", "") or getattr(target_file, "stored_filename", "") or "unknown")
+    sheet_name = str(getattr(table, "sheet_name", "") or "").strip()
+    table_name = str(getattr(table, "table_name", "") or "table")
+    if sheet_name:
+        return f"{file_name} | sheet={sheet_name} | table={table_name}"
+    return f"{file_name} | table={table_name}"
+
+
+def _extract_scope_debug_fields(scope_debug: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(scope_debug, dict):
+        return {}
+    return {
+        "scope_selection_status": str(scope_debug.get("scope_selection_status") or "selected"),
+        "scope_selected_file_id": scope_debug.get("scope_selected_file_id"),
+        "scope_selected_file_name": scope_debug.get("scope_selected_file_name"),
+        "scope_selected_table_name": scope_debug.get("scope_selected_table_name"),
+        "scope_selected_sheet_name": scope_debug.get("scope_selected_sheet_name"),
+        "scope_file_candidates": list(scope_debug.get("scope_file_candidates") or []),
+        "table_scope_candidates": list(scope_debug.get("table_scope_candidates") or []),
+    }
+
+
+def _apply_scope_debug_fields(*, payload: Dict[str, Any], scope_debug: Dict[str, Any]) -> Dict[str, Any]:
+    fields = _extract_scope_debug_fields(scope_debug)
+    if not fields:
+        return payload
+    return apply_tabular_debug_fields(payload, fields=fields)
 
 
 def _execute_chart_sync(
@@ -685,6 +720,7 @@ def _execute_chart_sync(
         chart_spec=chart_spec,
         chart_delivery=chart_delivery,
         result_text=result_text,
+        source_scope=_build_scope_label(target_file=target_file, table=table),
     )
 
     artifact_item = chart_delivery.get("artifact")
@@ -808,25 +844,37 @@ async def execute_tabular_sql_path(
     query: str,
     files: List[Any],
 ) -> Optional[Dict[str, Any]]:
-    target_file = None
-    dataset = None
-    for file_obj in files:
+    eligible_files: List[Any] = []
+    for file_obj in list(files or []):
         file_extension = str(
             getattr(file_obj, "extension", getattr(file_obj, "file_type", "")) or ""
         ).lower().lstrip(".")
         if file_extension not in {"xlsx", "xls", "csv", "tsv"}:
             continue
-        resolved = resolve_tabular_dataset(file_obj)
-        if resolved is not None and resolved.tables:
-            target_file = file_obj
-            dataset = resolved
-            break
+        eligible_files.append(file_obj)
 
-    if target_file is None or dataset is None:
+    scope_decision = select_tabular_scope(
+        query=query,
+        files=eligible_files,
+        resolve_dataset_fn=resolve_tabular_dataset,
+    )
+    scope_debug_fields = dict(scope_decision.debug_fields or {})
+    if scope_decision.status == "no_tabular_dataset":
         return None
 
-    table = _select_table_for_query(query, dataset)
-    if table is None:
+    if scope_decision.status in {"ambiguous_file", "ambiguous_table"}:
+        scope_kind = "file" if scope_decision.status == "ambiguous_file" else "sheet/table"
+        return build_scope_clarification_route_payload(
+            query=query,
+            scope_kind=scope_kind,
+            scope_options=list(scope_decision.clarification_options or []),
+            scope_debug=scope_debug_fields,
+        )
+
+    target_file = scope_decision.target_file
+    dataset = scope_decision.dataset
+    table = scope_decision.table
+    if target_file is None or dataset is None or table is None:
         return None
 
     intent_decision = classify_tabular_query(query=query, table=table)
@@ -836,21 +884,23 @@ async def execute_tabular_sql_path(
 
     selected_route = str(intent_decision.selected_route or "")
     if selected_route == "unsupported_missing_column":
-        return _build_missing_column_response(
+        payload = _build_missing_column_response(
             query=query,
             decision=intent_decision,
             dataset=dataset,
             table=table,
             target_file=target_file,
         )
+        return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
     if selected_route == "schema_question":
-        return _build_schema_question_payload(
+        payload = _build_schema_question_payload(
             query=query,
             dataset=dataset,
             table=table,
             target_file=target_file,
             decision=intent_decision,
         )
+        return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
 
     detected_language = detect_preferred_response_language(query)
     timeout_seconds = float(settings.TABULAR_SQL_TIMEOUT_SECONDS)
@@ -932,7 +982,7 @@ async def execute_tabular_sql_path(
             )
         observe_ms("tabular_sql_path_ms", (perf_counter() - started) * 1000.0, intent=intent_kind)
         inc_counter("tabular_sql_path_total", intent=intent_kind, engine=dataset.engine)
-        return payload
+        return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
     except TimeoutError:
         inc_counter("tabular_sql_path_timeout_total", intent=intent_kind, engine=dataset.engine)
         inc_counter(
@@ -955,11 +1005,12 @@ async def execute_tabular_sql_path(
             target_file=target_file,
             error_payload=to_tabular_error_payload(timeout_exc),
         )
-        return _apply_route_debug(
+        payload = _apply_route_debug(
             payload=payload,
             decision=intent_decision,
             detected_language=detected_language,
         )
+        return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
     except Exception as exc:
         error_payload = to_tabular_error_payload(exc)
         error_code = str(error_payload.get("code") or SQL_ERROR_EXECUTION_FAILED)
@@ -991,8 +1042,9 @@ async def execute_tabular_sql_path(
             target_file=target_file,
             error_payload=error_payload,
         )
-        return _apply_route_debug(
+        payload = _apply_route_debug(
             payload=payload,
             decision=intent_decision,
             detected_language=detected_language,
         )
+        return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)

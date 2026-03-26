@@ -80,6 +80,7 @@ def build_dataset_debug_fields(*, dataset: Any, table: Any) -> Dict[str, Any]:
         "dataset_version": getattr(dataset, "dataset_version", None),
         "dataset_provenance_id": getattr(dataset, "dataset_provenance_id", None),
         "table_name": getattr(table, "table_name", None),
+        "sheet_name": getattr(table, "sheet_name", None),
         "table_version": getattr(table, "table_version", None),
         "table_provenance_id": getattr(table, "provenance_id", None),
         "table_row_count": int(getattr(table, "row_count", 0) or 0),

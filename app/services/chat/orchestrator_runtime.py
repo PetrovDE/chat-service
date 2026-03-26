@@ -12,9 +12,23 @@ from app.core.config import settings
 from app.crud import crud_message
 from app.schemas import ChatMessage, ChatResponse
 from app.services.chat.controlled_response_composer import build_runtime_error_message
+from app.services.chat.orchestrator_stream_payloads import (
+    build_stream_contract_fields,
+    build_stream_done_payload,
+    build_stream_start_payload,
+    build_stream_terminal_events,
+    safe_stream_payload_json,
+)
+from app.services.chat.response_contract import (
+    build_response_contract,
+    normalize_execution_telemetry,
+    normalize_route_telemetry,
+)
 from app.services.llm.manager import llm_manager
 
 logger = logging.getLogger(__name__)
+
+
 def _build_rag_debug_payload_if_enabled(
     *,
     orchestrator: Any,
@@ -32,6 +46,8 @@ def _build_rag_debug_payload_if_enabled(
         llm_tokens_used=llm_tokens_used,
         provider_debug=provider_debug,
     )
+
+
 def _build_chat_response(
     *,
     response_text: str,
@@ -44,39 +60,55 @@ def _build_chat_response(
     rag_caveats: Any,
     rag_sources: Any,
     artifacts_payload: Any,
+    rag_debug_ctx: Optional[Dict[str, Any]],
     rag_debug_payload: Optional[Dict[str, Any]],
+    debug_enabled: bool,
     tokens_used: Optional[int] = None,
     summary: Optional[str] = None,
     default_execution_route: str = "narrative",
     default_executor_status: str = "not_attempted",
 ) -> ChatResponse:
+    normalized_route = normalize_route_telemetry(route_telemetry)
+    normalized_execution = normalize_execution_telemetry(
+        execution_telemetry,
+        default_execution_route=default_execution_route,
+        default_executor_status=default_executor_status,
+    )
+    response_contract = build_response_contract(
+        rag_debug=rag_debug_ctx,
+        execution_telemetry=normalized_execution,
+        artifacts=artifacts_payload,
+        debug_enabled=debug_enabled,
+        debug_included=rag_debug_payload is not None,
+    )
     return ChatResponse(
         response=response_text,
         conversation_id=conversation_id,
         message_id=message_id,
         model_used=model_used,
-        model_route=str(route_telemetry.get("model_route", "aihub_primary")),
-        route_mode=str(route_telemetry.get("route_mode", "policy")),
-        provider_selected=route_telemetry.get("provider_selected"),
-        provider_effective=str(route_telemetry.get("provider_effective", "aihub")),
-        fallback_reason=route_telemetry.get("fallback_reason"),
-        fallback_allowed=bool(route_telemetry.get("fallback_allowed", False)),
-        fallback_attempted=bool(route_telemetry.get("fallback_attempted", False)),
+        model_route=str(normalized_route["model_route"]),
+        route_mode=str(normalized_route["route_mode"]),
+        provider_selected=normalized_route.get("provider_selected"),
+        provider_effective=str(normalized_route["provider_effective"]),
+        fallback_reason=str(normalized_route["fallback_reason"]),
+        fallback_allowed=bool(normalized_route["fallback_allowed"]),
+        fallback_attempted=bool(normalized_route["fallback_attempted"]),
         fallback_policy_version=str(
-            route_telemetry.get("fallback_policy_version", settings.LLM_FALLBACK_POLICY_VERSION)
+            normalized_route.get("fallback_policy_version", settings.LLM_FALLBACK_POLICY_VERSION)
         ),
-        aihub_attempted=bool(route_telemetry.get("aihub_attempted", False)),
-        execution_route=str(execution_telemetry.get("execution_route", default_execution_route)),
-        executor_attempted=bool(execution_telemetry.get("executor_attempted", False)),
-        executor_status=str(execution_telemetry.get("executor_status", default_executor_status)),
-        executor_error_code=execution_telemetry.get("executor_error_code"),
-        artifacts_count=int(execution_telemetry.get("artifacts_count", 0) or 0),
+        aihub_attempted=bool(normalized_route["aihub_attempted"]),
+        execution_route=str(normalized_execution["execution_route"]),
+        executor_attempted=bool(normalized_execution["executor_attempted"]),
+        executor_status=str(normalized_execution["executor_status"]),
+        executor_error_code=normalized_execution.get("executor_error_code"),
+        artifacts_count=int(normalized_execution["artifacts_count"]),
         tokens_used=tokens_used,
         generation_time=generation_time,
         summary=summary,
         caveats=rag_caveats,
         sources=rag_sources,
         artifacts=artifacts_payload or None,
+        response_contract=response_contract,
         rag_debug=rag_debug_payload,
     )
 async def stream_chat_events(
@@ -99,76 +131,30 @@ async def stream_chat_events(
     )
     execution_telemetry = orchestrator._execution_telemetry(ctx)
     artifacts_payload = orchestrator._extract_artifacts(ctx)
+    rag_debug_ctx = ctx.get("rag_debug") if isinstance(ctx.get("rag_debug"), dict) else None
 
     try:
         if orchestrator._planner_requires_clarification(ctx):
             clarification_text = orchestrator._clarification_text(ctx)
-            full_response = clarification_text
-            start_payload = {
-                "type": "start",
-                "conversation_id": str(conversation_id),
-                "message_id": str(assistant_message_id),
-                "rag_enabled": ctx["rag_used"],
-                "rag_debug": ctx["rag_debug"],
-                **route_telemetry,
-                **execution_telemetry,
-            }
-            if chat_data.rag_debug:
-                start_payload["rag_debug"] = orchestrator._build_rag_debug_payload(
-                    rag_debug=ctx["rag_debug"],
-                    context_docs=ctx["context_docs"],
-                    rag_sources=ctx["rag_sources"],
-                    llm_tokens_used=None,
-                    provider_debug=None,
-                )
-            try:
-                start_payload_json = json.dumps(start_payload)
-            except ValueError:
-                logger.warning(
-                    "RAG start payload is not JSON-serializable; sending reduced debug payload",
-                    exc_info=True,
-                )
-                start_payload["rag_debug"] = {"serialization_error": True}
-                start_payload_json = json.dumps(start_payload)
-            yield f"data: {start_payload_json}\n\n"
-
-            if clarification_text:
-                yield f"data: {json.dumps({'type': 'chunk', 'content': clarification_text})}\n\n"
-
-            generation_time = (datetime.utcnow() - start_time).total_seconds()
-            await crud_message.create_message(
+            for event in await build_stream_terminal_events(
+                orchestrator=orchestrator,
+                chat_data=chat_data,
                 db=db,
+                ctx=ctx,
                 conversation_id=conversation_id,
-                role="assistant",
-                content=clarification_text,
-                model_name=chat_data.model_name or "planner_clarification",
-                temperature=chat_data.temperature,
-                max_tokens=chat_data.max_tokens,
-                generation_time=generation_time,
-            )
-            orchestrator._log_route_event(
+                assistant_message_id=assistant_message_id,
                 route_telemetry=route_telemetry,
                 execution_telemetry=execution_telemetry,
-                conversation_id=conversation_id,
-                stream=True,
-            )
-            yield (
-                "data: "
-                + json.dumps(
-                    {
-                        "type": "done",
-                        "generation_time": generation_time,
-                        "rag_used": ctx["rag_used"],
-                        "summary_available": False,
-                        "caveats": ctx["rag_caveats"],
-                        "sources": ctx["rag_sources"],
-                        "artifacts": artifacts_payload,
-                        **route_telemetry,
-                        **execution_telemetry,
-                    }
-                )
-                + "\n\n"
-            )
+                artifacts_payload=artifacts_payload,
+                rag_debug_ctx=rag_debug_ctx,
+                response_text=clarification_text,
+                model_name=chat_data.model_name or "planner_clarification",
+                start_time=start_time,
+                default_execution_route="clarification",
+                default_executor_status="not_attempted",
+                logger=logger,
+            ):
+                yield event
             return
 
         short_circuit_text = orchestrator._executor_short_circuit_text(ctx)
@@ -178,61 +164,25 @@ async def stream_chat_events(
                 if str(execution_telemetry.get("execution_route") or "") == "complex_analytics"
                 else "tabular_sql_executor"
             )
-            full_response = short_circuit_text
-            start_payload = {
-                "type": "start",
-                "conversation_id": str(conversation_id),
-                "message_id": str(assistant_message_id),
-                "rag_enabled": ctx["rag_used"],
-                "rag_debug": ctx["rag_debug"],
-                **route_telemetry,
-                **execution_telemetry,
-            }
-            if chat_data.rag_debug:
-                start_payload["rag_debug"] = orchestrator._build_rag_debug_payload(
-                    rag_debug=ctx["rag_debug"],
-                    context_docs=ctx["context_docs"],
-                    rag_sources=ctx["rag_sources"],
-                    llm_tokens_used=None,
-                    provider_debug=None,
-                )
-            yield f"data: {json.dumps(start_payload)}\n\n"
-            yield f"data: {json.dumps({'type': 'chunk', 'content': short_circuit_text})}\n\n"
-
-            generation_time = (datetime.utcnow() - start_time).total_seconds()
-            await crud_message.create_message(
+            for event in await build_stream_terminal_events(
+                orchestrator=orchestrator,
+                chat_data=chat_data,
                 db=db,
+                ctx=ctx,
                 conversation_id=conversation_id,
-                role="assistant",
-                content=short_circuit_text,
-                model_name=short_circuit_model,
-                temperature=chat_data.temperature,
-                max_tokens=chat_data.max_tokens,
-                generation_time=generation_time,
-            )
-            orchestrator._log_route_event(
+                assistant_message_id=assistant_message_id,
                 route_telemetry=route_telemetry,
                 execution_telemetry=execution_telemetry,
-                conversation_id=conversation_id,
-                stream=True,
-            )
-            yield (
-                "data: "
-                + json.dumps(
-                    {
-                        "type": "done",
-                        "generation_time": generation_time,
-                        "rag_used": ctx["rag_used"],
-                        "summary_available": False,
-                        "caveats": ctx["rag_caveats"],
-                        "sources": ctx["rag_sources"],
-                        "artifacts": artifacts_payload,
-                        **route_telemetry,
-                        **execution_telemetry,
-                    }
-                )
-                + "\n\n"
-            )
+                artifacts_payload=artifacts_payload,
+                rag_debug_ctx=rag_debug_ctx,
+                response_text=short_circuit_text,
+                model_name=short_circuit_model,
+                start_time=start_time,
+                default_execution_route="complex_analytics",
+                default_executor_status="success",
+                logger=logger,
+            ):
+                yield event
             return
 
         generation_kwargs = orchestrator._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
@@ -250,24 +200,30 @@ async def stream_chat_events(
             "conversation_id": str(conversation_id),
             "message_id": str(assistant_message_id),
             "rag_enabled": ctx["rag_used"],
-            "rag_debug": ctx["rag_debug"],
-            **route_telemetry,
-            **execution_telemetry,
         }
+        start_debug_payload = None
         if chat_data.rag_debug:
-            start_payload["rag_debug"] = orchestrator._build_rag_debug_payload(
+            start_debug_payload = orchestrator._build_rag_debug_payload(
                 rag_debug=ctx["rag_debug"],
                 context_docs=ctx["context_docs"],
                 rag_sources=ctx["rag_sources"],
                 llm_tokens_used=None,
                 provider_debug=None,
             )
-        try:
-            start_payload_json = json.dumps(start_payload)
-        except ValueError:
-            logger.warning("RAG start payload is not JSON-serializable; sending reduced debug payload", exc_info=True)
-            start_payload["rag_debug"] = {"serialization_error": True}
-            start_payload_json = json.dumps(start_payload)
+        start_contract_fields = build_stream_contract_fields(
+            rag_debug_ctx=rag_debug_ctx,
+            route_telemetry=route_telemetry,
+            execution_telemetry=execution_telemetry,
+            artifacts_payload=artifacts_payload,
+            debug_enabled=chat_data.rag_debug,
+            debug_included=start_debug_payload is not None,
+            default_execution_route="narrative",
+            default_executor_status="not_attempted",
+        )
+        start_payload.update(start_contract_fields)
+        if start_debug_payload is not None:
+            start_payload["rag_debug"] = start_debug_payload
+        start_payload_json = safe_stream_payload_json(start_payload, logger=logger)
         yield f"data: {start_payload_json}\n\n"
 
         async for chunk in routed_stream.stream:
@@ -299,29 +255,74 @@ async def stream_chat_events(
             generation_time=generation_time,
         )
 
-        yield (
-            "data: "
-            + json.dumps(
-                {
-                    "type": "done",
-                    "generation_time": generation_time,
-                    "rag_used": ctx["rag_used"],
-                    "summary_available": bool(summary_text),
-                    "caveats": ctx["rag_caveats"],
-                    "sources": ctx["rag_sources"],
-                    "artifacts": artifacts_payload,
-                    **route_telemetry,
-                    **execution_telemetry,
-                }
+        done_debug_payload = None
+        if chat_data.rag_debug:
+            done_debug_payload = orchestrator._build_rag_debug_payload(
+                rag_debug=ctx["rag_debug"],
+                context_docs=ctx["context_docs"],
+                rag_sources=ctx["rag_sources"],
+                llm_tokens_used=None,
+                provider_debug=None,
             )
-            + "\n\n"
+        done_contract_fields = build_stream_contract_fields(
+            rag_debug_ctx=rag_debug_ctx,
+            route_telemetry=route_telemetry,
+            execution_telemetry=execution_telemetry,
+            artifacts_payload=artifacts_payload,
+            debug_enabled=chat_data.rag_debug,
+            debug_included=done_debug_payload is not None,
+            default_execution_route="narrative",
+            default_executor_status="not_attempted",
         )
+        done_payload = build_stream_done_payload(
+            generation_time=generation_time,
+            rag_used=ctx["rag_used"],
+            summary_available=bool(summary_text),
+            rag_caveats=ctx["rag_caveats"],
+            rag_sources=ctx["rag_sources"],
+            artifacts_payload=artifacts_payload,
+            contract_fields=done_contract_fields,
+            rag_debug_payload=done_debug_payload,
+        )
+        yield "data: " + safe_stream_payload_json(done_payload, logger=logger) + "\n\n"
 
     except Exception as exc:
         logger.error("Streaming error: %s", exc, exc_info=True)
         preferred_lang = str(ctx.get("preferred_lang") or "ru")
         controlled_message = build_runtime_error_message(
             preferred_lang=preferred_lang,
+        )
+        error_rag_debug = dict(rag_debug_ctx or {})
+        error_rag_debug["controlled_response_state"] = "runtime_error"
+        error_rag_debug["fallback_type"] = "orchestrator_runtime_error"
+        error_rag_debug["fallback_reason"] = "runtime_exception"
+        error_rag_debug["response_language"] = preferred_lang
+        error_rag_debug["requires_clarification"] = True
+        error_rag_debug["clarification_prompt"] = controlled_message
+        error_rag_debug["selected_route"] = str(
+            error_rag_debug.get("selected_route")
+            or error_rag_debug.get("retrieval_mode")
+            or error_rag_debug.get("execution_route")
+            or "narrative"
+        )
+        error_rag_debug_payload = None
+        if chat_data.rag_debug:
+            error_rag_debug_payload = orchestrator._build_rag_debug_payload(
+                rag_debug=error_rag_debug,
+                context_docs=ctx["context_docs"],
+                rag_sources=ctx["rag_sources"],
+                llm_tokens_used=None,
+                provider_debug={"runtime_error": type(exc).__name__},
+            )
+        error_contract_fields = build_stream_contract_fields(
+            rag_debug_ctx=error_rag_debug,
+            route_telemetry=route_telemetry,
+            execution_telemetry=execution_telemetry,
+            artifacts_payload=artifacts_payload,
+            debug_enabled=chat_data.rag_debug,
+            debug_included=error_rag_debug_payload is not None,
+            default_execution_route="unknown",
+            default_executor_status="error",
         )
         error_payload = {
             "type": "error",
@@ -331,10 +332,11 @@ async def stream_chat_events(
             "fallback_type": "orchestrator_runtime_error",
             "fallback_reason": "runtime_exception",
             "response_language": preferred_lang,
-            **route_telemetry,
-            **execution_telemetry,
+            **error_contract_fields,
         }
-        yield f"data: {json.dumps(error_payload)}\n\n"
+        if error_rag_debug_payload is not None:
+            error_payload["rag_debug"] = error_rag_debug_payload
+        yield f"data: {safe_stream_payload_json(error_payload, logger=logger)}\n\n"
 async def run_nonstream_chat(
     *,
     orchestrator: Any,
@@ -390,7 +392,9 @@ async def run_nonstream_chat(
             rag_caveats=ctx["rag_caveats"],
             rag_sources=ctx["rag_sources"],
             artifacts_payload=artifacts_payload,
+            rag_debug_ctx=ctx.get("rag_debug"),
             rag_debug_payload=rag_debug_payload,
+            debug_enabled=chat_data.rag_debug,
             tokens_used=None,
             summary=None,
             default_execution_route="clarification",
@@ -445,7 +449,9 @@ async def run_nonstream_chat(
             rag_caveats=ctx["rag_caveats"],
             rag_sources=ctx["rag_sources"],
             artifacts_payload=artifacts_payload,
+            rag_debug_ctx=ctx.get("rag_debug"),
             rag_debug_payload=rag_debug_payload,
+            debug_enabled=chat_data.rag_debug,
             tokens_used=None,
             summary=None,
             default_execution_route="complex_analytics",
@@ -506,7 +512,9 @@ async def run_nonstream_chat(
             rag_caveats=ctx["rag_caveats"],
             rag_sources=ctx["rag_sources"],
             artifacts_payload=artifacts_payload,
+            rag_debug_ctx=ctx.get("rag_debug"),
             rag_debug_payload=rag_debug_payload,
+            debug_enabled=chat_data.rag_debug,
             tokens_used=result.get("tokens_used"),
             summary=summary_text,
             default_execution_route="narrative",
@@ -574,7 +582,9 @@ async def run_nonstream_chat(
             rag_caveats=ctx["rag_caveats"],
             rag_sources=ctx["rag_sources"],
             artifacts_payload=artifacts_payload,
+            rag_debug_ctx=ctx.get("rag_debug"),
             rag_debug_payload=rag_debug_payload,
+            debug_enabled=chat_data.rag_debug,
             tokens_used=None,
             summary=None,
             default_execution_route="narrative",

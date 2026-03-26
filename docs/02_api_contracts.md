@@ -111,3 +111,54 @@ One-shot in-memory attachment lifecycle is not part of the active contract.
   - `frontend/static/js/auth-ui.js`
   - `frontend/static/js/conversations-ui.js`
   - `frontend/static/js/utils.js`
+
+## Chat API Response Contract (2026-03-26)
+
+The chat API now exposes a stabilized outward contract for both non-stream and stream variants.
+
+### Non-Stream (`POST /api/v1/chat/`)
+
+Response model remains `ChatResponse` and includes:
+
+- Existing top-level fields (backward compatible):
+  - `response`
+  - `conversation_id`
+  - `message_id`
+  - `model_used`
+  - route telemetry: `model_route`, `route_mode`, `provider_selected`, `provider_effective`, `fallback_reason`, `fallback_allowed`, `fallback_attempted`, `fallback_policy_version`, `aihub_attempted`
+  - execution telemetry: `execution_route`, `executor_attempted`, `executor_status`, `executor_error_code`, `artifacts_count`
+  - `tokens_used`, `generation_time`, `summary`, `caveats`, `sources`, `artifacts`, optional `rag_debug`
+
+- Stabilized contract block:
+  - `response_contract.contract_version` (`chat_response_v1`)
+  - `response_contract.response_mode` (`general_chat|file_aware|tabular|chart|complex_analytics|narrative|clarification|runtime_error|unknown`)
+  - `response_contract.execution_route`
+  - `response_contract.selected_route`
+  - `response_contract.retrieval_mode`
+  - `response_contract.file_resolution_status`
+  - `response_contract.clarification_required`
+  - `response_contract.controlled_fallback`
+  - `response_contract.controlled_response_state`
+  - `response_contract.fallback_type`
+  - `response_contract.fallback_reason`
+  - `response_contract.artifacts_available`
+  - `response_contract.artifacts_count`
+  - `response_contract.chart_artifact_available`
+  - `response_contract.debug_enabled`
+  - `response_contract.debug_included`
+
+### Stream (`POST /api/v1/chat/stream`)
+
+SSE transport is unchanged (`start`, `chunk`, `done`, `error`), but stabilized fields now have consistent meaning with non-stream:
+
+- `start`, `done`, and `error` include normalized route/execution telemetry fields.
+- `start`, `done`, and `error` include `response_contract` with the same shape and semantics as non-stream.
+- `rag_debug` is included only when debug is explicitly enabled (`chat_data.rag_debug=true` or query `debug=true`).
+- `debug_enabled` / `debug_included` are explicit in `response_contract`.
+
+### Contract Semantics
+
+- `response_mode` is the canonical mode for UI rendering and mode-specific handling.
+- `clarification_required` and `controlled_fallback` are explicit and no longer inferred from mixed fields.
+- Chart delivery state is explicit via `chart_artifact_available`; chart success is not inferred from chart spec generation.
+- `fallback_reason` in route telemetry is normalized (`none|timeout|network|hub_5xx|circuit_open`) for stable transport-level interpretation.

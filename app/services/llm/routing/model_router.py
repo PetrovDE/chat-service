@@ -113,7 +113,7 @@ class ModelRouter:
         model = self._providers.resolve_chat_model(normalized_source, requested_model)
         telemetry.provider_effective = normalized_source
         telemetry.model_route = normalized_source
-        telemetry.fallback_reason = None
+        telemetry.fallback_reason = "none"
         telemetry.fallback_allowed = False
         telemetry.fallback_attempted = False
         telemetry.aihub_attempted = normalized_source == "aihub"
@@ -257,7 +257,7 @@ class ModelRouter:
         model = self._providers.resolve_chat_model(normalized_source, requested_model)
         telemetry.provider_effective = normalized_source
         telemetry.model_route = normalized_source
-        telemetry.fallback_reason = None
+        telemetry.fallback_reason = "none"
         telemetry.fallback_allowed = False
         telemetry.fallback_attempted = False
         telemetry.aihub_attempted = normalized_source == "aihub"

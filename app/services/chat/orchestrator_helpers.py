@@ -35,7 +35,7 @@ def default_route_telemetry(
         "route_mode": route_mode,
         "provider_selected": provider_selected,
         "provider_effective": provider_effective,
-        "fallback_reason": None,
+        "fallback_reason": "none",
         "fallback_allowed": False,
         "fallback_attempted": False,
         "fallback_policy_version": settings.LLM_FALLBACK_POLICY_VERSION,

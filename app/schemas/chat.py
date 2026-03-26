@@ -1,6 +1,6 @@
 # app/schemas/chat.py
 import uuid
-from typing import Optional, List
+from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -23,6 +23,30 @@ class ChatMessage(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    class ResponseContract(BaseModel):
+        contract_version: str = Field(default="chat_response_v1", pattern=r"^chat_response_v1$")
+        response_mode: str = Field(
+            default="unknown",
+            pattern=r"^(general_chat|file_aware|tabular|chart|complex_analytics|narrative|clarification|runtime_error|unknown)$",
+        )
+        execution_route: str = Field(
+            default="unknown",
+            pattern=r"^(tabular_sql|complex_analytics|narrative|clarification|unknown)$",
+        )
+        selected_route: str = "unknown"
+        retrieval_mode: str = "unknown"
+        file_resolution_status: str = "not_requested"
+        clarification_required: bool = False
+        controlled_fallback: bool = False
+        controlled_response_state: Optional[str] = None
+        fallback_type: str = "none"
+        fallback_reason: str = "none"
+        artifacts_available: bool = False
+        artifacts_count: int = Field(default=0, ge=0, le=1024)
+        chart_artifact_available: bool = False
+        debug_enabled: bool = False
+        debug_included: bool = False
+
     response: str
     conversation_id: uuid.UUID
     message_id: uuid.UUID
@@ -31,7 +55,7 @@ class ChatResponse(BaseModel):
     route_mode: str = Field(default="policy", pattern=r"^(explicit|policy)$")
     provider_selected: Optional[str] = None
     provider_effective: str = Field(default="aihub", pattern=r"^(aihub|ollama|openai|none|unknown)$")
-    fallback_reason: Optional[str] = Field(default="none", pattern=r"^(none|timeout|network|hub_5xx|circuit_open)$")
+    fallback_reason: str = Field(default="none", pattern=r"^(none|timeout|network|hub_5xx|circuit_open)$")
     fallback_allowed: bool = False
     fallback_attempted: bool = False
     fallback_policy_version: str = "p1-aihub-first-v1"
@@ -50,6 +74,7 @@ class ChatResponse(BaseModel):
     caveats: Optional[List[str]] = None
     sources: Optional[List[str]] = None
     artifacts: Optional[List[dict]] = None
+    response_contract: ResponseContract = Field(default_factory=ResponseContract)
     rag_debug: Optional[dict] = None
 
 

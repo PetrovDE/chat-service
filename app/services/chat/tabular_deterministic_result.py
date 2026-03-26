@@ -7,6 +7,7 @@ import uuid
 from app.domain.chat.query_planner import QueryPlanDecision
 from app.observability.slo_metrics import observe_retrieval_coverage, observe_tabular_row_coverage
 from app.services.chat.language import apply_language_policy_to_prompt
+from app.services.chat.tabular_answer_shaper import build_tabular_answer_quality_guidance
 from app.services.chat.tabular_response_composer import build_chart_response_text
 
 
@@ -149,7 +150,6 @@ def build_tabular_success_route_result(
     rag_debug["artifacts_count"] = int(len(rag_debug["artifacts"]))
     rag_debug["analytical_mode_used"] = True
     rag_debug["strategy_mode"] = "combined" if is_combined_intent else "analytical"
-
     selected_route_value = str(rag_debug.get("selected_route") or "")
     if selected_route_value in {"chart", "trend", "comparison"}:
         rag_debug = _normalize_chart_debug_fields(rag_debug=rag_debug)
@@ -231,13 +231,19 @@ def build_tabular_success_route_result(
         if lines:
             contextual_evidence = "Semantic evidence for combined route:\n" + "\n\n".join(lines) + "\n\n"
 
+    quality_guidance = build_tabular_answer_quality_guidance(
+        selected_route=selected_route_value,
+        tabular_sql_result=tabular_sql_result,
+        rag_sources=rag_sources,
+    )
+
     final_prompt = apply_language_policy_to_prompt(
         preferred_lang=preferred_lang,
         prompt=(
             "You are a data analyst.\n"
             "Use deterministic tabular context below as source of truth.\n"
             "Do not change numbers from SQL output.\n"
-            "Return sections in order: Answer, Limitations/Missing data, Sources.\n\n"
+            f"{quality_guidance}\n\n"
             f"User question:\n{query}\n\n"
             f"{contextual_evidence}"
             f"{tabular_sql_result.get('prompt_context')}\n\n"

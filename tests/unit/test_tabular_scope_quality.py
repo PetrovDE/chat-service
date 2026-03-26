@@ -167,4 +167,4 @@ def test_missing_column_response_prefers_query_relevant_alternatives():
     clarification = str(payload.get("clarification_prompt") or "").lower()
     assert "amount_total" in clarification
     assert "amount_rub" in clarification
-    assert "try one directly" in clarification
+    assert "best next question" in clarification

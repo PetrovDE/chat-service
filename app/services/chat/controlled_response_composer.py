@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-import json
 from typing import Mapping, Sequence
 
 from app.services.chat.language import localized_text
+from app.services.chat.tabular_answer_shaper import (
+    build_column_followup_suggestion,
+    build_scope_followup_suggestion,
+    extract_chart_highlights,
+)
 
 
 STATE_AMBIGUOUS_COLUMN = "ambiguous_column"
@@ -26,28 +30,6 @@ def _to_preview(items: Sequence[str], *, fallback_en: str, fallback_ru: str, pre
     if preview:
         return preview
     return fallback_ru if str(preferred_lang or "").lower().startswith("ru") else fallback_en
-
-
-def _summarize_distribution(result_text: str) -> str:
-    text = str(result_text or "").strip()
-    if not text:
-        return ""
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        return ""
-    if not isinstance(parsed, list) or not parsed:
-        return ""
-    first = parsed[0]
-    if not isinstance(first, list) or len(first) < 2:
-        return ""
-    bucket = str(first[0]).strip()
-    value = str(first[1]).strip()
-    if not bucket:
-        return ""
-    if value:
-        return f"Top bucket: `{bucket}` ({value})."
-    return f"Top bucket: `{bucket}`."
 
 
 def compose_controlled_response(
@@ -143,8 +125,10 @@ def compose_controlled_response(
                 "\u043b\u0438\u0441\u0442\u0430/\u043a\u043e\u043b\u043e\u043d\u043a\u0438."
             ),
             en=(
-                "No relevant chunks were found in the available files for this query. "
-                "Please clarify wording, filters, or sheet/column name."
+                "No relevant chunks were found in the available files for this query, "
+                "so I cannot answer confidently yet. "
+                "Best next question: `In <file>, sheet <sheet>, show <metric> by <dimension> with <filter>`. "
+                "You can also ask for available columns in the target sheet first."
             ),
         )
 
@@ -156,15 +140,16 @@ def compose_controlled_response(
             preferred_lang=preferred_lang,
         )
         scope_label = str(scope_kind or "dataset scope").strip() or "dataset scope"
+        followup = build_scope_followup_suggestion(scope_options=scope_options)
         return localized_text(
             preferred_lang=preferred_lang,
             ru=(
-                f"I found multiple possible {scope_label} matches. "
-                f"Please pick one so I can run deterministic analysis: {options_preview}."
+                f"I found multiple possible {scope_label} matches and stopped to avoid guessing. "
+                f"Options: {options_preview}. {followup}"
             ),
             en=(
-                f"I found multiple possible {scope_label} matches. "
-                f"Please pick one so I can run deterministic analysis: {options_preview}."
+                f"I found multiple possible {scope_label} matches and stopped to avoid guessing. "
+                f"Options: {options_preview}. {followup}"
             ),
         )
 
@@ -181,6 +166,10 @@ def compose_controlled_response(
             fallback_ru="\u043f\u043e\u0434\u0445\u043e\u0434\u044f\u0449\u0438\u0435 \u043a\u043e\u043b\u043e\u043d\u043a\u0438 \u043d\u0435 \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u044b",
             preferred_lang=preferred_lang,
         )
+        followup = build_column_followup_suggestion(
+            alternatives=alternatives,
+            requested_fields=requested_fields,
+        )
         if normalized_state == STATE_AMBIGUOUS_COLUMN:
             return localized_text(
                 preferred_lang=preferred_lang,
@@ -192,9 +181,8 @@ def compose_controlled_response(
                     f"\u0414\u043e\u0441\u0442\u0443\u043f\u043d\u044b\u0435 \u0432\u0430\u0440\u0438\u0430\u043d\u0442\u044b: {alternatives_preview}."
                 ),
                 en=(
-                    f"Multiple columns matched the request ({requested_preview}) with similar confidence. "
-                    f"Please clarify the exact field. Available options: {alternatives_preview}. "
-                    f"Try one directly in your next query."
+                    f"I found multiple close column matches for ({requested_preview}) with similar confidence, "
+                    f"so I stopped to avoid guessing. Available options: {alternatives_preview}. {followup}"
                 ),
             )
         return localized_text(
@@ -207,9 +195,8 @@ def compose_controlled_response(
                 f"\u0414\u043e\u0441\u0442\u0443\u043f\u043d\u044b\u0435 \u0432\u0430\u0440\u0438\u0430\u043d\u0442\u044b: {alternatives_preview}."
             ),
             en=(
-                f"No confident schema match was found for field ({requested_preview}). "
-                f"Please clarify the column name. Available options: {alternatives_preview}. "
-                f"Try one directly in your next query."
+                f"I could not run this query because no confident schema match was found for "
+                f"({requested_preview}). Available options: {alternatives_preview}. {followup}"
             ),
         )
 
@@ -221,15 +208,19 @@ def compose_controlled_response(
             fallback_ru="no close column matches",
             preferred_lang=preferred_lang,
         )
+        followup = build_column_followup_suggestion(
+            alternatives=chart_alternatives,
+            requested_fields=[requested],
+        )
         return localized_text(
             preferred_lang=preferred_lang,
             ru=(
-                f"The chart field '{requested}' was not matched to table columns. "
-                f"Closest options: {alternatives_preview}. Please name one explicitly."
+                f"The chart field '{requested}' was not matched to table columns, "
+                f"so I stopped to avoid guessing. Closest options: {alternatives_preview}. {followup}"
             ),
             en=(
-                f"The chart field '{requested}' was not matched to table columns. "
-                f"Closest options: {alternatives_preview}. Please name one explicitly."
+                f"The chart field '{requested}' was not matched to table columns, "
+                f"so I stopped to avoid guessing. Closest options: {alternatives_preview}. {followup}"
             ),
         )
 
@@ -267,41 +258,41 @@ def compose_controlled_response(
 
     if normalized_state == STATE_CHART_RENDER_SUCCESS:
         label = str(column_label or "field").strip() or "field"
-        values = str(result_text or "").strip()
-        top_bucket = _summarize_distribution(values)
-        source_prefix = f"Source: {str(source_scope).strip()}. " if str(source_scope or "").strip() else ""
+        source_scope_value = str(source_scope or "").strip()
+        highlights = extract_chart_highlights(result_text=str(result_text or ""), max_items=3)
+        highlights_line = " ".join([item for item in highlights if str(item).strip()])
+        source_line = f"Used data: {source_scope_value}. " if source_scope_value else ""
         return localized_text(
             preferred_lang=preferred_lang,
             ru=(
-                f"{source_prefix}\u0413\u0440\u0430\u0444\u0438\u043a \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f "
-                f"\u043f\u043e \u00ab{label}\u00bb \u0443\u0441\u043f\u0435\u0448\u043d\u043e \u043f\u043e\u0441\u0442\u0440\u043e\u0435\u043d "
-                "\u0438 \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u0432 \u0431\u043b\u043e\u043a\u0435 Charts. "
-                f"{top_bucket} \u0414\u0430\u043d\u043d\u044b\u0435 \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f: {values}"
+                f"\u0413\u0440\u0430\u0444\u0438\u043a \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f "
+                f"\u043f\u043e \u00ab{label}\u00bb \u043f\u043e\u0441\u0442\u0440\u043e\u0435\u043d. "
+                f"{source_line}\u041a\u043b\u044e\u0447\u0435\u0432\u044b\u0435 \u043d\u0430\u0431\u043b\u044e\u0434\u0435\u043d\u0438\u044f: {highlights_line}"
             ),
             en=(
-                f"{source_prefix}The distribution chart for '{label}' was generated and is available in Charts. "
-                f"{top_bucket} Distribution data: {values}"
+                f"Chart ready: distribution of '{label}'. {source_line}Highlights: {highlights_line}"
             ),
         )
 
     if normalized_state == STATE_CHART_RENDER_FAILED:
         reason = str(chart_fallback_reason or "chart_render_failed")
-        values = str(result_text or "").strip()
-        top_bucket = _summarize_distribution(values)
-        source_prefix = f"Source: {str(source_scope).strip()}. " if str(source_scope or "").strip() else ""
+        label = str(column_label or "field").strip() or "field"
+        source_scope_value = str(source_scope or "").strip()
+        highlights = extract_chart_highlights(result_text=str(result_text or ""), max_items=3)
+        highlights_line = " ".join([item for item in highlights if str(item).strip()])
+        source_line = f"Used data: {source_scope_value}. " if source_scope_value else ""
         return localized_text(
             preferred_lang=preferred_lang,
             ru=(
-                f"{source_prefix}\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0434\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c "
-                "\u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0435 \u0433\u0440\u0430\u0444\u0438\u043a\u0430, "
-                f"\u043d\u043e \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u0435 "
-                f"\u0440\u0430\u0441\u0441\u0447\u0438\u0442\u0430\u043d\u043e \u043f\u043e \u0434\u0430\u043d\u043d\u044b\u043c "
-                f"\u0442\u0430\u0431\u043b\u0438\u0446\u044b (reason={reason}). {top_bucket} "
-                f"\u0414\u0430\u043d\u043d\u044b\u0435 \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f: {values}"
+                f"\u042f \u0440\u0430\u0441\u0441\u0447\u0438\u0442\u0430\u043b \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u0435 "
+                f"\u043f\u043e \u00ab{label}\u00bb, \u043d\u043e \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c "
+                f"\u0434\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0435 "
+                f"\u0433\u0440\u0430\u0444\u0438\u043a\u0430 (reason={reason}). {source_line}"
+                f"\u041a\u043b\u044e\u0447\u0435\u0432\u044b\u0435 \u043d\u0430\u0431\u043b\u044e\u0434\u0435\u043d\u0438\u044f: {highlights_line}"
             ),
             en=(
-                f"{source_prefix}The chart image could not be delivered, but distribution data was computed "
-                f"from the table (reason={reason}). {top_bucket} Distribution data: {values}"
+                f"I computed the distribution for '{label}', but the chart image could not be delivered "
+                f"(reason={reason}). {source_line}Highlights: {highlights_line}"
             ),
         )
 

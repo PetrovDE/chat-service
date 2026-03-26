@@ -178,7 +178,7 @@ def test_execute_chart_sync_render_failure_returns_controlled_fallback(monkeypat
     assert payload["debug"]["chart_artifact_available"] is False
     assert payload["debug"]["chart_artifact_exists"] is False
     assert payload["debug"]["chart_fallback_reason"] == "renderer_unavailable"
-    assert "Не удалось доставить изображение графика" in payload["chart_response_text"]
+    assert "не удалось доставить изображение графика" in payload["chart_response_text"].lower()
     assert "Distribution" not in payload["chart_response_text"]
 
 

@@ -81,3 +81,13 @@ Key fields:
 - compatibility `TypeError` fallbacks in retrieval contract (strict kwargs path)
 - silent deterministic->narrative fallback on invalid deterministic payloads
 - silent narrative retrieval failure fallback; now surfaced as explicit `narrative_error`
+
+## Update 2026-03-26 (Deterministic Route Boundary Cleanup)
+
+`app/services/chat/rag_prompt_routes.py` now delegates deterministic success-route
+debug/result shaping to `app/services/chat/tabular_deterministic_result.py`.
+
+Boundary intent:
+- `rag_prompt_routes` remains route orchestration and branch selection.
+- deterministic success debug/fallback/chart short-circuit shaping is centralized in a shared helper.
+- route behavior and debug contract fields stay backward compatible.

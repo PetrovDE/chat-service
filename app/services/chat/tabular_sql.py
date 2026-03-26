@@ -13,14 +13,11 @@ from app.services.chat.language import detect_preferred_response_language
 from app.services.chat.tabular_debug_contract import (
     apply_tabular_debug_fields,
     build_dataset_debug_fields,
-    build_route_debug_fields,
-    ensure_tabular_debug_containers,
 )
 from app.services.chat.tabular_intent_router import (
     TabularIntentDecision,
     classify_tabular_query,
     detect_legacy_tabular_intent,
-    suggest_relevant_alternative_columns,
 )
 from app.services.chat.tabular_query_parser import parse_tabular_query
 from app.services.chat.tabular_response_composer import (
@@ -31,9 +28,18 @@ from app.services.chat.tabular_response_composer import (
     build_timeout_message,
 )
 from app.services.chat.tabular_schema_resolver import (
-    find_direct_column_mentions,
     normalize_text,
     resolve_requested_field,
+)
+from app.services.chat.tabular_sql_query_planner import (
+    build_aggregate_sql,
+    build_lookup_sql,
+)
+from app.services.chat.tabular_sql_route_payloads import (
+    apply_route_debug as apply_route_debug_payload,
+    build_missing_column_response as build_missing_column_route_payload,
+    build_route_debug_payload,
+    build_schema_question_payload as build_schema_question_route_payload,
 )
 from app.services.chat.tabular_sql_pipeline import (
     build_profile_payload_pipeline,
@@ -201,127 +207,17 @@ def _build_sql(
     query: str,
     table: ResolvedTabularTable,
 ) -> Tuple[str, Dict[str, Any]]:
-    parsed = parse_tabular_query(query)
-    operation = parsed.operation or _choose_operation(query)
-    direct_mentions = find_direct_column_mentions(query, table)
-    q_norm = _norm(query)
-
-    metric_column: Optional[str] = None
-    group_by_column: Optional[str] = None
-    requested_field_text = parsed.requested_field_text
-    candidate_columns: List[str] = []
-    scored_candidates: List[Dict[str, Any]] = []
-    match_score: Optional[float] = None
-    match_strategy: Optional[str] = None
-
-    if operation in {"sum", "avg", "min", "max"}:
-        if requested_field_text:
-            metric_resolution = _resolve_required_field(
-                field_text=requested_field_text,
-                table=table,
-                detail_reason="missing_metric_column",
-                expected_dtype_family="numeric",
-            )
-            metric_column = metric_resolution["column"]
-            candidate_columns = list(metric_resolution["candidate_columns"])
-            scored_candidates = list(metric_resolution["scored_candidates"])
-            match_score = metric_resolution["match_score"]
-            match_strategy = metric_resolution["match_strategy"]
-        elif direct_mentions:
-            if len(direct_mentions) == 1:
-                metric_column = str(direct_mentions[0])
-                match_score = 1.0
-                match_strategy = "direct_column_mention"
-            else:
-                raise TabularSQLException(
-                    code=SQL_ERROR_EXECUTION_FAILED,
-                    message="Metric operation matched multiple candidate columns",
-                    details={
-                        "requested_field_text": None,
-                        "fallback_reason": "ambiguous_metric_column",
-                        "candidate_columns": [str(item) for item in direct_mentions],
-                    },
-                )
-        else:
-            raise TabularSQLException(
-                code=SQL_ERROR_EXECUTION_FAILED,
-                message="Metric operation requires a matched column",
-                details={
-                    "requested_field_text": None,
-                    "fallback_reason": "missing_metric_column",
-                    "candidate_columns": [str(col) for col in list(table.columns)],
-                },
-            )
-
-    if parsed.group_by_field_text:
-        group_resolution = _resolve_required_field(
-            field_text=parsed.group_by_field_text,
-            table=table,
-            detail_reason="missing_group_by_column",
-            expected_dtype_family="categorical",
-        )
-        group_by_column = group_resolution["column"]
-    elif operation == "count" and direct_mentions and any(h in q_norm for h in _GROUP_HINTS):
-        if len(direct_mentions) == 1:
-            group_by_column = str(direct_mentions[0])
-        else:
-            raise TabularSQLException(
-                code=SQL_ERROR_EXECUTION_FAILED,
-                message="Count group-by matched multiple candidate columns",
-                details={
-                    "requested_field_text": None,
-                    "fallback_reason": "ambiguous_group_by_column",
-                    "candidate_columns": [str(item) for item in direct_mentions],
-                },
-            )
-
-    table_q = _quote_ident(table.table_name)
-    if operation == "count":
-        if group_by_column:
-            gq = _quote_ident(group_by_column)
-            sql = (
-                f"SELECT {gq} AS group_key, COUNT(*) AS value "
-                f"FROM {table_q} "
-                f"GROUP BY {gq} "
-                f"ORDER BY value DESC LIMIT 50"
-            )
-        else:
-            sql = f"SELECT COUNT(*) AS value FROM {table_q}"
-    else:
-        assert metric_column is not None
-        metric_q = _quote_ident(metric_column)
-        numeric_expr = f"CAST(REPLACE(NULLIF(TRIM({metric_q}), ''), ',', '.') AS DOUBLE)"
-        sql_op = {"sum": "SUM", "avg": "AVG", "min": "MIN", "max": "MAX"}[operation]
-        agg_expr = f"ROUND({sql_op}({numeric_expr}), 6)"
-        where_clause = f"WHERE TRIM(COALESCE(CAST({metric_q} AS VARCHAR), '')) <> ''"
-        if group_by_column:
-            gq = _quote_ident(group_by_column)
-            sql = (
-                f"SELECT {gq} AS group_key, {agg_expr} AS value "
-                f"FROM {table_q} "
-                f"{where_clause} "
-                f"GROUP BY {gq} "
-                f"ORDER BY value DESC LIMIT 50"
-            )
-        else:
-            sql = f"SELECT {agg_expr} AS value FROM {table_q} {where_clause}"
-
-    matched_columns = [item for item in [metric_column, group_by_column] if item]
-    matched_columns.extend(direct_mentions)
-    matched_columns = list(dict.fromkeys([str(item) for item in matched_columns]))
-    return sql, {
-        "operation": operation,
-        "group_by_column": group_by_column,
-        "metric_column": metric_column,
-        "matched_columns": matched_columns,
-        "requested_field_text": requested_field_text,
-        "candidate_columns": candidate_columns,
-        "scored_candidates": scored_candidates,
-        "matched_column": metric_column,
-        "match_score": match_score,
-        "match_strategy": match_strategy,
-        "retrieval_filters": {"group_by_column": group_by_column} if group_by_column else None,
-    }
+    return build_aggregate_sql(
+        query=query,
+        table=table,
+        choose_operation_fn=_choose_operation,
+        normalize_text_fn=_norm,
+        resolve_required_field_fn=_resolve_required_field,
+        quote_ident_fn=_quote_ident,
+        group_hints=_GROUP_HINTS,
+        sql_error_execution_failed=SQL_ERROR_EXECUTION_FAILED,
+        tabular_sql_exception_cls=TabularSQLException,
+    )
 
 
 def _build_lookup_sql(
@@ -329,98 +225,15 @@ def _build_lookup_sql(
     query: str,
     table: ResolvedTabularTable,
 ) -> Tuple[str, Dict[str, Any]]:
-    parsed = parse_tabular_query(query)
-    direct_mentions = find_direct_column_mentions(query, table)
-    result_columns = list(direct_mentions[:8]) if direct_mentions else list(table.columns[:8])
-    if not result_columns:
-        result_columns = list(table.columns[:4])
-    if not result_columns:
-        result_columns = ["*"]
-
-    lookup_value = parsed.lookup_value_text
-    filter_column: Optional[str] = None
-    candidate_columns: List[str] = []
-    scored_candidates: List[Dict[str, Any]] = []
-    match_score: Optional[float] = None
-    match_strategy: Optional[str] = None
-
-    if parsed.lookup_field_text:
-        lookup_resolution = _resolve_required_field(
-            field_text=parsed.lookup_field_text,
-            table=table,
-            detail_reason="missing_lookup_filter_column",
-            expected_dtype_family="categorical",
-        )
-        filter_column = lookup_resolution["column"]
-        candidate_columns = list(lookup_resolution["candidate_columns"])
-        scored_candidates = list(lookup_resolution["scored_candidates"])
-        match_score = lookup_resolution["match_score"]
-        match_strategy = lookup_resolution["match_strategy"]
-    elif direct_mentions:
-        if len(direct_mentions) == 1:
-            filter_column = str(direct_mentions[0])
-            match_score = 1.0
-            match_strategy = "direct_column_mention"
-        elif lookup_value:
-            raise TabularSQLException(
-                code=SQL_ERROR_EXECUTION_FAILED,
-                message="Lookup filter value matched multiple candidate columns",
-                details={
-                    "requested_field_text": None,
-                    "fallback_reason": "ambiguous_lookup_filter_column",
-                    "candidate_columns": [str(item) for item in direct_mentions],
-                },
-            )
-    elif lookup_value:
-        raise TabularSQLException(
-            code=SQL_ERROR_EXECUTION_FAILED,
-            message="Lookup filter value was provided without a matched filter column",
-            details={
-                "requested_field_text": None,
-                "fallback_reason": "missing_lookup_filter_column",
-                "candidate_columns": [str(col) for col in list(table.columns)],
-            },
-        )
-
-    where_clause = ""
-    retrieval_filters: Dict[str, Any] = {}
-    if lookup_value and filter_column:
-        val = str(lookup_value).strip().lower()
-        where_clause = (
-            f"WHERE LOWER(TRIM(COALESCE(CAST({_quote_ident(filter_column)} AS VARCHAR), ''))) "
-            f"LIKE {_sql_literal('%' + val + '%')}"
-        )
-        retrieval_filters = {"where": {str(filter_column): {"like": f"%{val}%"}}}
-
-    order_column = result_columns[0] if result_columns else None
-    if result_columns == ["*"]:
-        select_cols = "*"
-    else:
-        select_cols = ", ".join([_quote_ident(col) for col in result_columns if col != "*"])
-    sql = f"SELECT {select_cols} FROM {_quote_ident(table.table_name)} {where_clause}".strip()
-    if order_column and order_column != "*":
-        sql += f" ORDER BY {_quote_ident(order_column)}"
-    sql += " LIMIT 30"
-
-    matched_columns = []
-    if filter_column:
-        matched_columns.append(str(filter_column))
-    matched_columns.extend([str(item) for item in direct_mentions])
-    matched_columns = list(dict.fromkeys(matched_columns))
-    return sql, {
-        "operation": "lookup",
-        "lookup_value": lookup_value,
-        "filter_column": filter_column,
-        "result_columns": result_columns,
-        "matched_columns": matched_columns,
-        "requested_field_text": parsed.lookup_field_text,
-        "candidate_columns": candidate_columns,
-        "scored_candidates": scored_candidates,
-        "matched_column": filter_column,
-        "match_score": match_score,
-        "match_strategy": match_strategy,
-        "retrieval_filters": retrieval_filters if retrieval_filters else None,
-    }
+    return build_lookup_sql(
+        query=query,
+        table=table,
+        resolve_required_field_fn=_resolve_required_field,
+        quote_ident_fn=_quote_ident,
+        sql_literal_fn=_sql_literal,
+        sql_error_execution_failed=SQL_ERROR_EXECUTION_FAILED,
+        tabular_sql_exception_cls=TabularSQLException,
+    )
 
 
 def _execute_aggregate_sync(
@@ -592,22 +405,9 @@ def _route_debug_payload(
     decision: TabularIntentDecision,
     detected_language: str,
 ) -> Dict[str, Any]:
-    selected_route = str(decision.selected_route or "")
-    fallback_reason = str(decision.fallback_reason or "none")
-    fallback_type = "unsupported_missing_column" if selected_route == "unsupported_missing_column" else "none"
-    return build_route_debug_fields(
-        detected_intent=str(decision.detected_intent or "unknown"),
-        selected_route=selected_route,
-        requested_field_text=decision.requested_field_text,
-        candidate_columns=list(decision.candidate_columns),
-        scored_candidates=list(decision.scored_candidates),
-        matched_column=decision.matched_column,
-        match_score=decision.match_score,
-        match_strategy=decision.match_strategy,
-        fallback_type=fallback_type,
-        fallback_reason=fallback_reason,
+    return build_route_debug_payload(
+        decision=decision,
         detected_language=detected_language,
-        response_language=detected_language,
     )
 
 
@@ -617,16 +417,11 @@ def _apply_route_debug(
     decision: TabularIntentDecision,
     detected_language: str,
 ) -> Dict[str, Any]:
-    if not isinstance(payload, dict):
-        return payload
-    route_debug = _route_debug_payload(decision=decision, detected_language=detected_language)
-    payload = apply_tabular_debug_fields(payload, fields=route_debug)
-    debug, tabular_debug = ensure_tabular_debug_containers(payload)
-    debug["matched_columns"] = list(decision.matched_columns)
-    debug["unmatched_requested_fields"] = list(decision.unmatched_requested_fields)
-    tabular_debug["matched_columns"] = list(decision.matched_columns)
-    tabular_debug["unmatched_requested_fields"] = list(decision.unmatched_requested_fields)
-    return payload
+    return apply_route_debug_payload(
+        payload=payload,
+        decision=decision,
+        detected_language=detected_language,
+    )
 
 
 def _build_missing_column_response(
@@ -637,67 +432,13 @@ def _build_missing_column_response(
     table: ResolvedTabularTable,
     target_file: Any,
 ) -> Dict[str, Any]:
-    preferred_lang = detect_preferred_response_language(query)
-    requested_fields = list(decision.unmatched_requested_fields)
-    if not requested_fields and decision.requested_field_text:
-        requested_fields = [str(decision.requested_field_text)]
-    alternatives = suggest_relevant_alternative_columns(table, limit=6)
-    clarification_prompt = build_missing_column_message(
-        preferred_lang=preferred_lang,
-        requested_fields=requested_fields,
-        alternatives=alternatives,
-        ambiguous=False,
+    return build_missing_column_route_payload(
+        query=query,
+        decision=decision,
+        dataset=dataset,
+        table=table,
+        target_file=target_file,
     )
-
-    payload = {
-        "status": "error",
-        "clarification_prompt": clarification_prompt,
-        "prompt_context": (
-            "Deterministic tabular routing blocked by schema validation.\n"
-            f"route=unsupported_missing_column\n"
-            f"unmatched_requested_fields={json.dumps(requested_fields, ensure_ascii=False)}\n"
-            f"matched_columns={json.dumps(decision.matched_columns, ensure_ascii=False)}\n"
-            f"available_columns={json.dumps(list(table.columns), ensure_ascii=False)}"
-        ),
-        "debug": {
-            "retrieval_mode": "tabular_sql",
-            "intent": "tabular_missing_column",
-            "deterministic_path": True,
-            "tabular_sql": {
-                **build_dataset_debug_fields(dataset=dataset, table=table),
-                "executed_sql": None,
-                "sql": None,
-                "result": None,
-                "policy_decision": {"allowed": False, "reason": "missing_required_columns"},
-                "guardrail_flags": [],
-                "sql_guardrails": {"valid": False, "reason": "missing_required_columns"},
-            },
-        },
-        "sources": [
-            (
-                f"{getattr(target_file, 'original_filename', 'unknown')} "
-                f"| table={table.table_name} | dataset_v={dataset.dataset_version} "
-                "| sql_error=missing_required_columns"
-            )
-        ],
-        "rows_expected_total": int(table.row_count or 0),
-        "rows_retrieved_total": 0,
-        "rows_used_map_total": 0,
-        "rows_used_reduce_total": 0,
-        "row_coverage_ratio": 0.0,
-    }
-    payload = apply_tabular_debug_fields(
-        payload,
-        fields={
-            "requested_field_text": decision.requested_field_text,
-            "candidate_columns": list(decision.candidate_columns),
-            "scored_candidates": list(decision.scored_candidates),
-            "matched_column": decision.matched_column,
-            "match_score": decision.match_score,
-            "match_strategy": decision.match_strategy or "none",
-        },
-    )
-    return _apply_route_debug(payload=payload, decision=decision, detected_language=preferred_lang)
 
 
 def _build_schema_question_payload(
@@ -708,47 +449,13 @@ def _build_schema_question_payload(
     target_file: Any,
     decision: TabularIntentDecision,
 ) -> Dict[str, Any]:
-    aliases = table.column_aliases if isinstance(table.column_aliases, dict) else {}
-    preferred_lang = detect_preferred_response_language(query)
-    schema_payload = {
-        "table_name": table.table_name,
-        "row_count": int(table.row_count or 0),
-        "columns": list(table.columns),
-        "column_aliases": {str(key): str(value) for key, value in aliases.items()},
-    }
-    prompt_context = "Deterministic table schema (source of truth):\n" + json.dumps(
-        schema_payload,
-        ensure_ascii=False,
-        indent=2,
+    return build_schema_question_route_payload(
+        query=query,
+        dataset=dataset,
+        table=table,
+        target_file=target_file,
+        decision=decision,
     )
-    payload = {
-        "status": "ok",
-        "prompt_context": prompt_context,
-        "debug": {
-            "retrieval_mode": "tabular_sql",
-            "intent": "tabular_schema_question",
-            "deterministic_path": True,
-            "tabular_sql": {
-                **build_dataset_debug_fields(dataset=dataset, table=table),
-                "executed_sql": [],
-                "sql_guardrails": {"valid": True, "reason": "schema_only_route"},
-                "schema_payload": schema_payload,
-            },
-        },
-        "sources": [
-            (
-                f"{getattr(target_file, 'original_filename', 'unknown')} "
-                f"| table={table.table_name} | dataset_v={dataset.dataset_version} "
-                f"| table_v={table.table_version} | schema"
-            )
-        ],
-        "rows_expected_total": int(table.row_count or 0),
-        "rows_retrieved_total": int(table.row_count or 0),
-        "rows_used_map_total": int(table.row_count or 0),
-        "rows_used_reduce_total": int(table.row_count or 0),
-        "row_coverage_ratio": 1.0 if int(table.row_count or 0) > 0 else 0.0,
-    }
-    return _apply_route_debug(payload=payload, decision=decision, detected_language=preferred_lang)
 
 
 def _is_datetime_like_column(column_name: str, table: ResolvedTabularTable) -> bool:

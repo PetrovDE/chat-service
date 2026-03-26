@@ -24,6 +24,8 @@ Resolved from `file.custom_metadata`:
 Implemented in `app/services/chat/tabular_sql.py`:
 - Aggregate path (`count/sum/avg/min/max`, optional group by).
 - Profile path (column-level stats, sample rows).
+- Lookup path (schema-first filter/value lookup).
+- Chart path (schema-first dimension resolution + chart artifact materialization).
 
 ## Field Resolution Contract
 
@@ -46,3 +48,19 @@ Runtime field selection is schema-first and metadata-driven:
 - Timeout via `TABULAR_SQL_TIMEOUT_SECONDS`.
 - Max result rows/bytes and scan rows limits.
 - Structured error payloads (`sql_timeout`, `sql_guardrail_blocked`, etc.).
+
+## Update 2026-03-26 (Targeted Runtime Cleanup)
+
+Deterministic tabular internals were split to reduce mixed responsibilities in hot modules:
+
+- `app/services/chat/tabular_sql_query_planner.py`
+  - owns aggregate/lookup SQL plan construction from parsed query + schema-first field matching.
+- `app/services/chat/tabular_sql_route_payloads.py`
+  - owns route-level tabular debug payload application and controlled schema/missing-column response payload builders.
+- `app/services/chat/tabular_deterministic_result.py`
+  - owns deterministic success-route debug/fallback/result shaping used by `rag_prompt_routes`.
+
+Compatibility contract:
+- `execute_tabular_sql_path(...)` remains the stable deterministic entrypoint.
+- Existing tabular debug/fallback fields are preserved.
+- No silent fallback guesses were introduced.

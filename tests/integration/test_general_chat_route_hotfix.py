@@ -23,7 +23,7 @@ def test_no_files_greeting_routes_to_general_chat(monkeypatch):
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="привет",
+            query="hello",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -35,12 +35,14 @@ def test_no_files_greeting_routes_to_general_chat(monkeypatch):
     assert rag_caveats == []
     assert rag_sources == []
     assert isinstance(final_prompt, str) and final_prompt
-    assert "нет готовых файлов" not in final_prompt.lower()
     assert isinstance(rag_debug, dict)
     assert rag_debug["detected_intent"] == "general_chat"
     assert rag_debug["selected_route"] == "general_chat"
     assert rag_debug["retrieval_mode"] == "assistant_direct"
     assert rag_debug["requires_clarification"] is False
+    assert rag_debug["fallback_type"] == "none"
+    assert rag_debug["fallback_reason"] == "none"
+    assert rag_debug["file_resolution_status"] == "not_requested"
 
 
 def test_no_files_generic_assistant_question_routes_to_general_chat(monkeypatch):
@@ -57,7 +59,7 @@ def test_no_files_generic_assistant_question_routes_to_general_chat(monkeypatch)
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="что ты умеешь?",
+            query="what can you do?",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -65,11 +67,13 @@ def test_no_files_generic_assistant_question_routes_to_general_chat(monkeypatch)
     )
 
     assert rag_used is False
-    assert "нет готовых файлов" not in final_prompt.lower()
+    assert isinstance(final_prompt, str) and final_prompt
     assert isinstance(rag_debug, dict)
     assert rag_debug["detected_intent"] == "general_chat"
     assert rag_debug["selected_route"] == "general_chat"
     assert rag_debug["requires_clarification"] is False
+    assert rag_debug["fallback_type"] == "none"
+    assert rag_debug["fallback_reason"] == "none"
 
 
 def test_existing_file_chat_greeting_still_routes_to_general_chat(monkeypatch):
@@ -101,7 +105,7 @@ def test_existing_file_chat_greeting_still_routes_to_general_chat(monkeypatch):
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="привет",
+            query="hello",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -109,11 +113,13 @@ def test_existing_file_chat_greeting_still_routes_to_general_chat(monkeypatch):
     )
 
     assert rag_used is False
-    assert "нет готовых файлов" not in final_prompt.lower()
+    assert isinstance(final_prompt, str) and final_prompt
     assert isinstance(rag_debug, dict)
     assert rag_debug["detected_intent"] == "general_chat"
     assert rag_debug["selected_route"] == "general_chat"
     assert rag_debug["requires_clarification"] is False
+    assert rag_debug["fallback_type"] == "none"
+    assert rag_debug["fallback_reason"] == "none"
 
 
 def test_explicit_file_question_without_files_returns_controlled_fallback(monkeypatch):
@@ -130,7 +136,7 @@ def test_explicit_file_question_without_files_returns_controlled_fallback(monkey
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="расскажи про файл",
+            query="tell me about this file",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -141,10 +147,11 @@ def test_explicit_file_question_without_files_returns_controlled_fallback(monkey
     assert context_docs == []
     assert rag_caveats == []
     assert rag_sources == []
-    assert "нет готовых файлов" in final_prompt.lower()
+    assert isinstance(final_prompt, str) and final_prompt
     assert rag_debug["retrieval_mode"] == "no_context_files"
     assert rag_debug["requires_clarification"] is True
     assert rag_debug["fallback_type"] == "no_context"
+    assert rag_debug["fallback_reason"] == "no_ready_files_in_chat"
     assert rag_debug["file_resolution_status"] == "no_context_files"
 
 
@@ -199,7 +206,7 @@ def test_explicit_file_question_with_resolvable_file_uses_file_aware_route(monke
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="расскажи про файл test_requests_460_rows.xlsx",
+            query="tell me about file test_requests_460_rows.xlsx",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -228,7 +235,7 @@ def test_no_context_files_not_triggered_for_general_chat_intent(monkeypatch):
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="привет",
+            query="help me understand this",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -237,5 +244,89 @@ def test_no_context_files_not_triggered_for_general_chat_intent(monkeypatch):
 
     assert rag_used is False
     assert rag_debug["detected_intent"] == "general_chat"
+    assert rag_debug["selected_route"] == "general_chat"
     assert rag_debug["retrieval_mode"] != "no_context_files"
     assert rag_debug["fallback_type"] != "no_context"
+
+
+def test_no_files_russian_greeting_routes_to_general_chat(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+
+    async def fake_get_conversation_files(db, conversation_id, user_id):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_conversation_files)
+
+    _, rag_used, rag_debug, _, _, _ = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="\u043f\u0440\u0438\u0432\u0435\u0442",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert rag_debug["detected_intent"] == "general_chat"
+    assert rag_debug["selected_route"] == "general_chat"
+    assert rag_debug["requires_clarification"] is False
+    assert rag_debug["retrieval_mode"] == "assistant_direct"
+
+
+def test_no_files_chart_request_routes_to_file_aware_fallback(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+
+    async def fake_get_conversation_files(db, conversation_id, user_id):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_conversation_files)
+
+    _, rag_used, rag_debug, _, _, _ = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="show chart by Status Code",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert rag_debug["requires_clarification"] is True
+    assert rag_debug["retrieval_mode"] == "no_context_files"
+    assert rag_debug["fallback_type"] == "no_context"
+    assert rag_debug["detected_intent"] == "tabular_analytics"
+
+
+def test_ambiguous_question_without_data_signals_prefers_general_chat(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+
+    async def fake_get_conversation_files(db, conversation_id, user_id):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_conversation_files)
+
+    _, rag_used, rag_debug, _, _, _ = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="what can you say?",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert rag_debug["detected_intent"] == "general_chat"
+    assert rag_debug["selected_route"] == "general_chat"
+    assert rag_debug["requires_clarification"] is False

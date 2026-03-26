@@ -9,6 +9,11 @@ Resolved from `file.custom_metadata`:
 - `dataset_id`, `dataset_version`, `dataset_provenance_id`
 - `catalog_path`, `dataset_root`
 - tables: `table_name`, `sheet_name`, `row_count`, `columns`, `column_aliases`, `table_version`, `provenance_id`, `parquet_path`
+- optional per-column metadata for schema-first resolution:
+  - `column_metadata.<column>.display_name`
+  - `column_metadata.<column>.aliases[]`
+  - `column_metadata.<column>.dtype`
+  - `column_metadata.<column>.sample_values[]`
 
 ## Execution Session
 `TabularExecutionSession`:
@@ -19,6 +24,23 @@ Resolved from `file.custom_metadata`:
 Implemented in `app/services/chat/tabular_sql.py`:
 - Aggregate path (`count/sum/avg/min/max`, optional group by).
 - Profile path (column-level stats, sample rows).
+
+## Field Resolution Contract
+
+Runtime field selection is schema-first and metadata-driven:
+- candidates are built from actual dataset schema only (`columns`, `column_aliases`, optional `column_metadata`)
+- scoring signals include:
+  - exact normalized name match
+  - display-name match
+  - metadata alias match
+  - token overlap and fuzzy similarity
+  - dtype compatibility (when expected dtype is known)
+  - sample-value evidence (penalty when requested text looks like a value instead of a field)
+- explicit confidence thresholds are required:
+  - weak score -> `no_match`
+  - close competing candidates -> `ambiguous`
+- weak/ambiguous outcomes must return controlled mismatch/clarification flows
+- no silent guessed substitution to first column or "best effort" defaults
 
 ## Bounded Execution
 - Timeout via `TABULAR_SQL_TIMEOUT_SECONDS`.

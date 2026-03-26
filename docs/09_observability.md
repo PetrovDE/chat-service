@@ -236,3 +236,16 @@ Deterministic tabular chart diagnostics now separate chart generation from chart
 
 `debug_sections.chart` includes `chart_artifact_available` and keeps `chart_artifact_exists` for compatibility.
 This prevents fake-success chart wording when image delivery fails after spec generation.
+
+## Update 2026-03-26 (Schema-First Field Resolution Diagnostics)
+Tabular runtime field matching now emits explicit schema-resolution diagnostics for aggregate/lookup/chart paths:
+
+- `requested_field_text`
+- `candidate_columns`
+- `scored_candidates` (top ranked candidates with strategy/reasons)
+- `matched_column`
+- `match_score`
+- `match_strategy`
+- `fallback_reason` (when unresolved or blocked)
+
+Matching failures now remain explicit (`no_match`/`ambiguous`) and do not silently substitute guessed columns.

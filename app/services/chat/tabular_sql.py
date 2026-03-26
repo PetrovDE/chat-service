@@ -168,8 +168,13 @@ def _resolve_required_field(
     field_text: Optional[str],
     table: ResolvedTabularTable,
     detail_reason: str,
+    expected_dtype_family: Optional[str] = None,
 ) -> Dict[str, Any]:
-    resolution = resolve_requested_field(requested_field_text=field_text, table=table)
+    resolution = resolve_requested_field(
+        requested_field_text=field_text,
+        table=table,
+        expected_dtype_family=expected_dtype_family,
+    )
     if resolution.status == "matched" and resolution.matched_column:
         return {
             "column": str(resolution.matched_column),
@@ -215,6 +220,7 @@ def _build_sql(
                 field_text=requested_field_text,
                 table=table,
                 detail_reason="missing_metric_column",
+                expected_dtype_family="numeric",
             )
             metric_column = metric_resolution["column"]
             candidate_columns = list(metric_resolution["candidate_columns"])
@@ -222,9 +228,20 @@ def _build_sql(
             match_score = metric_resolution["match_score"]
             match_strategy = metric_resolution["match_strategy"]
         elif direct_mentions:
-            metric_column = str(direct_mentions[0])
-            match_score = 1.0
-            match_strategy = "direct_column_mention"
+            if len(direct_mentions) == 1:
+                metric_column = str(direct_mentions[0])
+                match_score = 1.0
+                match_strategy = "direct_column_mention"
+            else:
+                raise TabularSQLException(
+                    code=SQL_ERROR_EXECUTION_FAILED,
+                    message="Metric operation matched multiple candidate columns",
+                    details={
+                        "requested_field_text": None,
+                        "fallback_reason": "ambiguous_metric_column",
+                        "candidate_columns": [str(item) for item in direct_mentions],
+                    },
+                )
         else:
             raise TabularSQLException(
                 code=SQL_ERROR_EXECUTION_FAILED,
@@ -241,10 +258,22 @@ def _build_sql(
             field_text=parsed.group_by_field_text,
             table=table,
             detail_reason="missing_group_by_column",
+            expected_dtype_family="categorical",
         )
         group_by_column = group_resolution["column"]
     elif operation == "count" and direct_mentions and any(h in q_norm for h in _GROUP_HINTS):
-        group_by_column = str(direct_mentions[0])
+        if len(direct_mentions) == 1:
+            group_by_column = str(direct_mentions[0])
+        else:
+            raise TabularSQLException(
+                code=SQL_ERROR_EXECUTION_FAILED,
+                message="Count group-by matched multiple candidate columns",
+                details={
+                    "requested_field_text": None,
+                    "fallback_reason": "ambiguous_group_by_column",
+                    "candidate_columns": [str(item) for item in direct_mentions],
+                },
+            )
 
     table_q = _quote_ident(table.table_name)
     if operation == "count":
@@ -320,6 +349,7 @@ def _build_lookup_sql(
             field_text=parsed.lookup_field_text,
             table=table,
             detail_reason="missing_lookup_filter_column",
+            expected_dtype_family="categorical",
         )
         filter_column = lookup_resolution["column"]
         candidate_columns = list(lookup_resolution["candidate_columns"])
@@ -327,9 +357,20 @@ def _build_lookup_sql(
         match_score = lookup_resolution["match_score"]
         match_strategy = lookup_resolution["match_strategy"]
     elif direct_mentions:
-        filter_column = str(direct_mentions[0])
-        match_score = 1.0
-        match_strategy = "direct_column_mention"
+        if len(direct_mentions) == 1:
+            filter_column = str(direct_mentions[0])
+            match_score = 1.0
+            match_strategy = "direct_column_mention"
+        elif lookup_value:
+            raise TabularSQLException(
+                code=SQL_ERROR_EXECUTION_FAILED,
+                message="Lookup filter value matched multiple candidate columns",
+                details={
+                    "requested_field_text": None,
+                    "fallback_reason": "ambiguous_lookup_filter_column",
+                    "candidate_columns": [str(item) for item in direct_mentions],
+                },
+            )
     elif lookup_value:
         raise TabularSQLException(
             code=SQL_ERROR_EXECUTION_FAILED,
@@ -554,16 +595,13 @@ def _route_debug_payload(
     selected_route = str(decision.selected_route or "")
     fallback_reason = str(decision.fallback_reason or "none")
     fallback_type = "unsupported_missing_column" if selected_route == "unsupported_missing_column" else "none"
-    matched_column = decision.matched_column
-    if not matched_column and decision.matched_columns:
-        matched_column = str(decision.matched_columns[0])
     return build_route_debug_fields(
         detected_intent=str(decision.detected_intent or "unknown"),
         selected_route=selected_route,
         requested_field_text=decision.requested_field_text,
         candidate_columns=list(decision.candidate_columns),
         scored_candidates=list(decision.scored_candidates),
-        matched_column=matched_column,
+        matched_column=decision.matched_column,
         match_score=decision.match_score,
         match_strategy=decision.match_strategy,
         fallback_type=fallback_type,
@@ -734,7 +772,13 @@ def _choose_chart_dimension_column(
 ) -> Tuple[Optional[str], Dict[str, Any]]:
     requested_field = _extract_requested_chart_field(query)
     if requested_field:
-        resolution = resolve_requested_field(requested_field_text=requested_field, table=table)
+        q_norm = _norm(query)
+        expected_dtype_family = "datetime" if any(token in q_norm for token in _MONTH_HINTS) else "categorical"
+        resolution = resolve_requested_field(
+            requested_field_text=requested_field,
+            table=table,
+            expected_dtype_family=expected_dtype_family,
+        )
         if resolution.status == "matched" and resolution.matched_column:
             return str(resolution.matched_column), {
                 "candidate_columns": list(resolution.candidate_columns),
@@ -742,13 +786,16 @@ def _choose_chart_dimension_column(
                 "match_score": resolution.match_score,
                 "match_strategy": resolution.match_strategy,
                 "requested_field_text": requested_field,
+                "fallback_reason": "none",
             }
+        fallback_reason = "requested_field_ambiguous" if resolution.status == "ambiguous" else "requested_field_not_matched"
         return None, {
             "candidate_columns": list(resolution.candidate_columns),
             "scored_candidates": list(resolution.scored_candidates),
             "match_score": resolution.match_score,
             "match_strategy": resolution.match_strategy,
             "requested_field_text": requested_field,
+            "fallback_reason": fallback_reason,
         }
 
     if decision.matched_column:
@@ -758,32 +805,29 @@ def _choose_chart_dimension_column(
             "match_score": decision.match_score,
             "match_strategy": decision.match_strategy,
             "requested_field_text": decision.requested_field_text,
+            "fallback_reason": "none",
         }
 
-    if decision.matched_columns:
+    if len(decision.matched_columns) == 1:
         return str(decision.matched_columns[0]), {
             "candidate_columns": list(decision.candidate_columns),
             "scored_candidates": list(decision.scored_candidates),
             "match_score": decision.match_score,
             "match_strategy": decision.match_strategy,
             "requested_field_text": decision.requested_field_text,
+            "fallback_reason": "none",
         }
 
-    direct_mentions = find_direct_column_mentions(query, table)
-    if len(direct_mentions) == 1:
-        return str(direct_mentions[0]), {
-            "candidate_columns": [str(item) for item in list(table.columns)],
-            "scored_candidates": [],
-            "match_score": 1.0,
-            "match_strategy": "direct_column_mention",
-            "requested_field_text": None,
-        }
+    fallback_reason = "missing_chart_dimension_column"
+    if len(decision.matched_columns) > 1:
+        fallback_reason = "ambiguous_chart_dimension_column"
     return None, {
-        "candidate_columns": [str(item) for item in list(table.columns)],
-        "scored_candidates": [],
+        "candidate_columns": list(decision.candidate_columns) or [str(item) for item in list(table.columns)],
+        "scored_candidates": list(decision.scored_candidates),
         "match_score": None,
         "match_strategy": "none",
-        "requested_field_text": requested_field,
+        "requested_field_text": decision.requested_field_text or requested_field,
+        "fallback_reason": fallback_reason,
     }
 
 
@@ -809,7 +853,7 @@ def _build_chart_sql(
                 "requested_field_text": resolution_debug.get("requested_field_text"),
                 "candidate_columns": list(resolution_debug.get("candidate_columns") or []),
                 "scored_candidates": list(resolution_debug.get("scored_candidates") or []),
-                "fallback_reason": "requested_field_not_matched",
+                "fallback_reason": str(resolution_debug.get("fallback_reason") or "requested_field_not_matched"),
             },
         )
 

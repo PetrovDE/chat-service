@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -36,6 +36,7 @@ class ResolvedTabularTable:
     table_version: int
     provenance_id: Optional[str]
     parquet_path: Optional[Path]
+    column_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -191,6 +192,33 @@ def _parse_table_entry(raw: Dict[str, Any]) -> Optional[ResolvedTabularTable]:
     else:
         column_aliases = {}
 
+    column_metadata: Dict[str, Dict[str, Any]] = {}
+    raw_metadata = raw.get("column_metadata")
+    if isinstance(raw_metadata, dict):
+        for key, value in raw_metadata.items():
+            column_key = str(key)
+            if not isinstance(value, dict):
+                continue
+            parsed: Dict[str, Any] = {}
+            display_name = str(value.get("display_name") or "").strip()
+            if display_name:
+                parsed["display_name"] = display_name
+            dtype = str(value.get("dtype") or "").strip().lower()
+            if dtype:
+                parsed["dtype"] = dtype
+            aliases_raw = value.get("aliases")
+            if isinstance(aliases_raw, list):
+                aliases = [str(item).strip() for item in aliases_raw if str(item).strip()]
+                if aliases:
+                    parsed["aliases"] = aliases
+            sample_values_raw = value.get("sample_values")
+            if isinstance(sample_values_raw, list):
+                sample_values = [str(item).strip() for item in sample_values_raw if str(item).strip()]
+                if sample_values:
+                    parsed["sample_values"] = sample_values[:12]
+            if parsed:
+                column_metadata[column_key] = parsed
+
     parquet_path = None
     raw_path = raw.get("parquet_path")
     if raw_path:
@@ -204,6 +232,7 @@ def _parse_table_entry(raw: Dict[str, Any]) -> Optional[ResolvedTabularTable]:
         row_count=int(raw.get("row_count", 0) or 0),
         columns=columns,
         column_aliases=column_aliases,
+        column_metadata=column_metadata,
         table_version=int(raw.get("table_version", 1) or 1),
         provenance_id=str(raw.get("provenance_id")) if raw.get("provenance_id") else None,
         parquet_path=parquet_path,

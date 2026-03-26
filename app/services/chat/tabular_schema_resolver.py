@@ -3,16 +3,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 import re
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-_NORM_RE = re.compile(r"[^a-zа-яё0-9]+")
-_ID_TOKENS = {"id", "uuid", "guid"}
-_TIME_TOKENS = {"date", "time", "month", "year", "day", "дата", "время", "месяц", "год", "день"}
+_NORM_RE = re.compile(r"[_\W]+", flags=re.UNICODE)
+_ID_TOKENS = {"id", "uuid", "guid", "identifier"}
+_TIME_TOKENS = {"date", "time", "month", "year", "day", "week", "quarter", "timestamp"}
+_NUMERIC_HINT_TOKENS = {
+    "sum",
+    "avg",
+    "average",
+    "mean",
+    "count",
+    "total",
+    "amount",
+    "price",
+    "cost",
+    "value",
+    "score",
+    "ratio",
+    "percent",
+    "quantity",
+}
 
 
 def normalize_text(text: str) -> str:
-    return _NORM_RE.sub(" ", (text or "").lower()).strip()
+    return _NORM_RE.sub(" ", str(text or "").lower()).strip()
 
 
 def tokenize(text: str) -> List[str]:
@@ -30,31 +46,199 @@ def _contains_phrase(haystack: str, needle: str) -> bool:
     return f" {needle} " in f" {haystack} "
 
 
-def _is_identifier_like(text: str) -> bool:
-    tokens = set(tokenize(text))
-    if not tokens:
-        return False
-    if tokens.intersection(_ID_TOKENS):
-        return True
-    normalized = normalize_text(text)
-    return bool(
-        normalized == "id"
-        or normalized.endswith(" id")
-        or normalized.endswith("_id")
-        or "_id_" in normalized
-    )
-
-
-def _has_time_tokens(text: str) -> bool:
-    tokens = set(tokenize(text))
-    return bool(tokens.intersection(_TIME_TOKENS))
-
-
 def _column_aliases(table: Any) -> Dict[str, str]:
     aliases = getattr(table, "column_aliases", None)
     if not isinstance(aliases, dict):
         return {}
     return {str(key): str(value) for key, value in aliases.items()}
+
+
+def _column_metadata(table: Any) -> Dict[str, Dict[str, Any]]:
+    raw = getattr(table, "column_metadata", None)
+    if not isinstance(raw, dict):
+        return {}
+    metadata: Dict[str, Dict[str, Any]] = {}
+    for key, payload in raw.items():
+        if not isinstance(payload, dict):
+            continue
+        parsed: Dict[str, Any] = {}
+        display_name = str(payload.get("display_name") or "").strip()
+        if display_name:
+            parsed["display_name"] = display_name
+        dtype = str(payload.get("dtype") or "").strip().lower()
+        if dtype:
+            parsed["dtype"] = dtype
+        aliases_raw = payload.get("aliases")
+        if isinstance(aliases_raw, list):
+            aliases = [str(item).strip() for item in aliases_raw if str(item).strip()]
+            if aliases:
+                parsed["aliases"] = aliases
+        sample_values_raw = payload.get("sample_values")
+        if isinstance(sample_values_raw, list):
+            sample_values = [str(item).strip() for item in sample_values_raw if str(item).strip()]
+            if sample_values:
+                parsed["sample_values"] = sample_values[:12]
+        metadata[str(key)] = parsed
+    return metadata
+
+
+def _iter_candidate_variants(*, column: str, alias: str, metadata: Dict[str, Any]) -> Iterable[Tuple[str, str]]:
+    seen = set()
+
+    def _yield(source: str, value: str) -> Iterable[Tuple[str, str]]:
+        raw = str(value or "").strip()
+        if not raw:
+            return []
+        key = (source, normalize_text(raw))
+        if key in seen or not key[1]:
+            return []
+        seen.add(key)
+        return [(source, raw)]
+
+    for item in _yield("raw_column_name", column):
+        yield item
+    for item in _yield("normalized_column_name", column.replace("_", " ")):
+        yield item
+    for item in _yield("display_name", alias):
+        yield item
+    for item in _yield("metadata_display_name", str(metadata.get("display_name") or "")):
+        yield item
+    aliases = metadata.get("aliases")
+    if isinstance(aliases, list):
+        for alias_value in aliases:
+            for item in _yield("metadata_alias", str(alias_value)):
+                yield item
+
+
+def _is_identifier_like(text: str) -> bool:
+    normalized = normalize_text(text)
+    tokens = set(tokenize(text))
+    return bool(
+        tokens.intersection(_ID_TOKENS)
+        or normalized == "id"
+        or normalized.endswith(" id")
+        or normalized.endswith("_id")
+        or " id " in normalized
+    )
+
+
+def _expected_dtype_from_requested_tokens(requested_tokens: Sequence[str]) -> Optional[str]:
+    token_set = set(requested_tokens)
+    if not token_set:
+        return None
+    if token_set.intersection(_TIME_TOKENS):
+        return "datetime"
+    if token_set.intersection(_NUMERIC_HINT_TOKENS):
+        return "numeric"
+    if token_set.intersection(_ID_TOKENS):
+        return "identifier"
+    return None
+
+
+def _dtype_family_from_text(dtype_text: str) -> str:
+    text = normalize_text(dtype_text)
+    if not text:
+        return "unknown"
+    if any(token in text for token in ("int", "float", "double", "decimal", "numeric")):
+        return "numeric"
+    if any(token in text for token in ("date", "time", "timestamp")):
+        return "datetime"
+    if any(token in text for token in ("bool", "boolean")):
+        return "boolean"
+    if any(token in text for token in ("string", "str", "text", "object", "category")):
+        return "categorical"
+    return "unknown"
+
+
+def _dtype_family_for_column(*, column: str, alias: str, metadata: Dict[str, Any]) -> str:
+    metadata_dtype = _dtype_family_from_text(str(metadata.get("dtype") or ""))
+    if metadata_dtype != "unknown":
+        return metadata_dtype
+
+    descriptor = normalize_text(" ".join([column, alias, str(metadata.get("display_name") or "")]))
+    if not descriptor:
+        return "unknown"
+    if _is_identifier_like(descriptor):
+        return "identifier"
+    if any(token in descriptor for token in _TIME_TOKENS):
+        return "datetime"
+    if any(token in descriptor for token in _NUMERIC_HINT_TOKENS):
+        return "numeric"
+    return "categorical"
+
+
+def _score_variant(
+    *,
+    requested_norm: str,
+    requested_tokens: Sequence[str],
+    variant_norm: str,
+    source: str,
+) -> Tuple[float, str, List[str]]:
+    if not variant_norm:
+        return 0.0, "none", []
+
+    exact_strategy = {
+        "raw_column_name": "exact_normalized_match",
+        "normalized_column_name": "exact_normalized_match",
+        "display_name": "display_name_match",
+        "metadata_display_name": "display_name_match",
+        "metadata_alias": "metadata_alias_match",
+    }
+    exact_score = {
+        "raw_column_name": 1.0,
+        "normalized_column_name": 0.995,
+        "display_name": 0.985,
+        "metadata_display_name": 0.98,
+        "metadata_alias": 0.975,
+    }
+
+    if requested_norm == variant_norm:
+        strategy = exact_strategy.get(source, "exact_normalized_match")
+        return exact_score.get(source, 0.97), strategy, [f"exact_match:{source}"]
+
+    score = 0.0
+    strategy = "fuzzy_similarity"
+    reasons: List[str] = [f"source={source}"]
+
+    if requested_norm and _contains_phrase(variant_norm, requested_norm):
+        score = max(score, 0.88)
+        strategy = "contains_match"
+        reasons.append("candidate_contains_requested")
+    if variant_norm and _contains_phrase(requested_norm, variant_norm):
+        score = max(score, 0.84)
+        strategy = "contains_match"
+        reasons.append("requested_contains_candidate")
+
+    requested_token_set = set(requested_tokens)
+    candidate_token_set = set(tokenize(variant_norm))
+    if requested_token_set and candidate_token_set:
+        overlap = requested_token_set.intersection(candidate_token_set)
+        if overlap:
+            overlap_ratio = float(len(overlap) / max(1, len(requested_token_set)))
+            token_score = 0.42 + (0.42 * overlap_ratio)
+            if token_score > score:
+                strategy = "token_overlap"
+            score = max(score, token_score)
+            reasons.append(f"token_overlap={round(overlap_ratio, 3)}")
+
+    fuzzy_ratio = SequenceMatcher(a=requested_norm, b=variant_norm).ratio()
+    fuzzy_score = 0.18 + (0.68 * fuzzy_ratio)
+    if fuzzy_score > score:
+        strategy = "fuzzy_similarity"
+    score = max(score, fuzzy_score)
+    reasons.append(f"fuzzy_similarity={round(fuzzy_ratio, 3)}")
+
+    source_bonus = {
+        "display_name": 0.03,
+        "metadata_display_name": 0.025,
+        "metadata_alias": 0.025,
+        "normalized_column_name": 0.015,
+    }.get(source, 0.0)
+    if source_bonus > 0.0:
+        score += source_bonus
+        reasons.append(f"source_bonus={round(source_bonus, 3)}")
+
+    return _clamp(score), strategy, reasons
 
 
 @dataclass(frozen=True)
@@ -63,12 +247,14 @@ class ColumnScore:
     score: float
     strategy: str
     reasons: List[str]
+    dtype_family: str
 
     def as_debug(self) -> Dict[str, Any]:
         return {
             "column": self.column,
             "score": round(float(self.score), 6),
             "strategy": self.strategy,
+            "dtype_family": self.dtype_family,
             "reasons": list(self.reasons),
         }
 
@@ -85,92 +271,36 @@ class FieldResolution:
 
 
 def find_direct_column_mentions(query: str, table: Any) -> List[str]:
-    q_norm = normalize_text(query)
-    if not q_norm:
+    query_norm = normalize_text(query)
+    if not query_norm:
         return []
     aliases = _column_aliases(table)
+    metadata = _column_metadata(table)
     out: List[str] = []
     seen = set()
     for raw_column in list(getattr(table, "columns", []) or []):
         column = str(raw_column)
-        column_norm = normalize_text(column)
-        alias_norm = normalize_text(str(aliases.get(column, "")))
-        if (column_norm and _contains_phrase(q_norm, column_norm)) or (
-            alias_norm and _contains_phrase(q_norm, alias_norm)
-        ):
-            key = column.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(column)
+        alias = str(aliases.get(column, ""))
+        column_meta = metadata.get(column, {})
+        for _, variant in _iter_candidate_variants(column=column, alias=alias, metadata=column_meta):
+            variant_norm = normalize_text(variant)
+            if variant_norm and _contains_phrase(query_norm, variant_norm):
+                key = column.lower()
+                if key not in seen:
+                    seen.add(key)
+                    out.append(column)
+                break
     return out
-
-
-def _score_candidate_for_requested_text(
-    *,
-    requested_text: str,
-    requested_norm: str,
-    requested_tokens: Sequence[str],
-    candidate_text: str,
-) -> Tuple[float, str, List[str]]:
-    candidate_norm = normalize_text(candidate_text)
-    candidate_tokens = tokenize(candidate_text)
-    if not candidate_norm:
-        return 0.0, "none", []
-
-    score = 0.0
-    strategy = "fuzzy_similarity"
-    reasons: List[str] = []
-
-    if requested_norm == candidate_norm:
-        return 1.0, "exact_normalized_match", ["exact_normalized_match"]
-
-    if requested_norm and _contains_phrase(candidate_norm, requested_norm):
-        score = max(score, 0.9)
-        strategy = "contains_match"
-        reasons.append("candidate_contains_requested")
-    if candidate_norm and _contains_phrase(requested_norm, candidate_norm):
-        score = max(score, 0.84)
-        strategy = "contains_match"
-        reasons.append("requested_contains_candidate")
-
-    requested_token_set = set(requested_tokens)
-    candidate_token_set = set(candidate_tokens)
-    if requested_token_set and candidate_token_set:
-        intersection = requested_token_set.intersection(candidate_token_set)
-        if intersection:
-            overlap_ratio = float(len(intersection) / max(1, len(requested_token_set)))
-            token_score = 0.46 + (0.42 * overlap_ratio)
-            score = max(score, token_score)
-            if token_score >= score:
-                strategy = "token_overlap"
-            reasons.append(f"token_overlap={round(overlap_ratio, 3)}")
-
-    fuzzy_ratio = SequenceMatcher(a=requested_norm, b=candidate_norm).ratio()
-    fuzzy_score = 0.2 + (0.7 * fuzzy_ratio)
-    if fuzzy_score > score:
-        strategy = "fuzzy_similarity"
-    score = max(score, fuzzy_score)
-    reasons.append(f"fuzzy_similarity={round(fuzzy_ratio, 3)}")
-
-    if _has_time_tokens(requested_text) and _has_time_tokens(candidate_text):
-        score += 0.06
-        reasons.append("time_semantics_compatible")
-
-    if not _is_identifier_like(requested_text) and _is_identifier_like(candidate_text):
-        score -= 0.08
-        reasons.append("identifier_penalty")
-
-    return _clamp(score), strategy, reasons
 
 
 def resolve_requested_field(
     *,
     requested_field_text: Optional[str],
     table: Any,
-    min_confidence: float = 0.68,
+    min_confidence: float = 0.72,
     ambiguity_gap: float = 0.08,
     max_debug_candidates: int = 12,
+    expected_dtype_family: Optional[str] = None,
 ) -> FieldResolution:
     requested = str(requested_field_text or "").strip()
     if not requested:
@@ -185,38 +315,65 @@ def resolve_requested_field(
         )
 
     aliases = _column_aliases(table)
+    metadata = _column_metadata(table)
     requested_norm = normalize_text(requested)
     requested_tokens = tokenize(requested)
+    effective_expected_dtype = expected_dtype_family or _expected_dtype_from_requested_tokens(requested_tokens)
 
     best_by_column: Dict[str, ColumnScore] = {}
     for raw_column in list(getattr(table, "columns", []) or []):
         column = str(raw_column)
-        candidate_variants = [column]
-        alias_value = str(aliases.get(column, "")).strip()
-        if alias_value:
-            candidate_variants.append(alias_value)
+        alias = str(aliases.get(column, ""))
+        column_meta = metadata.get(column, {})
+        dtype_family = _dtype_family_for_column(column=column, alias=alias, metadata=column_meta)
 
         best_variant_score = 0.0
         best_variant_strategy = "fuzzy_similarity"
         best_variant_reasons: List[str] = []
 
-        for variant in candidate_variants:
-            score, strategy, reasons = _score_candidate_for_requested_text(
-                requested_text=requested,
+        for source, variant in _iter_candidate_variants(column=column, alias=alias, metadata=column_meta):
+            variant_norm = normalize_text(variant)
+            score, strategy, reasons = _score_variant(
                 requested_norm=requested_norm,
                 requested_tokens=requested_tokens,
-                candidate_text=variant,
+                variant_norm=variant_norm,
+                source=source,
             )
             if score > best_variant_score:
                 best_variant_score = score
                 best_variant_strategy = strategy
                 best_variant_reasons = reasons
 
+        if effective_expected_dtype:
+            if dtype_family == effective_expected_dtype:
+                best_variant_score += 0.06
+                best_variant_reasons.append(f"dtype_compatible:{effective_expected_dtype}")
+            elif dtype_family != "unknown":
+                best_variant_score -= 0.08
+                best_variant_reasons.append(
+                    f"dtype_mismatch:expected={effective_expected_dtype},actual={dtype_family}"
+                )
+
+        if not _is_identifier_like(requested) and dtype_family == "identifier":
+            best_variant_score -= 0.06
+            best_variant_reasons.append("identifier_penalty")
+        elif _is_identifier_like(requested) and dtype_family == "identifier":
+            best_variant_score += 0.04
+            best_variant_reasons.append("identifier_bonus")
+
+        sample_values = column_meta.get("sample_values") if isinstance(column_meta, dict) else None
+        if isinstance(sample_values, list):
+            normalized_samples = {normalize_text(str(item)) for item in sample_values if normalize_text(str(item))}
+            if requested_norm and requested_norm in normalized_samples:
+                best_variant_score -= 0.04
+                best_variant_reasons.append("requested_text_matches_sample_value_penalty")
+
         best_by_column[column] = ColumnScore(
             column=column,
-            score=best_variant_score,
+            score=_clamp(best_variant_score),
             strategy=best_variant_strategy,
             reasons=best_variant_reasons,
+            dtype_family=dtype_family,
         )
 
     scored = sorted(
@@ -225,6 +382,7 @@ def resolve_requested_field(
     )
     candidate_columns = [item.column for item in scored]
     scored_candidates = [item.as_debug() for item in scored[: max(1, int(max_debug_candidates))]]
+
     if not scored:
         return FieldResolution(
             requested_field_text=requested,

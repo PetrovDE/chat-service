@@ -73,10 +73,6 @@ def _field_resolution_for_query(
     matched_columns: List[str] = []
     unmatched_requested_fields: List[str] = []
 
-    direct_mentions = find_direct_column_mentions(parsed.requested_field_text or "", table)
-    if direct_mentions:
-        matched_columns.extend(direct_mentions)
-
     primary_resolution_payload: Optional[Dict[str, Any]] = None
     requested_fields = list(parsed.requested_fields)
     for index, requested_field in enumerate(requested_fields):
@@ -116,10 +112,10 @@ def classify_tabular_query(
     match_score: Optional[float] = None
     match_strategy: Optional[str] = None
     fallback_reason = "none"
+    query_schema_mentions: List[str] = []
 
     if table is not None:
-        direct_mentions = find_direct_column_mentions(query, table)
-        matched_columns.extend(direct_mentions)
+        query_schema_mentions = find_direct_column_mentions(query, table)
 
         resolved_matches, unresolved_requested, primary_resolution = _field_resolution_for_query(
             parsed=parsed,
@@ -137,10 +133,45 @@ def classify_tabular_query(
             match_score = primary_resolution.get("match_score")
             match_strategy = primary_resolution.get("match_strategy")
 
+        if not parsed.requested_fields and len(query_schema_mentions) == 1:
+            mention_column = str(query_schema_mentions[0])
+            matched_columns = _dedupe([*matched_columns, mention_column])
+            if not matched_column:
+                matched_column = mention_column
+            if match_score is None:
+                match_score = 1.0
+            if not match_strategy:
+                match_strategy = "query_schema_mention_exact"
+            if not candidate_columns:
+                candidate_columns = [str(col) for col in list(getattr(table, "columns", []) or [])]
+            if not scored_candidates:
+                scored_candidates = [
+                    {
+                        "column": mention_column,
+                        "score": 1.0,
+                        "strategy": "query_schema_mention_exact",
+                        "reasons": ["exact_schema_mention_in_query"],
+                    }
+                ]
+
     if selected_route in {"chart", "trend", "comparison"}:
-        if unmatched_requested_fields or not matched_columns:
+        if unmatched_requested_fields:
             selected_route = "unsupported_missing_column"
             fallback_reason = "missing_required_columns"
+        elif parsed.requested_field_text:
+            if not matched_column:
+                selected_route = "unsupported_missing_column"
+                fallback_reason = "requested_field_not_matched"
+        else:
+            if len(query_schema_mentions) == 0 and not matched_column:
+                selected_route = "unsupported_missing_column"
+                fallback_reason = "missing_chart_dimension_column"
+            elif len(query_schema_mentions) > 1 and not matched_column:
+                selected_route = "unsupported_missing_column"
+                fallback_reason = "ambiguous_chart_dimension_column"
+            elif not matched_column:
+                selected_route = "unsupported_missing_column"
+                fallback_reason = "missing_required_columns"
 
     if selected_route == "aggregation":
         if parsed.operation in {"sum", "avg", "min", "max"} and not matched_columns:

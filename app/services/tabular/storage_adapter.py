@@ -253,6 +253,7 @@ class SharedDuckDBParquetStorageAdapter:
             "row_count": int(table.row_count),
             "columns": list(table.columns),
             "column_aliases": dict(table.column_aliases),
+            "column_metadata": dict(table.column_metadata),
             "table_version": table_version,
             "provenance_id": table_provenance_id,
             "parquet_path": str(parquet_path),

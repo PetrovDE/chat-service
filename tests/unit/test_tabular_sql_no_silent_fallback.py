@@ -67,3 +67,43 @@ def test_runtime_does_not_depend_on_domain_hint_wordlists_for_column_selection()
 
     assert decision.selected_route == "unsupported_missing_column"
     assert decision.matched_columns == []
+
+
+def test_chart_sql_ambiguous_requested_field_returns_controlled_failure():
+    table = _table(["status_code", "status_name"])
+    decision = tsql.classify_tabular_query(
+        query="build chart by status",
+        table=table,
+    )
+
+    assert decision.selected_route == "unsupported_missing_column"
+    assert decision.fallback_reason == "missing_required_columns"
+
+
+def test_requested_status_code_is_not_substituted_with_request_id():
+    table = _table(["request_id", "status_code"], aliases={"status_code": "Status Code"})
+    decision = tsql.classify_tabular_query(
+        query="build chart by status code",
+        table=table,
+    )
+
+    sql, chart_spec = tsql._build_chart_sql(query="build chart by status code", table=table, decision=decision)
+
+    assert "GROUP BY bucket" in sql
+    assert chart_spec.get("matched_chart_field") == "status_code"
+    assert chart_spec.get("matched_chart_field") != "request_id"
+
+
+def test_route_debug_payload_contains_schema_match_fields():
+    table = _table(["status_code", "request_id"], aliases={"status_code": "Status Code"})
+    decision = tsql.classify_tabular_query(
+        query="build chart by status code",
+        table=table,
+    )
+
+    debug_fields = tsql._route_debug_payload(decision=decision, detected_language="en")
+
+    assert debug_fields["requested_field_text"] == "status code"
+    assert debug_fields["matched_column"] == "status_code"
+    assert isinstance(debug_fields.get("match_score"), float)
+    assert debug_fields.get("match_strategy")

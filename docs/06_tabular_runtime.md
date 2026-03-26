@@ -106,3 +106,34 @@ Scope observability fields (debug, additive and backward compatible):
 - `scope_selected_sheet_name`
 - `scope_file_candidates`
 - `table_scope_candidates`
+
+## Update 2026-03-26 (Derived Temporal Dimensions and Follow-Up Continuity)
+
+Deterministic tabular analytics now supports derived temporal grouping without requiring a literal `month` or `year` column:
+
+- supported requested time grains: `day|week|month|quarter|year`
+- source datetime resolution is schema-first and metadata-driven:
+  - uses real schema columns, aliases, and sanitized column metadata only
+  - uses dtype compatibility and confidence/ambiguity thresholds
+  - does not use domain-specific hardcoded hints
+- if no confident datetime source is available, runtime returns explicit controlled clarification/mismatch behavior (`no_datetime_source` or `ambiguous_datetime_source`)
+- runtime does not silently invent or guess derived columns
+
+Temporal planning contract (additive):
+
+- `requested_time_grain`
+- `source_datetime_field`
+- `derived_grouping_dimension`
+- `temporal_plan_status`
+- `temporal_aggregation_plan`
+
+Chart execution contract for temporal requests:
+
+- if temporal plan is `resolved` and required measure/dimension can be matched, deterministic chart SQL executes
+- supported executable requests do not degrade to code-generation response mode
+- fallback remains explicit and controlled only when execution preconditions are not met
+
+Short follow-up continuity contract for tabular requests:
+
+- short refinement turns (for example `use created_at`, `group by month from dates`) can reuse prior tabular user intent
+- follow-up reuse is constrained to prior tabular intent and short refinement messages; it is not applied globally

@@ -210,6 +210,7 @@ class ChatOrchestrator:
             model_name=provider_selection["provider_model_effective"],
             rag_mode=chat_data.rag_mode,
             prompt_max_chars=chat_data.prompt_max_chars,
+            conversation_history=conversation_history,
         )
 
         history_for_generation = conversation_history

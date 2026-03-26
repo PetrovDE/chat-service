@@ -294,3 +294,25 @@ Deterministic tabular route now emits explicit file/sheet/table scope-selection 
 - `table_candidates`
 
 The stable debug contract remains backward compatible; existing sections/fields are unchanged.
+
+## Update 2026-03-26 (Temporal Planning and Follow-Up Continuity Diagnostics)
+
+Deterministic tabular diagnostics now expose additive temporal planning fields:
+
+- `requested_time_grain`
+- `source_datetime_field`
+- `derived_temporal_dimension`
+- `temporal_plan_status`
+- `temporal_aggregation_plan`
+
+Continuity diagnostics were added for short tabular follow-up reuse:
+
+- `followup_context_used`
+- `prior_tabular_intent_reused`
+
+`debug_sections` now includes additive `continuity` section:
+
+- `followup_context_used`
+- `prior_tabular_intent_reused`
+
+`debug_sections.tabular` includes temporal planning fields so execution and fallback decisions are auditable for derived time-grain requests.

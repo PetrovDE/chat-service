@@ -39,6 +39,11 @@ def build_route_debug_fields(
     fallback_reason: str,
     detected_language: str,
     response_language: str,
+    requested_time_grain: str | None = None,
+    source_datetime_field: str | None = None,
+    derived_temporal_dimension: str | None = None,
+    temporal_plan_status: str = "not_requested",
+    temporal_aggregation_plan: Any = None,
 ) -> Dict[str, Any]:
     if not isinstance(candidate_columns, list):
         candidate_columns = []
@@ -48,6 +53,7 @@ def build_route_debug_fields(
         normalized_match_score = float(match_score) if match_score is not None else None
     except Exception:
         normalized_match_score = None
+    normalized_temporal_plan = temporal_aggregation_plan if isinstance(temporal_aggregation_plan, dict) else {}
     return {
         "detected_intent": str(detected_intent or "unknown"),
         "selected_route": str(selected_route or "unknown"),
@@ -61,6 +67,11 @@ def build_route_debug_fields(
         "fallback_reason": str(fallback_reason or "none"),
         "detected_language": str(detected_language or "ru"),
         "response_language": str(response_language or detected_language or "ru"),
+        "requested_time_grain": str(requested_time_grain or "") or None,
+        "source_datetime_field": str(source_datetime_field or "") or None,
+        "derived_temporal_dimension": str(derived_temporal_dimension or "") or None,
+        "temporal_plan_status": str(temporal_plan_status or "not_requested"),
+        "temporal_aggregation_plan": normalized_temporal_plan,
     }
 
 

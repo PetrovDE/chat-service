@@ -50,6 +50,12 @@ from app.services.chat.tabular_sql_pipeline import (
     execute_lookup_sync_pipeline,
     execute_profile_sync_pipeline,
 )
+from app.services.chat.tabular_temporal_planner import (
+    build_temporal_aggregation_plan,
+    build_temporal_bucket_expression,
+    resolve_temporal_grouping,
+    resolve_temporal_measure_column,
+)
 from app.services.tabular import (
     GuardrailsConfig,
     SQL_ERROR_EXECUTION_FAILED,
@@ -67,7 +73,7 @@ from app.services.tabular.sql_execution import ResolvedTabularDataset, ResolvedT
 logger = logging.getLogger(__name__)
 
 _COUNT_HINTS = ("count", "how many", "сколько", "количество", "число")
-_SUM_HINTS = ("sum", "total", "сумм", "итого")
+_SUM_HINTS = ("sum", "total", "spend", "spending", "expense", "expenses", "revenue", "sales", "сумм", "итого")
 _AVG_HINTS = ("avg", "average", "mean", "средн")
 _MIN_HINTS = ("min", "миним")
 _MAX_HINTS = ("max", "максим")
@@ -352,6 +358,15 @@ def _build_tabular_error_result(
     requested_field_text = str(details.get("requested_field_text") or "").strip()
     candidate_columns = details.get("candidate_columns") if isinstance(details.get("candidate_columns"), list) else []
     scored_candidates = details.get("scored_candidates") if isinstance(details.get("scored_candidates"), list) else []
+    requested_time_grain = str(details.get("requested_time_grain") or "").strip() or None
+    source_datetime_field = str(details.get("source_datetime_field") or "").strip() or None
+    derived_temporal_dimension = str(details.get("derived_temporal_dimension") or "").strip() or None
+    temporal_plan_status = str(details.get("temporal_plan_status") or "not_requested")
+    temporal_aggregation_plan = (
+        details.get("temporal_aggregation_plan")
+        if isinstance(details.get("temporal_aggregation_plan"), dict)
+        else {}
+    )
 
     if requested_chart_field:
         payload["clarification_prompt"] = build_chart_unmatched_field_message(
@@ -377,6 +392,11 @@ def _build_tabular_error_result(
                 "chart_fallback_reason": "requested_field_not_matched",
                 "controlled_response_state": "chart_unmatched_field",
                 "response_language": preferred_lang,
+                "requested_time_grain": requested_time_grain,
+                "source_datetime_field": source_datetime_field,
+                "derived_temporal_dimension": derived_temporal_dimension,
+                "temporal_plan_status": temporal_plan_status,
+                "temporal_aggregation_plan": temporal_aggregation_plan,
             },
         )
         return payload
@@ -403,6 +423,11 @@ def _build_tabular_error_result(
             "candidate_columns": [str(item) for item in candidate_columns],
             "scored_candidates": list(scored_candidates),
             "controlled_response_state": controlled_state,
+            "requested_time_grain": requested_time_grain,
+            "source_datetime_field": source_datetime_field,
+            "derived_temporal_dimension": derived_temporal_dimension,
+            "temporal_plan_status": temporal_plan_status,
+            "temporal_aggregation_plan": temporal_aggregation_plan,
         },
     )
     return payload
@@ -553,6 +578,153 @@ def _build_chart_sql(
     decision: TabularIntentDecision,
 ) -> Tuple[str, Dict[str, Any]]:
     preferred_lang = detect_preferred_response_language(query)
+    parsed = parse_tabular_query(query)
+    if parsed.requested_time_grain:
+        temporal_resolution = resolve_temporal_grouping(
+            query=query,
+            table=table,
+            requested_time_grain=parsed.requested_time_grain,
+            source_datetime_hint=parsed.source_datetime_field_hint,
+        )
+        if temporal_resolution.temporal_plan_status != "resolved" or not temporal_resolution.source_datetime_field:
+            raise TabularSQLException(
+                code=SQL_ERROR_EXECUTION_FAILED,
+                message="Temporal grouping requested but datetime source field is unresolved",
+                details={
+                    "requested_chart_field": parsed.requested_time_grain,
+                    "requested_time_grain": parsed.requested_time_grain,
+                    "requested_field_text": parsed.requested_field_text,
+                    "source_datetime_field": None,
+                    "derived_temporal_dimension": None,
+                    "temporal_plan_status": temporal_resolution.temporal_plan_status,
+                    "candidate_columns": list(temporal_resolution.candidate_datetime_fields),
+                    "scored_candidates": list(temporal_resolution.scored_datetime_candidates),
+                    "fallback_reason": str(temporal_resolution.fallback_reason or "missing_datetime_source"),
+                    "temporal_aggregation_plan": build_temporal_aggregation_plan(
+                        requested_time_grain=parsed.requested_time_grain,
+                        source_datetime_field=None,
+                        derived_grouping_dimension=None,
+                        operation=parsed.operation,
+                        measure_column=None,
+                        status=temporal_resolution.temporal_plan_status,
+                        fallback_reason=str(temporal_resolution.fallback_reason or "missing_datetime_source"),
+                    ),
+                },
+            )
+
+        source_datetime_field = str(temporal_resolution.source_datetime_field)
+        source_datetime_q = _quote_ident(source_datetime_field)
+        table_q = _quote_ident(table.table_name)
+        bucket_plan = build_temporal_bucket_expression(
+            datetime_sql_expr=source_datetime_q,
+            requested_time_grain=str(parsed.requested_time_grain),
+        )
+        operation = parsed.operation or _choose_operation(query)
+        if operation not in {"count", "sum", "avg", "min", "max"}:
+            operation = "count"
+
+        candidate_columns: List[str] = list(temporal_resolution.candidate_datetime_fields)
+        scored_candidates: List[Dict[str, Any]] = list(temporal_resolution.scored_datetime_candidates)
+        metric_column: Optional[str] = None
+        match_score: Optional[float] = None
+        match_strategy = "temporal_derived_dimension"
+
+        where_clause = str(bucket_plan.get("where_clause") or "")
+        value_expr = "COUNT(*)"
+        if operation in {"sum", "avg", "min", "max"}:
+            measure_resolution = resolve_temporal_measure_column(
+                query=query,
+                table=table,
+                requested_metric_text=parsed.requested_field_text,
+            )
+            if measure_resolution.status != "resolved" or not measure_resolution.measure_column:
+                fallback_reason = str(measure_resolution.fallback_reason or "missing_numeric_measure")
+                raise TabularSQLException(
+                    code=SQL_ERROR_EXECUTION_FAILED,
+                    message="Temporal aggregation requested but numeric measure column is unresolved",
+                    details={
+                        "requested_chart_field": parsed.requested_time_grain,
+                        "requested_time_grain": parsed.requested_time_grain,
+                        "requested_field_text": parsed.requested_field_text,
+                        "source_datetime_field": source_datetime_field,
+                        "derived_temporal_dimension": temporal_resolution.derived_grouping_dimension,
+                        "temporal_plan_status": "missing_measure",
+                        "candidate_columns": list(measure_resolution.candidate_columns),
+                        "scored_candidates": list(measure_resolution.scored_candidates),
+                        "fallback_reason": fallback_reason,
+                        "temporal_aggregation_plan": build_temporal_aggregation_plan(
+                            requested_time_grain=parsed.requested_time_grain,
+                            source_datetime_field=source_datetime_field,
+                            derived_grouping_dimension=temporal_resolution.derived_grouping_dimension,
+                            operation=operation,
+                            measure_column=None,
+                            status="missing_measure",
+                            fallback_reason=fallback_reason,
+                        ),
+                    },
+                )
+
+            metric_column = str(measure_resolution.measure_column)
+            metric_q = _quote_ident(metric_column)
+            numeric_expr = f"CAST(REPLACE(NULLIF(TRIM({metric_q}), ''), ',', '.') AS DOUBLE)"
+            sql_op = {"sum": "SUM", "avg": "AVG", "min": "MIN", "max": "MAX"}[operation]
+            value_expr = f"ROUND({sql_op}({numeric_expr}), 6)"
+            where_clause = (
+                f"{where_clause} AND TRIM(COALESCE(CAST({metric_q} AS VARCHAR), '')) <> ''"
+                if where_clause
+                else f"WHERE TRIM(COALESCE(CAST({metric_q} AS VARCHAR), '')) <> ''"
+            )
+            candidate_columns = list(measure_resolution.candidate_columns)
+            scored_candidates = list(measure_resolution.scored_candidates)
+            if scored_candidates:
+                try:
+                    match_score = float(scored_candidates[0].get("score"))
+                except Exception:
+                    match_score = None
+
+        sql = (
+            f"SELECT {bucket_plan['bucket_expr']} AS bucket, {value_expr} AS value "
+            f"FROM {table_q} {where_clause} "
+            "GROUP BY bucket "
+            f"{bucket_plan['order_by']} LIMIT 120"
+        )
+
+        aliases = table.column_aliases if isinstance(table.column_aliases, dict) else {}
+        datetime_alias = str(aliases.get(source_datetime_field) or source_datetime_field)
+        temporal_aggregation_plan = build_temporal_aggregation_plan(
+            requested_time_grain=parsed.requested_time_grain,
+            source_datetime_field=source_datetime_field,
+            derived_grouping_dimension=temporal_resolution.derived_grouping_dimension,
+            operation=operation,
+            measure_column=metric_column,
+            status="ready",
+        )
+        chart_spec = {
+            "chart_type": "bar",
+            "title": f"{operation} by {parsed.requested_time_grain}",
+            "x": "bucket",
+            "y": "value",
+            "x_title": str(parsed.requested_time_grain),
+            "y_title": operation,
+            "requested_chart_field": parsed.requested_time_grain,
+            "matched_chart_field": source_datetime_field,
+            "matched_chart_field_alias": datetime_alias,
+            "requested_dimension_column": source_datetime_field,
+            "aggregation": operation,
+            "requested_field_text": parsed.requested_field_text,
+            "candidate_columns": candidate_columns,
+            "scored_candidates": scored_candidates,
+            "match_score": match_score,
+            "match_strategy": match_strategy,
+            "requested_time_grain": parsed.requested_time_grain,
+            "source_datetime_field": source_datetime_field,
+            "derived_temporal_dimension": temporal_resolution.derived_grouping_dimension,
+            "temporal_plan_status": "resolved",
+            "temporal_aggregation_plan": temporal_aggregation_plan,
+            "response_language": preferred_lang,
+        }
+        return sql, chart_spec
+
     requested_chart_field = _extract_requested_chart_field(query)
     dimension_column, resolution_debug = _choose_chart_dimension_column(
         query=query,
@@ -569,6 +741,11 @@ def _build_chart_sql(
                 "candidate_columns": list(resolution_debug.get("candidate_columns") or []),
                 "scored_candidates": list(resolution_debug.get("scored_candidates") or []),
                 "fallback_reason": str(resolution_debug.get("fallback_reason") or "requested_field_not_matched"),
+                "requested_time_grain": None,
+                "source_datetime_field": None,
+                "derived_temporal_dimension": None,
+                "temporal_plan_status": "not_requested",
+                "temporal_aggregation_plan": {},
             },
         )
 
@@ -582,21 +759,13 @@ def _build_chart_sql(
     if monthly_requested and _is_datetime_like_column(dimension_column, table):
         bucket_expr = f"strftime(TRY_CAST({dimension_q} AS TIMESTAMP), '%m')"
         where_clause = f"WHERE TRY_CAST({dimension_q} AS TIMESTAMP) IS NOT NULL"
-        x_title = "месяц" if preferred_lang == "ru" else "month"
-        chart_title = (
-            f"Распределение по месяцам для {dimension_alias}"
-            if preferred_lang == "ru"
-            else f"Distribution by month for {dimension_alias}"
-        )
+        x_title = "month"
+        chart_title = f"Distribution by month for {dimension_alias}"
     else:
         bucket_expr = f"CAST({dimension_q} AS VARCHAR)"
         where_clause = f"WHERE TRIM(COALESCE(CAST({dimension_q} AS VARCHAR), '')) <> ''"
         x_title = dimension_alias
-        chart_title = (
-            f"Распределение по {dimension_alias}"
-            if preferred_lang == "ru"
-            else f"Distribution for {dimension_alias}"
-        )
+        chart_title = f"Distribution for {dimension_alias}"
 
     sql = (
         f"SELECT {bucket_expr} AS bucket, COUNT(*) AS value "
@@ -610,7 +779,7 @@ def _build_chart_sql(
         "x": "bucket",
         "y": "value",
         "x_title": x_title,
-        "y_title": "Количество" if preferred_lang == "ru" else "count",
+        "y_title": "count",
         "requested_chart_field": requested_chart_field,
         "matched_chart_field": dimension_column,
         "matched_chart_field_alias": dimension_alias,
@@ -621,6 +790,11 @@ def _build_chart_sql(
         "scored_candidates": list(resolution_debug.get("scored_candidates") or []),
         "match_score": resolution_debug.get("match_score"),
         "match_strategy": resolution_debug.get("match_strategy"),
+        "requested_time_grain": None,
+        "source_datetime_field": None,
+        "derived_temporal_dimension": None,
+        "temporal_plan_status": "not_requested",
+        "temporal_aggregation_plan": {},
     }
     return sql, chart_spec
 
@@ -712,7 +886,6 @@ def _execute_chart_sync(
             estimated_scan_rows=int(table.row_count or 0),
             timeout_seconds=timeout_seconds,
         )
-
     result_text = rows_to_result_text(rows)
     chart_delivery = _render_chart_artifact(rows=rows, chart_spec=chart_spec)
     chart_response_text = _build_chart_response_text(
@@ -722,7 +895,6 @@ def _execute_chart_sync(
         result_text=result_text,
         source_scope=_build_scope_label(target_file=target_file, table=table),
     )
-
     artifact_item = chart_delivery.get("artifact")
     artifacts = [artifact_item] if isinstance(artifact_item, dict) else []
     chart_artifact_path = chart_delivery.get("chart_artifact_path")
@@ -736,10 +908,8 @@ def _execute_chart_sync(
     requested_chart_field = chart_spec.get("requested_chart_field")
     matched_chart_field = chart_spec.get("matched_chart_field")
     selected_route = "chart"
-
     if not chart_artifact_available:
         artifacts = []
-
     logger.info(
         (
             "tabular_chart_delivery selected_route=%s requested_chart_field=%s matched_chart_field=%s "
@@ -754,7 +924,6 @@ def _execute_chart_sync(
         str(chart_artifact_exists).lower(),
         chart_fallback_reason,
     )
-
     prompt_context = "Deterministic chart data and specification (source of truth):\n" + json.dumps(
         {
             "table_name": table.table_name,
@@ -834,6 +1003,13 @@ def _execute_chart_sync(
             "chart_fallback_reason": chart_fallback_reason,
             "response_language": preferred_lang,
             "retrieval_hits_count": int(len(rows)),
+            "requested_time_grain": chart_spec.get("requested_time_grain"),
+            "source_datetime_field": chart_spec.get("source_datetime_field"),
+            "derived_temporal_dimension": chart_spec.get("derived_temporal_dimension"),
+            "temporal_plan_status": chart_spec.get("temporal_plan_status"),
+            "temporal_aggregation_plan": chart_spec.get("temporal_aggregation_plan")
+            if isinstance(chart_spec.get("temporal_aggregation_plan"), dict)
+            else {},
         },
     )
     return payload
@@ -1058,3 +1234,4 @@ async def execute_tabular_sql_path(
             detected_language=detected_language,
         )
         return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
+

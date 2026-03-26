@@ -207,10 +207,18 @@ def test_rag_debug_contract_stable_defaults_include_file_route_language_and_cach
     assert payload["cache_key_version"] == "unknown"
     assert payload["chart_artifact_available"] is False
     assert payload["chart_artifact_exists"] is False
+    assert payload["requested_time_grain"] is None
+    assert payload["source_datetime_field"] is None
+    assert payload["derived_temporal_dimension"] is None
+    assert payload["temporal_plan_status"] == "not_requested"
+    assert payload["followup_context_used"] is False
+    assert payload["prior_tabular_intent_reused"] is False
     assert "debug_sections" in payload
     assert payload["debug_sections"]["files"]["file_resolution_status"] == "not_requested"
     assert payload["debug_sections"]["chart"]["chart_artifact_available"] is False
     assert payload["debug_sections"]["retrieval"]["retrieval_hits_count"] == 0
+    assert payload["debug_sections"]["tabular"]["temporal_plan_status"] == "not_requested"
+    assert payload["debug_sections"]["continuity"]["followup_context_used"] is False
 
 
 def test_rag_debug_contract_file_aware_tabular_fields_are_preserved():
@@ -232,6 +240,8 @@ def test_rag_debug_contract_file_aware_tabular_fields_are_preserved():
         "cache_miss": True,
         "cache_key_version": "v2-route-lang-fileaware",
         "cache_key": "abc123",
+        "followup_context_used": True,
+        "prior_tabular_intent_reused": True,
     }
     payload = build_standard_rag_debug_payload(
         rag_debug=rag_debug,
@@ -253,6 +263,41 @@ def test_rag_debug_contract_file_aware_tabular_fields_are_preserved():
     assert payload["response_language"] == "ru"
     assert payload["cache_key"] == "abc123"
     assert payload["debug_sections"]["tabular"]["unmatched_requested_fields"] == ["birth_date"]
+    assert payload["debug_sections"]["continuity"]["followup_context_used"] is True
+    assert payload["debug_sections"]["continuity"]["prior_tabular_intent_reused"] is True
+
+
+def test_rag_debug_contract_includes_temporal_fields():
+    payload = build_standard_rag_debug_payload(
+        rag_debug={
+            "retrieval_mode": "tabular_sql",
+            "selected_route": "trend",
+            "requested_time_grain": "month",
+            "source_datetime_field": "created_at",
+            "derived_temporal_dimension": "month(created_at)",
+            "temporal_plan_status": "resolved",
+            "temporal_aggregation_plan": {
+                "requested_time_grain": "month",
+                "source_datetime_field": "created_at",
+                "derived_grouping_dimension": "month(created_at)",
+                "operation": "sum",
+                "measure_column": "amount_rub",
+                "status": "ready",
+                "fallback_reason": "none",
+            },
+        },
+        context_docs=[],
+        rag_sources=[],
+        llm_tokens_used=0,
+        max_items=8,
+    )
+
+    assert payload["requested_time_grain"] == "month"
+    assert payload["source_datetime_field"] == "created_at"
+    assert payload["derived_temporal_dimension"] == "month(created_at)"
+    assert payload["temporal_plan_status"] == "resolved"
+    assert payload["debug_sections"]["tabular"]["requested_time_grain"] == "month"
+    assert payload["debug_sections"]["tabular"]["source_datetime_field"] == "created_at"
 
 
 def test_rag_debug_contract_includes_schema_match_and_chart_fields():

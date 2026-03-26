@@ -23,7 +23,18 @@ INTENT_NARRATIVE_RETRIEVAL = "narrative_retrieval"
 INTENT_METRIC_CLARIFICATION = "metric_clarification"
 
 _COUNT_HINTS = ("\u0441\u043a\u043e\u043b\u044c\u043a\u043e", "count", "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e", "\u0447\u0438\u0441\u043b\u043e")
-_SUM_HINTS = ("\u0441\u0443\u043c\u043c", "\u0438\u0442\u043e\u0433\u043e", "sum", "total")
+_SUM_HINTS = (
+    "\u0441\u0443\u043c\u043c",
+    "\u0438\u0442\u043e\u0433\u043e",
+    "sum",
+    "total",
+    "spend",
+    "spending",
+    "expense",
+    "expenses",
+    "revenue",
+    "sales",
+)
 _AVG_HINTS = ("\u0441\u0440\u0435\u0434\u043d", "avg", "average", "mean")
 _MIN_HINTS = ("\u043c\u0438\u043d\u0438\u043c", "min")
 _MAX_HINTS = ("\u043c\u0430\u043a\u0441\u0438\u043c", "max")

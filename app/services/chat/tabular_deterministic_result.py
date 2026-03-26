@@ -150,6 +150,10 @@ def build_tabular_success_route_result(
     rag_debug["artifacts_count"] = int(len(rag_debug["artifacts"]))
     rag_debug["analytical_mode_used"] = True
     rag_debug["strategy_mode"] = "combined" if is_combined_intent else "analytical"
+    rag_debug["followup_context_used"] = bool(planner_decision_payload.get("followup_context_used", False))
+    rag_debug["prior_tabular_intent_reused"] = bool(
+        planner_decision_payload.get("prior_tabular_intent_reused", False)
+    )
     selected_route_value = str(rag_debug.get("selected_route") or "")
     if selected_route_value in {"chart", "trend", "comparison"}:
         rag_debug = _normalize_chart_debug_fields(rag_debug=rag_debug)

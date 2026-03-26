@@ -31,6 +31,7 @@ from app.services.chat.rag_prompt_routes import (
     maybe_run_complex_analytics_route,
     maybe_run_deterministic_route,
 )
+from app.services.chat.tabular_followup_context import apply_tabular_followup_context
 from app.services.chat.tabular_sql import execute_tabular_sql_path
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ def _resolve_builder_dependencies(
 async def _handle_planned_routes(
     *,
     query: str,
+    user_query: str,
     user_id: uuid.UUID,
     conversation_id: uuid.UUID,
     planner_decision: Any,
@@ -98,7 +100,8 @@ async def _handle_planned_routes(
 
     if planner_decision.route == ROUTE_DETERMINISTIC_ANALYTICS:
         return await maybe_run_deterministic_route(
-            query=query,
+            query=user_query,
+            execution_query=query,
             user_id=user_id,
             conversation_id=conversation_id,
             files=files,
@@ -146,6 +149,8 @@ def _build_general_chat_debug_payload(
     files: List[Any],
     rag_mode: Optional[str],
     top_k: int,
+    followup_context_used: bool = False,
+    prior_tabular_intent_reused: bool = False,
 ) -> Dict[str, Any]:
     return {
         "intent": "general_chat",
@@ -164,6 +169,8 @@ def _build_general_chat_debug_payload(
         "selected_route": "general_chat",
         "fallback_type": "none",
         "fallback_reason": "none",
+        "followup_context_used": bool(followup_context_used),
+        "prior_tabular_intent_reused": bool(prior_tabular_intent_reused),
         "retrieval_policy": {
             "mode": "assistant_direct",
             "query_profile": "general_chat",
@@ -182,6 +189,8 @@ def _build_no_context_debug_payload(
     no_context_prompt: str,
     rag_mode: Optional[str],
     top_k: int,
+    followup_context_used: bool = False,
+    prior_tabular_intent_reused: bool = False,
 ) -> Dict[str, Any]:
     return {
         "intent": top_level_intent,
@@ -200,6 +209,8 @@ def _build_no_context_debug_payload(
         "rag_mode_effective": "no_context_files",
         "file_ids": [],
         "selected_route": "no_context",
+        "followup_context_used": bool(followup_context_used),
+        "prior_tabular_intent_reused": bool(prior_tabular_intent_reused),
         "retrieval_policy": {
             "mode": "clarification",
             "query_profile": "no_context",
@@ -234,6 +245,7 @@ async def build_rag_prompt(
         Callable[..., List[str]]
     ] = None,
     query_planner=None,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
 ) -> RagPromptResult:
     preferred_lang = detect_preferred_response_language(query)
     final_prompt = apply_language_policy_to_prompt(prompt=query, preferred_lang=preferred_lang)
@@ -292,8 +304,14 @@ async def build_rag_prompt(
             conversation_id=conversation_id,
         )
 
-    top_level_intent = intent_classifier.classify_top_level_intent(
+    followup_context = apply_tabular_followup_context(
         query=query,
+        conversation_history=conversation_history,
+    )
+    effective_query = str(followup_context.effective_query or query)
+
+    top_level_intent = intent_classifier.classify_top_level_intent(
+        query=effective_query,
         resolution_meta=resolution_meta,
     )
     logger.info(
@@ -308,7 +326,13 @@ async def build_rag_prompt(
             result=(
                 final_prompt,
                 False,
-                _build_general_chat_debug_payload(files=files, rag_mode=rag_mode, top_k=top_k),
+                _build_general_chat_debug_payload(
+                    files=files,
+                    rag_mode=rag_mode,
+                    top_k=top_k,
+                    followup_context_used=followup_context.followup_context_used,
+                    prior_tabular_intent_reused=followup_context.prior_tabular_intent_reused,
+                ),
                 [],
                 [],
                 [],
@@ -333,6 +357,8 @@ async def build_rag_prompt(
                     no_context_prompt=no_context_prompt,
                     rag_mode=rag_mode,
                     top_k=top_k,
+                    followup_context_used=followup_context.followup_context_used,
+                    prior_tabular_intent_reused=followup_context.prior_tabular_intent_reused,
                 ),
                 [],
                 [],
@@ -345,15 +371,18 @@ async def build_rag_prompt(
             conversation_id=conversation_id,
         )
 
-    planner_decision = query_planner(query=query, files=files)
+    planner_decision = query_planner(query=effective_query, files=files)
     planner_decision_payload = dict(planner_decision.as_dict())
     planner_decision_payload["detected_language"] = preferred_lang
     planner_decision_payload["file_resolution_status"] = resolution_meta.get("file_resolution_status")
+    planner_decision_payload["followup_context_used"] = bool(followup_context.followup_context_used)
+    planner_decision_payload["prior_tabular_intent_reused"] = bool(followup_context.prior_tabular_intent_reused)
     prompt_debug.log_planner_decision_payload(planner_decision_payload)
 
     expected_chunks_total = sum(int(getattr(file_obj, "chunks_count", 0) or 0) for file_obj in files)
     special_route_result = await _handle_planned_routes(
-        query=query,
+        query=effective_query,
+        user_query=query,
         user_id=user_id,
         conversation_id=conversation_id,
         planner_decision=planner_decision,

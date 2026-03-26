@@ -375,6 +375,14 @@ def build_standard_rag_debug_payload(
         )
     except Exception:
         payload["match_score"] = None
+    payload["requested_time_grain"] = str(payload.get("requested_time_grain") or "").strip() or None
+    payload["source_datetime_field"] = str(payload.get("source_datetime_field") or "").strip() or None
+    payload["derived_temporal_dimension"] = str(payload.get("derived_temporal_dimension") or "").strip() or None
+    payload["temporal_plan_status"] = str(payload.get("temporal_plan_status") or "not_requested")
+    temporal_aggregation_plan = payload.get("temporal_aggregation_plan")
+    payload["temporal_aggregation_plan"] = temporal_aggregation_plan if isinstance(temporal_aggregation_plan, dict) else {}
+    payload["followup_context_used"] = bool(payload.get("followup_context_used", False))
+    payload["prior_tabular_intent_reused"] = bool(payload.get("prior_tabular_intent_reused", False))
     payload["chart_spec_generated"] = bool(payload.get("chart_spec_generated", False))
     payload["chart_rendered"] = bool(payload.get("chart_rendered", False))
     payload["chart_artifact_available"] = bool(
@@ -477,6 +485,11 @@ def build_standard_rag_debug_payload(
             "match_strategy": payload["match_strategy"],
             "matched_columns": payload["matched_columns"],
             "unmatched_requested_fields": payload["unmatched_requested_fields"],
+            "requested_time_grain": payload["requested_time_grain"],
+            "source_datetime_field": payload["source_datetime_field"],
+            "derived_temporal_dimension": payload["derived_temporal_dimension"],
+            "temporal_plan_status": payload["temporal_plan_status"],
+            "temporal_aggregation_plan": payload["temporal_aggregation_plan"],
         },
         "chart": {
             "chart_spec_generated": payload["chart_spec_generated"],
@@ -511,6 +524,10 @@ def build_standard_rag_debug_payload(
         "language": {
             "detected_language": payload["detected_language"],
             "response_language": payload["response_language"],
+        },
+        "continuity": {
+            "followup_context_used": payload["followup_context_used"],
+            "prior_tabular_intent_reused": payload["prior_tabular_intent_reused"],
         },
         "cache": {
             "cache_hit": payload["cache_hit"],

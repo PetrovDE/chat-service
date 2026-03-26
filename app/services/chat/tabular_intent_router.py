@@ -13,6 +13,10 @@ from app.services.chat.tabular_schema_resolver import (
     normalize_text,
     resolve_requested_field,
 )
+from app.services.chat.tabular_temporal_planner import (
+    build_temporal_aggregation_plan,
+    resolve_temporal_grouping,
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,11 @@ class TabularIntentDecision:
     lookup_value_text: Optional[str] = None
     lookup_field_text: Optional[str] = None
     group_by_field_text: Optional[str] = None
+    requested_time_grain: Optional[str] = None
+    source_datetime_field: Optional[str] = None
+    derived_grouping_dimension: Optional[str] = None
+    temporal_plan_status: str = "not_requested"
+    temporal_aggregation_plan: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_supported(self) -> bool:
@@ -113,6 +122,11 @@ def classify_tabular_query(
     match_strategy: Optional[str] = None
     fallback_reason = "none"
     query_schema_mentions: List[str] = []
+    requested_time_grain = parsed.requested_time_grain
+    source_datetime_field: Optional[str] = None
+    derived_grouping_dimension: Optional[str] = None
+    temporal_plan_status = "not_requested"
+    temporal_aggregation_plan: Dict[str, Any] = {}
 
     if table is not None:
         query_schema_mentions = find_direct_column_mentions(query, table)
@@ -154,8 +168,46 @@ def classify_tabular_query(
                     }
                 ]
 
+        if parsed.requested_time_grain:
+            temporal_resolution = resolve_temporal_grouping(
+                query=query,
+                table=table,
+                requested_time_grain=parsed.requested_time_grain,
+                source_datetime_hint=parsed.source_datetime_field_hint,
+            )
+            source_datetime_field = temporal_resolution.source_datetime_field
+            derived_grouping_dimension = temporal_resolution.derived_grouping_dimension
+            temporal_plan_status = temporal_resolution.temporal_plan_status
+            temporal_aggregation_plan = build_temporal_aggregation_plan(
+                requested_time_grain=parsed.requested_time_grain,
+                source_datetime_field=source_datetime_field,
+                derived_grouping_dimension=derived_grouping_dimension,
+                operation=parsed.operation,
+                measure_column=None,
+                status=temporal_plan_status,
+                fallback_reason=temporal_resolution.fallback_reason,
+            )
+            if source_datetime_field:
+                matched_columns = _dedupe([*matched_columns, source_datetime_field])
+                if not matched_column:
+                    matched_column = source_datetime_field
+                if match_score is None:
+                    match_score = 0.9
+                if not match_strategy:
+                    match_strategy = "temporal_datetime_source"
+            if not candidate_columns and temporal_resolution.candidate_datetime_fields:
+                candidate_columns = [str(item) for item in temporal_resolution.candidate_datetime_fields]
+            if not scored_candidates and temporal_resolution.scored_datetime_candidates:
+                scored_candidates = list(temporal_resolution.scored_datetime_candidates)
+
     if selected_route in {"chart", "trend", "comparison"}:
-        if unmatched_requested_fields:
+        if parsed.requested_time_grain:
+            if table is not None and temporal_plan_status != "resolved":
+                if parsed.requested_time_grain not in unmatched_requested_fields:
+                    unmatched_requested_fields.append(str(parsed.requested_time_grain))
+                selected_route = "unsupported_missing_column"
+                fallback_reason = "missing_or_ambiguous_datetime_source"
+        elif unmatched_requested_fields:
             selected_route = "unsupported_missing_column"
             fallback_reason = "missing_required_columns"
         elif parsed.requested_field_text:
@@ -175,12 +227,19 @@ def classify_tabular_query(
 
     if selected_route == "aggregation":
         if parsed.operation in {"sum", "avg", "min", "max"} and not matched_columns:
-            if parsed.requested_field_text and parsed.requested_field_text not in unmatched_requested_fields:
+            if (
+                parsed.requested_time_grain
+                and temporal_plan_status == "resolved"
+                and source_datetime_field
+            ):
+                pass
+            elif parsed.requested_field_text and parsed.requested_field_text not in unmatched_requested_fields:
                 unmatched_requested_fields.append(parsed.requested_field_text)
-            if not unmatched_requested_fields:
+            elif not unmatched_requested_fields:
                 unmatched_requested_fields.append("metric")
-            selected_route = "unsupported_missing_column"
-            fallback_reason = "missing_required_columns"
+            if unmatched_requested_fields:
+                selected_route = "unsupported_missing_column"
+                fallback_reason = "missing_required_columns"
 
     if selected_route == "filtering":
         if parsed.lookup_value_text and parsed.lookup_field_text and not matched_columns:
@@ -210,6 +269,11 @@ def classify_tabular_query(
         lookup_value_text=parsed.lookup_value_text,
         lookup_field_text=parsed.lookup_field_text,
         group_by_field_text=parsed.group_by_field_text,
+        requested_time_grain=requested_time_grain,
+        source_datetime_field=source_datetime_field,
+        derived_grouping_dimension=derived_grouping_dimension,
+        temporal_plan_status=temporal_plan_status,
+        temporal_aggregation_plan=temporal_aggregation_plan,
     )
 
 

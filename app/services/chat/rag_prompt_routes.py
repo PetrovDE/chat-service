@@ -47,6 +47,8 @@ def build_clarification_route_result(
         "analytical_mode_used": False,
         "rag_mode": rag_mode or "auto",
         "rag_mode_effective": "clarification",
+        "followup_context_used": bool(planner_decision_payload.get("followup_context_used", False)),
+        "prior_tabular_intent_reused": bool(planner_decision_payload.get("prior_tabular_intent_reused", False)),
         "file_ids": [str(file_obj.id) for file_obj in files],
         "retrieval_policy": {
             "mode": "clarification",
@@ -107,6 +109,10 @@ async def maybe_run_complex_analytics_route(
             rag_debug.get("artifacts_count", len(rag_debug.get("artifacts") or [])) or 0
         )
         rag_debug["analytical_mode_used"] = True
+        rag_debug["followup_context_used"] = bool(planner_decision_payload.get("followup_context_used", False))
+        rag_debug["prior_tabular_intent_reused"] = bool(
+            planner_decision_payload.get("prior_tabular_intent_reused", False)
+        )
         rag_sources = list(complex_result.get("sources") or [])
         status = str(complex_result.get("status") or "ok")
         if status == "ok":
@@ -185,6 +191,8 @@ async def maybe_run_complex_analytics_route(
         "rag_mode": rag_mode or "auto",
         "rag_mode_effective": "complex_analytics_error",
         "file_ids": [str(file_obj.id) for file_obj in files],
+        "followup_context_used": bool(planner_decision_payload.get("followup_context_used", False)),
+        "prior_tabular_intent_reused": bool(planner_decision_payload.get("prior_tabular_intent_reused", False)),
         "retrieval_policy": {
             "mode": "clarification",
             "query_profile": "complex_analytics",
@@ -293,6 +301,7 @@ async def _run_combined_semantic_prefetch(
 async def maybe_run_deterministic_route(
     *,
     query: str,
+    execution_query: Optional[str] = None,
     user_id: uuid.UUID,
     conversation_id: uuid.UUID,
     files: List[Any],
@@ -306,16 +315,16 @@ async def maybe_run_deterministic_route(
     rag_retriever_client=None,
     is_combined_intent: bool = False,
 ) -> RagPromptResult:
+    effective_query = str(execution_query or query)
     scoped_files = files
     file_ids = [str(file_obj.id) for file_obj in files]
     processing_ids_by_file = _active_processing_map(files)
     combined_context_docs: List[Dict[str, Any]] = []
     combined_debug: Dict[str, Any] = {}
-    effective_query = query
     if is_combined_intent and rag_retriever_client is not None:
         try:
             scoped_files, combined_context_docs, combined_debug = await _run_combined_semantic_prefetch(
-                query=query,
+                query=effective_query,
                 user_id=user_id,
                 conversation_id=conversation_id,
                 files=files,
@@ -324,7 +333,7 @@ async def maybe_run_deterministic_route(
             )
             selected_sheet = str(combined_debug.get("selected_sheet") or "").strip()
             if selected_sheet:
-                effective_query = f"{query}\n[combined_scope_sheet={selected_sheet}]"
+                effective_query = f"{effective_query}\n[combined_scope_sheet={selected_sheet}]"
         except Exception:
             combined_debug = {"prefetch_error": "semantic_prefetch_failed"}
             combined_context_docs = []
@@ -359,6 +368,10 @@ async def maybe_run_deterministic_route(
             rag_debug["artifacts_count"] = 0
             rag_debug["analytical_mode_used"] = True
             rag_debug["strategy_mode"] = "combined" if is_combined_intent else "analytical"
+            rag_debug["followup_context_used"] = bool(planner_decision_payload.get("followup_context_used", False))
+            rag_debug["prior_tabular_intent_reused"] = bool(
+                planner_decision_payload.get("prior_tabular_intent_reused", False)
+            )
             existing_fallback_type = str(rag_debug.get("fallback_type") or "").strip()
             if existing_fallback_type and existing_fallback_type != "none":
                 rag_debug["fallback_type"] = existing_fallback_type
@@ -468,6 +481,8 @@ async def maybe_run_deterministic_route(
         "artifacts_count": 0,
         "analytical_mode_used": True,
         "strategy_mode": "combined" if is_combined_intent else "analytical",
+        "followup_context_used": bool(planner_decision_payload.get("followup_context_used", False)),
+        "prior_tabular_intent_reused": bool(planner_decision_payload.get("prior_tabular_intent_reused", False)),
         "clarification_prompt": clarification_prompt,
         "retrieval_policy": {
             "mode": "clarification",

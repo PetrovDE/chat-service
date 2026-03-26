@@ -43,6 +43,11 @@ def build_route_debug_payload(
         fallback_reason=fallback_reason,
         detected_language=detected_language,
         response_language=detected_language,
+        requested_time_grain=decision.requested_time_grain,
+        source_datetime_field=decision.source_datetime_field,
+        derived_temporal_dimension=decision.derived_grouping_dimension,
+        temporal_plan_status=decision.temporal_plan_status,
+        temporal_aggregation_plan=dict(decision.temporal_aggregation_plan or {}),
     )
 
 
@@ -55,6 +60,35 @@ def apply_route_debug(
     if not isinstance(payload, dict):
         return payload
     route_debug = build_route_debug_payload(decision=decision, detected_language=detected_language)
+    existing_debug = payload.get("debug", {}) if isinstance(payload.get("debug"), dict) else {}
+    for field_name in (
+        "requested_time_grain",
+        "source_datetime_field",
+        "derived_temporal_dimension",
+    ):
+        existing_value = existing_debug.get(field_name)
+        if existing_value is None:
+            continue
+        if isinstance(existing_value, str) and not existing_value.strip():
+            continue
+        if isinstance(existing_value, (list, dict)) and not existing_value:
+            continue
+        route_debug[field_name] = existing_value
+    existing_status = str(existing_debug.get("temporal_plan_status") or "").strip()
+    if existing_status and existing_status != "not_requested":
+        route_debug["temporal_plan_status"] = existing_status
+    existing_plan = existing_debug.get("temporal_aggregation_plan")
+    if isinstance(existing_plan, dict) and existing_plan:
+        merged_plan = dict(route_debug.get("temporal_aggregation_plan") or {})
+        for key, value in existing_plan.items():
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            if isinstance(value, (list, dict)) and not value:
+                continue
+            merged_plan[key] = value
+        route_debug["temporal_aggregation_plan"] = merged_plan
     payload = apply_tabular_debug_fields(payload, fields=route_debug)
     debug, tabular_debug = ensure_tabular_debug_containers(payload)
     debug["matched_columns"] = list(decision.matched_columns)
@@ -131,6 +165,11 @@ def build_missing_column_response(
             "match_score": decision.match_score,
             "match_strategy": decision.match_strategy or "none",
             "controlled_response_state": "missing_column",
+            "requested_time_grain": decision.requested_time_grain,
+            "source_datetime_field": decision.source_datetime_field,
+            "derived_temporal_dimension": decision.derived_grouping_dimension,
+            "temporal_plan_status": decision.temporal_plan_status,
+            "temporal_aggregation_plan": dict(decision.temporal_aggregation_plan or {}),
         },
     )
     return apply_route_debug(payload=payload, decision=decision, detected_language=preferred_lang)

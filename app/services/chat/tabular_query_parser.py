@@ -4,6 +4,62 @@ from dataclasses import dataclass
 import re
 from typing import List, Optional, Sequence, Tuple
 
+from app.services.chat.tabular_temporal_planner import (
+    detect_requested_time_grain,
+    extract_datetime_source_hint,
+    has_temporal_grouping_signal,
+)
+
+
+_CYR_COLS = "\u043a\u0430\u043a\u0438\u0435 \u043a\u043e\u043b\u043e\u043d\u043a\u0438"
+_CYR_COLUMNS_2 = "\u043a\u0430\u043a\u0438\u0435 \u0441\u0442\u043e\u043b\u0431\u0446\u044b"
+_CYR_FIELDS = "\u043a\u0430\u043a\u0438\u0435 \u043f\u043e\u043b\u044f"
+_CYR_COL_LIST = "\u0441\u043f\u0438\u0441\u043e\u043a \u043a\u043e\u043b\u043e\u043d\u043e\u043a"
+_CYR_FIELD_LIST = "\u0441\u043f\u0438\u0441\u043e\u043a \u043f\u043e\u043b\u0435\u0439"
+_CYR_OVERVIEW = "\u043e\u0431\u0437\u043e\u0440"
+_CYR_FULL_ANALYSIS = "\u043f\u043e\u043b\u043d\u044b\u0439 \u0430\u043d\u0430\u043b\u0438\u0437"
+_CYR_GENERAL_ANALYSIS = "\u043e\u0431\u0449\u0438\u0439 \u0430\u043d\u0430\u043b\u0438\u0437"
+_CYR_SHOW_STATS = "\u043f\u043e\u043a\u0430\u0436\u0438 \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0438"
+_CYR_SHOW_METRICS = "\u043f\u043e\u043a\u0430\u0436\u0438 \u043c\u0435\u0442\u0440\u0438\u043a\u0438"
+_CYR_CHART = "\u0433\u0440\u0430\u0444\u0438\u043a"
+_CYR_DIAGRAM = "\u0434\u0438\u0430\u0433\u0440\u0430\u043c"
+_CYR_VISUAL = "\u0432\u0438\u0437\u0443\u0430\u043b"
+_CYR_DISTR = "\u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b"
+_CYR_TREND = "\u0442\u0440\u0435\u043d\u0434"
+_CYR_DYNAMICS = "\u0434\u0438\u043d\u0430\u043c"
+_CYR_BY_TIME = "\u043f\u043e \u0432\u0440\u0435\u043c\u0435\u043d\u0438"
+_CYR_MONTHLY = "\u043f\u043e\u043c\u0435\u0441\u044f\u0447"
+_CYR_BY_MONTH = "\u043f\u043e \u043c\u0435\u0441\u044f\u0446"
+_CYR_COMPARE = "\u0441\u0440\u0430\u0432\u043d\u0438"
+_CYR_COMPARISON = "\u0441\u0440\u0430\u0432\u043d\u0435\u043d\u0438\u0435"
+_CYR_MATCH = "\u0441\u043e\u043f\u043e\u0441\u0442\u0430\u0432"
+_CYR_WHERE = "\u0433\u0434\u0435"
+_CYR_FILTER = "\u0444\u0438\u043b\u044c\u0442\u0440"
+_CYR_FIND_ROWS = "\u043d\u0430\u0439\u0434\u0438 \u0441\u0442\u0440\u043e\u043a\u0438"
+_CYR_SHOW_ROWS = "\u043f\u043e\u043a\u0430\u0436\u0438 \u0441\u0442\u0440\u043e\u043a\u0438"
+_CYR_SHOW_RECORDS = "\u043f\u043e\u043a\u0430\u0436\u0438 \u0437\u0430\u043f\u0438\u0441\u0438"
+_CYR_COUNT = "\u0441\u043a\u043e\u043b\u044c\u043a\u043e"
+_CYR_COUNT_2 = "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e"
+_CYR_COUNT_3 = "\u0447\u0438\u0441\u043b\u043e"
+_CYR_SUM = "\u0441\u0443\u043c\u043c"
+_CYR_TOTAL = "\u0438\u0442\u043e\u0433\u043e"
+_CYR_AVG = "\u0441\u0440\u0435\u0434\u043d"
+_CYR_MIN = "\u043c\u0438\u043d\u0438\u043c"
+_CYR_MAX = "\u043c\u0430\u043a\u0441\u0438\u043c"
+_CYR_BY = "\u043f\u043e"
+_CYR_DATE = "\u0434\u0430\u0442\u0430"
+_CYR_TIME = "\u0432\u0440\u0435\u043c\u044f"
+_CYR_MONTH = "\u043c\u0435\u0441\u044f\u0446"
+_CYR_MONTHS = "\u043c\u0435\u0441\u044f\u0446\u044b"
+_CYR_DAY = "\u0434\u0435\u043d\u044c"
+_CYR_DAYS = "\u0434\u043d\u0438"
+_CYR_YEAR = "\u0433\u043e\u0434"
+_CYR_YEARS = "\u0433\u043e\u0434\u044b"
+
+_TEXT_PATTERN = r"[a-z\u0430-\u044f\u04510-9_ ]"
+_VALUE_PATTERN = r"[a-z\u0430-\u044f\u04510-9_./:\\-]"
+_NORM_RE = re.compile(r"[^a-z\u0430-\u044f\u04510-9]+")
+
 
 SCHEMA_HINTS: Tuple[str, ...] = (
     "schema",
@@ -21,11 +77,11 @@ SCHEMA_HINTS: Tuple[str, ...] = (
     "which tables",
     "what tables",
     "tables available",
-    "какие колонки",
-    "какие столбцы",
-    "какие поля",
-    "список колонок",
-    "список полей",
+    _CYR_COLS,
+    _CYR_COLUMNS_2,
+    _CYR_FIELDS,
+    _CYR_COL_LIST,
+    _CYR_FIELD_LIST,
 )
 
 OVERVIEW_HINTS: Tuple[str, ...] = (
@@ -39,11 +95,11 @@ OVERVIEW_HINTS: Tuple[str, ...] = (
     "dataset profile",
     "table summary",
     "dataset summary",
-    "обзор",
-    "общий анализ",
-    "полный анализ",
-    "покажи статистики",
-    "покажи метрики",
+    _CYR_OVERVIEW,
+    _CYR_GENERAL_ANALYSIS,
+    _CYR_FULL_ANALYSIS,
+    _CYR_SHOW_STATS,
+    _CYR_SHOW_METRICS,
 )
 
 CHART_HINTS: Tuple[str, ...] = (
@@ -52,11 +108,10 @@ CHART_HINTS: Tuple[str, ...] = (
     "plot",
     "histogram",
     "distribution",
-    "диаграм",
-    "график",
-    "график",
-    "визуал",
-    "распредел",
+    _CYR_DIAGRAM,
+    _CYR_CHART,
+    _CYR_VISUAL,
+    _CYR_DISTR,
 )
 
 TREND_HINTS: Tuple[str, ...] = (
@@ -64,19 +119,19 @@ TREND_HINTS: Tuple[str, ...] = (
     "time series",
     "timeseries",
     "over time",
-    "динам",
-    "тренд",
-    "по времени",
-    "помесяч",
-    "по месяц",
+    _CYR_DYNAMICS,
+    _CYR_TREND,
+    _CYR_BY_TIME,
+    _CYR_MONTHLY,
+    _CYR_BY_MONTH,
 )
 
 COMPARISON_HINTS: Tuple[str, ...] = (
     "compare",
     "comparison",
-    "сравни",
-    "сравнение",
-    "сопостав",
+    _CYR_COMPARE,
+    _CYR_COMPARISON,
+    _CYR_MATCH,
 )
 
 FILTERING_HINTS: Tuple[str, ...] = (
@@ -86,20 +141,38 @@ FILTERING_HINTS: Tuple[str, ...] = (
     "find rows",
     "show rows",
     "show records",
-    "где ",
-    "фильтр",
-    "найди строки",
-    "покажи строки",
-    "покажи записи",
+    f"{_CYR_WHERE} ",
+    _CYR_FILTER,
+    _CYR_FIND_ROWS,
+    _CYR_SHOW_ROWS,
+    _CYR_SHOW_RECORDS,
 )
 
-COUNT_HINTS: Tuple[str, ...] = ("count", "how many", "сколько", "количество", "число")
-SUM_HINTS: Tuple[str, ...] = ("sum", "total", "сумм", "итого")
-AVG_HINTS: Tuple[str, ...] = ("avg", "average", "mean", "средн")
-MIN_HINTS: Tuple[str, ...] = ("min", "миним")
-MAX_HINTS: Tuple[str, ...] = ("max", "максим")
+COUNT_HINTS: Tuple[str, ...] = ("count", "how many", _CYR_COUNT, _CYR_COUNT_2, _CYR_COUNT_3)
+SUM_HINTS: Tuple[str, ...] = (
+    "sum",
+    "total",
+    "volume",
+    "spend",
+    "spending",
+    "expense",
+    "expenses",
+    "revenue",
+    "sales",
+    "\u043e\u0431\u044a\u0435\u043c",
+    "\u043e\u0431\u044a\u0451\u043c",
+    "\u0437\u0430\u0442\u0440\u0430\u0442",
+    "\u0440\u0430\u0441\u0445\u043e\u0434",
+    "\u0442\u0440\u0430\u0442",
+    "\u0441\u0442\u043e\u0438\u043c",
+    _CYR_SUM,
+    _CYR_TOTAL,
+)
+AVG_HINTS: Tuple[str, ...] = ("avg", "average", "mean", _CYR_AVG)
+MIN_HINTS: Tuple[str, ...] = ("min", _CYR_MIN)
+MAX_HINTS: Tuple[str, ...] = ("max", _CYR_MAX)
 
-GROUP_BY_HINTS: Tuple[str, ...] = ("group by", "by ", "по ")
+GROUP_BY_HINTS: Tuple[str, ...] = ("group by", "by ", f"{_CYR_BY} ")
 
 GENERIC_FIELD_STOP_WORDS = {
     "month",
@@ -110,17 +183,15 @@ GENERIC_FIELD_STOP_WORDS = {
     "days",
     "year",
     "years",
-    "месяц",
-    "месяцы",
-    "дата",
-    "время",
-    "день",
-    "дни",
-    "год",
-    "годы",
+    _CYR_MONTH,
+    _CYR_MONTHS,
+    _CYR_DATE,
+    _CYR_TIME,
+    _CYR_DAY,
+    _CYR_DAYS,
+    _CYR_YEAR,
+    _CYR_YEARS,
 }
-
-_NORM_RE = re.compile(r"[^a-zа-яё0-9]+")
 
 
 @dataclass(frozen=True)
@@ -133,6 +204,8 @@ class ParsedTabularQuery:
     lookup_field_text: Optional[str]
     lookup_value_text: Optional[str]
     requested_fields: List[str]
+    requested_time_grain: Optional[str]
+    source_datetime_field_hint: Optional[str]
 
 
 def normalize_text(text: str) -> str:
@@ -164,6 +237,8 @@ def detect_tabular_route(query: str) -> str:
         return "overview"
     if any(h in q for h in CHART_HINTS):
         return "chart"
+    if has_temporal_grouping_signal(q):
+        return "trend"
     if any(h in q for h in TREND_HINTS):
         return "trend"
     if any(h in q for h in COMPARISON_HINTS):
@@ -208,7 +283,7 @@ def _truncate_clause(candidate: str) -> str:
     if not text:
         return ""
     text = re.split(
-        r"\b(and|with|where|when|for|from|in|on|и|с|для|где|когда|по)\b",
+        r"\b(and|with|where|when|for|from|in|on|\u0438|\u0441|\u0434\u043b\u044f|\u0433\u0434\u0435|\u043a\u043e\u0433\u0434\u0430|\u043f\u043e)\b",
         text,
         maxsplit=1,
     )[0]
@@ -220,9 +295,9 @@ def _extract_field_after_preposition(query: str) -> Optional[str]:
     if not q:
         return None
     patterns = (
-        r"\bby\s+([a-zа-яё0-9_ ]{2,120})",
-        r"\bпо\s+([a-zа-яё0-9_ ]{2,120})",
-        r"\bfor\s+([a-zа-яё0-9_ ]{2,120})",
+        rf"\bby\s+({_TEXT_PATTERN}{{2,120}})",
+        rf"\b{_CYR_BY}\s+({_TEXT_PATTERN}{{2,120}})",
+        rf"\bfor\s+({_TEXT_PATTERN}{{2,120}})",
     )
     for pattern in patterns:
         match = re.search(pattern, q)
@@ -242,10 +317,10 @@ def _extract_operation_field(query: str, operation: Optional[str]) -> Optional[s
     if not q:
         return None
     operation_patterns = {
-        "sum": r"\b(sum|total|сумм[a-zа-яё]*)\s+(of\s+)?([a-zа-яё0-9_ ]{2,120})",
-        "avg": r"\b(avg|average|mean|средн[a-zа-яё]*)\s+(of\s+)?([a-zа-яё0-9_ ]{2,120})",
-        "min": r"\b(min|миним[a-zа-яё]*)\s+(of\s+)?([a-zа-яё0-9_ ]{2,120})",
-        "max": r"\b(max|максим[a-zа-яё]*)\s+(of\s+)?([a-zа-яё0-9_ ]{2,120})",
+        "sum": rf"\b(sum|total|{_CYR_SUM}{_TEXT_PATTERN}*)\s+(of\s+)?({_TEXT_PATTERN}{{2,120}})",
+        "avg": rf"\b(avg|average|mean|{_CYR_AVG}{_TEXT_PATTERN}*)\s+(of\s+)?({_TEXT_PATTERN}{{2,120}})",
+        "min": rf"\b(min|{_CYR_MIN}{_TEXT_PATTERN}*)\s+(of\s+)?({_TEXT_PATTERN}{{2,120}})",
+        "max": rf"\b(max|{_CYR_MAX}{_TEXT_PATTERN}*)\s+(of\s+)?({_TEXT_PATTERN}{{2,120}})",
     }
     pattern = operation_patterns[operation]
     match = re.search(pattern, q)
@@ -262,9 +337,9 @@ def _extract_group_by_field(query: str) -> Optional[str]:
     if not q:
         return None
     patterns = (
-        r"\bgroup by\s+([a-zа-яё0-9_ ]{2,120})",
-        r"\bby\s+([a-zа-яё0-9_ ]{2,120})",
-        r"\bпо\s+([a-zа-яё0-9_ ]{2,120})",
+        rf"\bgroup by\s+({_TEXT_PATTERN}{{2,120}})",
+        rf"\bby\s+({_TEXT_PATTERN}{{2,120}})",
+        rf"\b{_CYR_BY}\s+({_TEXT_PATTERN}{{2,120}})",
     )
     for pattern in patterns:
         match = re.search(pattern, q)
@@ -277,13 +352,39 @@ def _extract_group_by_field(query: str) -> Optional[str]:
     return None
 
 
+def _extract_metric_before_grouping(query: str) -> Optional[str]:
+    q = normalize_text(query)
+    if not q:
+        return None
+    patterns = (
+        rf"\bof\s+({_TEXT_PATTERN}{{2,120}})\s+\b(group by|by|per)\b",
+        rf"\bshow\s+({_TEXT_PATTERN}{{2,120}})\s+\b(group by|by|per)\b",
+        rf"\bbuild\s+({_TEXT_PATTERN}{{2,120}})\s+\b(group by|by|per)\b",
+        rf"\bplot\s+({_TEXT_PATTERN}{{2,120}})\s+\b(group by|by|per)\b",
+        rf"\bgraph\s+({_TEXT_PATTERN}{{2,120}})\s+\b(group by|by|per)\b",
+        rf"\bchart\s+({_TEXT_PATTERN}{{2,120}})\s+\b(group by|by|per)\b",
+        rf"\b({_TEXT_PATTERN}{{2,120}})\s+\b(group by|by|per)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, q)
+        if not match:
+            continue
+        candidate = _truncate_clause(str(match.group(1) or ""))
+        candidate = re.sub(r"\b(show|build|plot|graph|chart|a|an|the|distribution|trend|group)\b", " ", candidate)
+        candidate = normalize_text(candidate)
+        if not candidate or candidate in GENERIC_FIELD_STOP_WORDS:
+            continue
+        return candidate
+    return None
+
+
 def _extract_lookup_components(query: str) -> Tuple[Optional[str], Optional[str]]:
     q = str(query or "").strip()
     if not q:
         return None, None
 
     where_patterns = (
-        r"(?:where|где)\s+([a-zа-яё0-9_ ]{1,120})\s*(?:=|равно|is|equals)\s*(\"[^\"]{1,200}\"|'[^']{1,200}'|[a-zа-яё0-9_./:\-]{1,120})",
+        rf"(?:where|{_CYR_WHERE})\s+({_TEXT_PATTERN}{{1,120}})\s*(?:=|\u0440\u0430\u0432\u043d\u043e|is|equals)\s*(\"[^\"]{{1,200}}\"|'[^']{{1,200}}'|{_VALUE_PATTERN}{{1,120}})",
     )
     for pattern in where_patterns:
         match = re.search(pattern, q, flags=re.IGNORECASE)
@@ -304,12 +405,17 @@ def parse_tabular_query(query: str) -> ParsedTabularQuery:
     route = detect_tabular_route(query)
     legacy_intent = detect_legacy_tabular_intent(query)
     operation = detect_operation(query)
+    requested_time_grain = detect_requested_time_grain(query)
+    source_datetime_field_hint = extract_datetime_source_hint(query) if requested_time_grain else None
     group_by_field_text = _extract_group_by_field(query)
     lookup_field_text, lookup_value_text = _extract_lookup_components(query)
 
     requested_field_text: Optional[str] = None
     if route in {"chart", "trend", "comparison"}:
-        requested_field_text = _extract_field_after_preposition(query)
+        if requested_time_grain:
+            requested_field_text = _extract_metric_before_grouping(query) or _extract_operation_field(query, operation)
+        else:
+            requested_field_text = _extract_field_after_preposition(query)
     elif route == "aggregation":
         requested_field_text = _extract_operation_field(query, operation)
     elif route == "filtering":
@@ -325,4 +431,6 @@ def parse_tabular_query(query: str) -> ParsedTabularQuery:
         lookup_field_text=lookup_field_text,
         lookup_value_text=lookup_value_text,
         requested_fields=requested_fields,
+        requested_time_grain=requested_time_grain,
+        source_datetime_field_hint=source_datetime_field_hint,
     )

@@ -6,6 +6,10 @@ from typing import Any, Dict
 from app.domain.chat.query_planner import detect_tabular_intent
 from app.services.chat.complex_analytics import is_complex_analytics_query
 from app.services.chat.tabular_intent_router import classify_tabular_query
+from app.services.chat.tabular_temporal_planner import (
+    detect_requested_time_grain,
+    has_temporal_grouping_signal,
+)
 
 _EXPLICIT_FILE_REQUEST_RE = re.compile(
     r"(?:\bfile\b|\bfiles\b|\bdocument\b|\bdocuments\b|\bdataset\b|\bspreadsheet\b|\bcsv\b|\bxlsx\b|\bexcel\b|\u0444\u0430\u0439\u043b|\u0444\u0430\u0439\u043b\u0430|\u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442|\u0434\u0430\u0442\u0430\u0441\u0435\u0442)"
@@ -62,10 +66,19 @@ def classify_top_level_intent(
         if strong_file_data_signal or lookup_field_text:
             return "file_lookup"
         return "general_chat"
-    if selected_route in {"overview", "aggregation", "chart", "comparison", "trend", "unsupported_missing_column"}:
+    requested_time_grain = detect_requested_time_grain(text)
+    temporal_grouping_signal = has_temporal_grouping_signal(text)
+
+    if selected_route in {"chart", "comparison", "trend"}:
+        if strong_file_data_signal or temporal_grouping_signal or requested_time_grain:
+            return "tabular_analytics"
+        return "general_chat"
+    if selected_route in {"overview", "aggregation", "unsupported_missing_column"}:
         if strong_file_data_signal:
             return "tabular_analytics"
-        if selected_route in {"aggregation", "unsupported_missing_column"} and requested_fields:
+        if selected_route in {"aggregation", "unsupported_missing_column"} and (
+            requested_fields or temporal_grouping_signal or requested_time_grain
+        ):
             return "tabular_analytics"
         return "general_chat"
 

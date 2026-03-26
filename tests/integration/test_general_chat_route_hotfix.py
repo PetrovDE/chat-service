@@ -305,6 +305,34 @@ def test_no_files_chart_request_routes_to_file_aware_fallback(monkeypatch):
     assert rag_debug["detected_intent"] == "tabular_analytics"
 
 
+def test_no_files_temporal_grouping_request_routes_to_file_aware_fallback(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+
+    async def fake_get_conversation_files(db, conversation_id, user_id):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_conversation_files)
+
+    _, rag_used, rag_debug, _, _, _ = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="show spending by month",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert rag_debug["requires_clarification"] is True
+    assert rag_debug["retrieval_mode"] == "no_context_files"
+    assert rag_debug["fallback_type"] == "no_context"
+    assert rag_debug["detected_intent"] == "tabular_analytics"
+
+
 def test_ambiguous_question_without_data_signals_prefers_general_chat(monkeypatch):
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()

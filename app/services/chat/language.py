@@ -4,6 +4,43 @@ import re
 
 CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
 LATIN_RE = re.compile(r"[A-Za-z]")
+LATIN_TOKEN_RE = re.compile(r"[A-Za-z]{3,}")
+ALLOWED_RU_LATIN_TOKENS = {
+    "api",
+    "csv",
+    "id",
+    "json",
+    "pdf",
+    "sql",
+    "tsv",
+    "url",
+    "uuid",
+    "xlsx",
+    "xls",
+    "avg",
+    "min",
+    "max",
+    "sum",
+    "count",
+    "table",
+    "tables",
+    "sheet",
+    "sheets",
+    "column",
+    "columns",
+    "row",
+    "rows",
+    "dataset",
+    "created",
+    "updated",
+    "status",
+    "amount",
+    "total",
+    "month",
+    "week",
+    "day",
+    "year",
+}
 
 
 def detect_preferred_response_language(query: str) -> str:
@@ -65,7 +102,15 @@ def answer_matches_expected_language(answer: str, preferred_lang: str) -> bool:
     if lang == "ru":
         if cyr == 0 and lat > 0:
             return False
-        return cyr >= lat
+        if lat == 0:
+            return True
+        if cyr < lat:
+            return False
+        latin_tokens = [token.lower() for token in LATIN_TOKEN_RE.findall(text)]
+        disallowed_tokens = [token for token in latin_tokens if token not in ALLOWED_RU_LATIN_TOKENS]
+        if disallowed_tokens and cyr < (lat * 3):
+            return False
+        return True
     if lat == 0 and cyr > 0:
         return False
     return lat >= cyr

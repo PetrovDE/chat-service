@@ -6,6 +6,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings as settings
 from app.crud import crud_file
 from app.domain.chat.query_planner import (
     INTENT_TABULAR_COMBINED,

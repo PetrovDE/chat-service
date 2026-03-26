@@ -15,7 +15,11 @@ def test_finalize_ingestion_partial_failed_counters(monkeypatch):
         captured.update(kwargs)
         return SimpleNamespace()
 
+    async def fake_load_lifecycle_context(db, *, file_id):  # noqa: ARG001
+        return {"file_id": str(file_id), "user_id": None, "chat_ids": []}
+
     monkeypatch.setattr(file_service.crud_file, "update_processing_status", fake_update_processing_status)
+    monkeypatch.setattr(file_service, "_load_file_lifecycle_context", fake_load_lifecycle_context)
 
     progress = {
         "status": "processing",
@@ -55,7 +59,11 @@ def test_finalize_ingestion_normalizes_processed_gt_expected(monkeypatch):
         captured.update(kwargs)
         return SimpleNamespace()
 
+    async def fake_load_lifecycle_context(db, *, file_id):  # noqa: ARG001
+        return {"file_id": str(file_id), "user_id": None, "chat_ids": []}
+
     monkeypatch.setattr(file_service.crud_file, "update_processing_status", fake_update_processing_status)
+    monkeypatch.setattr(file_service, "_load_file_lifecycle_context", fake_load_lifecycle_context)
 
     progress = {
         "status": "processing",

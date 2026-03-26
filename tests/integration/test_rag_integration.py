@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 import re
 import uuid
 from types import SimpleNamespace
@@ -14,6 +15,36 @@ from app.services.chat import rag_prompt_builder as rag_builder
 from app.services.chat import full_file_analysis
 from app.services.chat.full_file_analysis import build_full_file_map_reduce_prompt
 from app.rag.retriever import rag_retriever
+
+
+def _make_tabular_dataset_metadata(
+    tmp_path: Path,
+    *,
+    dataset_id: str,
+    table_name: str,
+    sheet_name: str,
+    row_count: int,
+    columns: list[str],
+    column_aliases: dict[str, str],
+) -> dict:
+    parquet_path = tmp_path / f"{dataset_id}_{table_name}.parquet"
+    parquet_path.write_bytes(b"PAR1")
+    return {
+        "dataset_id": dataset_id,
+        "dataset_version": 1,
+        "dataset_provenance_id": f"prov-{dataset_id}",
+        "catalog_path": str(tmp_path / f"{dataset_id}_catalog.duckdb"),
+        "tables": [
+            {
+                "table_name": table_name,
+                "sheet_name": sheet_name,
+                "row_count": row_count,
+                "columns": columns,
+                "column_aliases": column_aliases,
+                "parquet_path": str(parquet_path),
+            }
+        ],
+    }
 
 
 def test_mixed_embedding_groups_merge(monkeypatch):
@@ -62,7 +93,7 @@ def test_mixed_embedding_groups_merge(monkeypatch):
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="test query",
+            query="What is in these files?",
             top_k=8,
             model_source="local",
         )
@@ -153,7 +184,7 @@ def test_mixed_group_partial_failure_fallback(monkeypatch):
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="test query",
+            query="What is in these files?",
             top_k=8,
             model_source="local",
         )
@@ -349,7 +380,7 @@ def test_full_file_row_coverage_debug_fields(monkeypatch):
     assert rag_debug["full_file_map_reduce"]["batch_diagnostics"][0]["batch_input_chars"] == 2048
 
 
-def test_tabular_intent_routes_to_sql_path(monkeypatch):
+def test_tabular_intent_routes_to_sql_path(monkeypatch, tmp_path: Path):
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
     file_id = uuid.uuid4()
@@ -364,20 +395,15 @@ def test_tabular_intent_routes_to_sql_path(monkeypatch):
                 is_processed="completed",
                 original_filename="table.xlsx",
                 custom_metadata={
-                    "tabular_dataset": {
-                        "dataset_id": "ds-1",
-                        "dataset_version": 1,
-                        "dataset_provenance_id": "prov-1",
-                        "tables": [
-                            {
-                                "table_name": "sheet_1",
-                                "sheet_name": "Sheet1",
-                                "row_count": 308,
-                                "columns": ["city", "amount"],
-                                "column_aliases": {},
-                            }
-                        ],
-                    }
+                    "tabular_dataset": _make_tabular_dataset_metadata(
+                        tmp_path,
+                        dataset_id="ds-1",
+                        table_name="sheet_1",
+                        sheet_name="Sheet1",
+                        row_count=308,
+                        columns=["city", "amount"],
+                        column_aliases={},
+                    )
                 },
             )
         ]
@@ -406,7 +432,7 @@ def test_tabular_intent_routes_to_sql_path(monkeypatch):
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="Сколько всего строк в таблице?",
+            query="How many rows are in this table file?",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -423,7 +449,7 @@ def test_tabular_intent_routes_to_sql_path(monkeypatch):
     assert "Deterministic tabular SQL result" in final_prompt
 
 
-def test_combined_tabular_route_uses_semantic_prefetch_before_sql(monkeypatch):
+def test_combined_tabular_route_uses_semantic_prefetch_before_sql(monkeypatch, tmp_path: Path):
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
     file_a = uuid.uuid4()
@@ -438,22 +464,17 @@ def test_combined_tabular_route_uses_semantic_prefetch_before_sql(monkeypatch):
                 chunks_count=14,
                 is_processed="completed",
                 original_filename="north.xlsx",
-                active_processing=SimpleNamespace(id=uuid.uuid4()),
+                active_processing=SimpleNamespace(id=uuid.uuid4(), status="ready"),
                 custom_metadata={
-                    "tabular_dataset": {
-                        "dataset_id": "ds-a",
-                        "dataset_version": 1,
-                        "dataset_provenance_id": "prov-a",
-                        "tables": [
-                            {
-                                "table_name": "north_sheet",
-                                "sheet_name": "North",
-                                "row_count": 120,
-                                "columns": ["region", "amount"],
-                                "column_aliases": {},
-                            }
-                        ],
-                    }
+                    "tabular_dataset": _make_tabular_dataset_metadata(
+                        tmp_path,
+                        dataset_id="ds-a",
+                        table_name="north_sheet",
+                        sheet_name="North",
+                        row_count=120,
+                        columns=["region", "amount"],
+                        column_aliases={},
+                    )
                 },
             ),
             SimpleNamespace(
@@ -463,22 +484,17 @@ def test_combined_tabular_route_uses_semantic_prefetch_before_sql(monkeypatch):
                 chunks_count=9,
                 is_processed="completed",
                 original_filename="south.xlsx",
-                active_processing=SimpleNamespace(id=uuid.uuid4()),
+                active_processing=SimpleNamespace(id=uuid.uuid4(), status="ready"),
                 custom_metadata={
-                    "tabular_dataset": {
-                        "dataset_id": "ds-b",
-                        "dataset_version": 1,
-                        "dataset_provenance_id": "prov-b",
-                        "tables": [
-                            {
-                                "table_name": "south_sheet",
-                                "sheet_name": "South",
-                                "row_count": 80,
-                                "columns": ["region", "amount"],
-                                "column_aliases": {},
-                            }
-                        ],
-                    }
+                    "tabular_dataset": _make_tabular_dataset_metadata(
+                        tmp_path,
+                        dataset_id="ds-b",
+                        table_name="south_sheet",
+                        sheet_name="South",
+                        row_count=80,
+                        columns=["region", "amount"],
+                        column_aliases={},
+                    )
                 },
             ),
         ]
@@ -526,7 +542,7 @@ def test_combined_tabular_route_uses_semantic_prefetch_before_sql(monkeypatch):
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="На каком листе есть region North и сколько там записей?",
+            query="Which sheet has region North and how many records are there?",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -710,7 +726,7 @@ def test_tabular_sql_invalid_payload_returns_clarification_without_narrative_fal
     assert rag_debug["rag_mode_effective"] == "tabular_sql_invalid_payload"
 
 
-def test_metric_critical_ambiguous_query_returns_clarification(monkeypatch):
+def test_metric_critical_ambiguous_query_returns_clarification(monkeypatch, tmp_path: Path):
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
     file_id = uuid.uuid4()
@@ -725,20 +741,15 @@ def test_metric_critical_ambiguous_query_returns_clarification(monkeypatch):
                 is_processed="completed",
                 original_filename="table.xlsx",
                 custom_metadata={
-                    "tabular_dataset": {
-                        "dataset_id": "ds-1",
-                        "dataset_version": 1,
-                        "dataset_provenance_id": "prov-1",
-                        "tables": [
-                            {
-                                "table_name": "sheet_1",
-                                "sheet_name": "Sheet1",
-                                "row_count": 100,
-                                "columns": ["region", "revenue"],
-                                "column_aliases": {"revenue": "Выручка"},
-                            }
-                        ],
-                    }
+                    "tabular_dataset": _make_tabular_dataset_metadata(
+                        tmp_path,
+                        dataset_id="ds-1",
+                        table_name="sheet_1",
+                        sheet_name="Sheet1",
+                        row_count=100,
+                        columns=["region", "revenue"],
+                        column_aliases={"revenue": "total_revenue"},
+                    )
                 },
             )
         ]
@@ -758,7 +769,7 @@ def test_metric_critical_ambiguous_query_returns_clarification(monkeypatch):
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="Какая средняя?",
+            query="What is the average in this file?",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -769,7 +780,7 @@ def test_metric_critical_ambiguous_query_returns_clarification(monkeypatch):
     assert context_docs == []
     assert rag_caveats == []
     assert rag_sources == []
-    assert "Уточните" in final_prompt
+    assert "Please clarify" in final_prompt
     assert rag_debug["requires_clarification"] is True
     assert rag_debug["planner_decision"]["route"] == "deterministic_analytics"
     assert "metric_critical_ambiguous" in rag_debug["planner_decision"]["reason_codes"]
@@ -804,7 +815,7 @@ def test_narrative_retrieval_runtime_error_surfaces_explicit_debug(monkeypatch):
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="Что написано в notes.txt?",
+            query="What is written in notes.txt?",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -815,9 +826,10 @@ def test_narrative_retrieval_runtime_error_surfaces_explicit_debug(monkeypatch):
     assert context_docs == []
     assert rag_caveats == []
     assert rag_sources == []
-    assert "ошибка внутреннего контура retrieval" in final_prompt.lower()
+    assert "runtime" in final_prompt.lower()
     assert rag_debug["retrieval_mode"] == "narrative_error"
     assert rag_debug["executor_error_code"] == "retrieval_runtime_error"
+    assert rag_debug["controlled_response_state"] == "runtime_error"
     assert rag_debug["requires_clarification"] is True
 
 
@@ -860,7 +872,7 @@ def test_narrative_all_group_failures_surface_explicit_debug(monkeypatch):
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="Что есть в файлах?",
+            query="What is in these files?",
             top_k=8,
             model_source="local",
             rag_mode="auto",
@@ -871,9 +883,10 @@ def test_narrative_all_group_failures_surface_explicit_debug(monkeypatch):
     assert context_docs == []
     assert rag_caveats == []
     assert rag_sources == []
-    assert "retrieval failed" in final_prompt.lower()
+    assert "runtime" in final_prompt.lower()
     assert rag_debug["retrieval_mode"] == "narrative_error"
     assert rag_debug["executor_error_code"] == "retrieval_runtime_error"
+    assert rag_debug["controlled_response_state"] == "runtime_error"
     assert rag_debug["requires_clarification"] is True
 
 
@@ -1115,7 +1128,7 @@ def test_rag_prompt_emits_coverage_slo_metrics(monkeypatch):
             db=None,
             user_id=user_id,
             conversation_id=conversation_id,
-            query="Сделай полный анализ",
+            query="Do a full analysis of this file",
             top_k=8,
             model_source="local",
             rag_mode="full_file",

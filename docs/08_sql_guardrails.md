@@ -2,6 +2,7 @@
 
 ## Enforcement Scope
 `app/services/tabular/sql_guardrails.py` enforces safety for deterministic SQL path.
+Guardrails are also applied to SQL produced in guarded LLM tabular execution mode before runtime execution.
 
 ## Allowlist
 Allowed statement families only:

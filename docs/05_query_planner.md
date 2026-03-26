@@ -39,6 +39,15 @@ For this route:
 - executor metadata is emitted in debug/telemetry (`execution_route`, `executor_status`, `artifacts_count`),
 - response report format is language-aware (RU query -> RU report, EN query -> EN report).
 
+## Deterministic Analytics Execution Note (2026-03-26)
+
+For `deterministic_analytics` route, execution may run in one of two bounded modes inside tabular runtime:
+
+- `deterministic` (existing direct deterministic planner/executor path),
+- `llm_guarded` (structured LLM plan/spec generation with deterministic validation and bounded repair loop).
+
+Route contract remains unchanged at planner layer (`route=deterministic_analytics`), while runtime debug exposes execution mode and guarded-loop diagnostics.
+
 ## Clarification Path
 For metric-critical ambiguous queries against tabular datasets:
 - route remains deterministic,

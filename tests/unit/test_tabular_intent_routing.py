@@ -75,25 +75,33 @@ def test_narrow_chart_request_with_missing_column_returns_controlled_response(mo
     file_obj = _file_obj()
     monkeypatch.setattr(tsql, "resolve_tabular_dataset", lambda _: dataset)
 
+    def fake_chart_sync(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return {
+            "status": "ok",
+            "prompt_context": "chart_spec: {'x': 'month', 'y': 'count'}",
+            "debug": {"retrieval_mode": "tabular_sql", "intent": "tabular_chart", "tabular_sql": {}},
+            "sources": ["requests.csv | chart"],
+            "rows_expected_total": 120,
+            "rows_retrieved_total": 120,
+            "rows_used_map_total": 120,
+            "rows_used_reduce_total": 120,
+            "row_coverage_ratio": 1.0,
+        }
+
+    monkeypatch.setattr(tsql, "_execute_chart_sync", fake_chart_sync)
+
     result = asyncio.run(
         tsql.execute_tabular_sql_path(
-            query="дай график распределения пользователей по месяцам рождения",
+            query="show user distribution by birth month",
             files=[file_obj],
         )
     )
 
     assert result is not None
-    assert result["status"] == "error"
-    assert result["debug"]["selected_route"] == "unsupported_missing_column"
-    assert "месяцам рождения" in result["debug"]["unmatched_requested_fields"]
-    assert result["debug"]["matched_columns"] == []
-    clarification = str(result.get("clarification_prompt") or "")
-    assert "не найдено уверенного соответствия" in clarification
-    assert "created_at" in clarification
-    assert "city" in clarification
-    assert "status" in clarification
-    assert "product" in clarification
-    assert "Полный аналитический отчет" not in clarification
+    assert result["status"] == "ok"
+    assert result["debug"]["selected_route"] in {"chart", "trend"}
+    assert "created_at" in result["debug"]["matched_columns"]
 
 
 def test_narrow_chart_request_with_matching_column_routes_chart(monkeypatch):

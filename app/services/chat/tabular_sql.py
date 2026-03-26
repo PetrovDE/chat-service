@@ -50,6 +50,7 @@ from app.services.chat.tabular_sql_pipeline import (
     execute_lookup_sync_pipeline,
     execute_profile_sync_pipeline,
 )
+from app.services.chat.tabular_llm_guarded_planner import maybe_execute_llm_guarded_tabular
 from app.services.chat.tabular_temporal_planner import (
     build_temporal_aggregation_plan,
     build_temporal_bucket_expression,
@@ -88,6 +89,18 @@ def is_tabular_aggregate_intent(query: str) -> bool:
 
 def detect_tabular_intent(query: str) -> Optional[str]:
     return detect_legacy_tabular_intent(query)
+
+
+def _collect_eligible_tabular_files(files: Sequence[Any]) -> List[Any]:
+    eligible_files: List[Any] = []
+    for file_obj in list(files or []):
+        file_extension = str(
+            getattr(file_obj, "extension", getattr(file_obj, "file_type", "")) or ""
+        ).lower().lstrip(".")
+        if file_extension not in {"xlsx", "xls", "csv", "tsv"}:
+            continue
+        eligible_files.append(file_obj)
+    return eligible_files
 
 
 def _norm(text: str) -> str:
@@ -865,6 +878,29 @@ def _apply_scope_debug_fields(*, payload: Dict[str, Any], scope_debug: Dict[str,
     return apply_tabular_debug_fields(payload, fields=fields)
 
 
+async def _maybe_execute_llm_guarded_payload(
+    *,
+    query: str,
+    parsed_query_route: str,
+    selected_route: str,
+    dataset: ResolvedTabularDataset,
+    table: ResolvedTabularTable,
+    target_file: Any,
+    scope_debug_fields: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    llm_guarded_payload = await maybe_execute_llm_guarded_tabular(
+        query=query,
+        parsed_query_route=parsed_query_route,
+        selected_route=selected_route,
+        dataset=dataset,
+        table=table,
+        target_file=target_file,
+    )
+    if isinstance(llm_guarded_payload, dict):
+        return _apply_scope_debug_fields(payload=llm_guarded_payload, scope_debug=scope_debug_fields)
+    return None
+
+
 def _execute_chart_sync(
     *,
     query: str,
@@ -1020,25 +1056,15 @@ async def execute_tabular_sql_path(
     query: str,
     files: List[Any],
 ) -> Optional[Dict[str, Any]]:
-    eligible_files: List[Any] = []
-    for file_obj in list(files or []):
-        file_extension = str(
-            getattr(file_obj, "extension", getattr(file_obj, "file_type", "")) or ""
-        ).lower().lstrip(".")
-        if file_extension not in {"xlsx", "xls", "csv", "tsv"}:
-            continue
-        eligible_files.append(file_obj)
-
     scope_decision = select_tabular_scope(
         query=query,
-        files=eligible_files,
+        files=_collect_eligible_tabular_files(files),
         resolve_dataset_fn=resolve_tabular_dataset,
     )
     scope_debug_fields = dict(scope_decision.debug_fields or {})
     parsed_query = parse_tabular_query(query)
     if scope_decision.status == "no_tabular_dataset":
         return None
-
     if scope_decision.status == "ambiguous_file":
         scope_kind = "file"
         return build_scope_clarification_route_payload(
@@ -1047,7 +1073,6 @@ async def execute_tabular_sql_path(
             scope_options=list(scope_decision.clarification_options or []),
             scope_debug=scope_debug_fields,
         )
-
     if scope_decision.status == "ambiguous_table" and parsed_query.route != "schema_question":
         scope_kind = "sheet/table"
         return build_scope_clarification_route_payload(
@@ -1065,10 +1090,22 @@ async def execute_tabular_sql_path(
 
     intent_decision = classify_tabular_query(query=query, table=table)
     intent_kind = intent_decision.legacy_intent
-    if intent_kind is None:
+    if intent_kind is None:  # pragma: no cover - defensive intent gate
         return None
 
     selected_route = str(intent_decision.selected_route or "")
+    llm_guarded_payload = await _maybe_execute_llm_guarded_payload(
+        query=query,
+        parsed_query_route=str(parsed_query.route or ""),
+        selected_route=selected_route,
+        dataset=dataset,
+        table=table,
+        target_file=target_file,
+        scope_debug_fields=scope_debug_fields,
+    )
+    if isinstance(llm_guarded_payload, dict):
+        return llm_guarded_payload
+
     if selected_route == "unsupported_missing_column":
         payload = _build_missing_column_response(
             query=query,

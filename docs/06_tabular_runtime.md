@@ -137,3 +137,36 @@ Short follow-up continuity contract for tabular requests:
 
 - short refinement turns (for example `use created_at`, `group by month from dates`) can reuse prior tabular user intent
 - follow-up reuse is constrained to prior tabular intent and short refinement messages; it is not applied globally
+
+## Update 2026-03-26 (LLM-Guarded Semantic Planner Loop)
+
+Tabular analytics now includes an optional LLM-first guarded planner loop for semantic analytical requests.
+
+Contract path (bounded, non-recursive):
+
+1. User query
+2. LLM structured analytic plan generation
+3. Deterministic plan validation
+4. LLM structured execution-spec generation from the validated plan
+5. Deterministic SQL/execution-spec validation
+6. Execution
+7. Post-execution validation
+8. Structured repair feedback to next attempt
+9. Stop at configured maximum attempts
+10. If still unresolved, return concise clarification (no unbounded retries)
+
+Implementation:
+
+- Deterministic entrypoint remains `execute_tabular_sql_path(...)`.
+- Guarded loop logic is extracted to `app/services/chat/tabular_llm_guarded_planner.py`.
+- Deterministic execution remains as bridge path when guarded mode is disabled or LLM runtime is unavailable.
+- Runtime does not allow direct unrestricted query-to-SQL generation; SQL is derived from validated structured plan/spec and revalidated before execution.
+
+Configuration:
+
+- `TABULAR_LLM_GUARDED_PLANNER_ENABLED`
+- `TABULAR_LLM_GUARDED_MAX_ATTEMPTS` (explicitly bounded, max 5)
+- `TABULAR_LLM_GUARDED_PLAN_TIMEOUT_SECONDS`
+- `TABULAR_LLM_GUARDED_EXECUTION_TIMEOUT_SECONDS`
+- `TABULAR_LLM_GUARDED_PLAN_MAX_TOKENS`
+- `TABULAR_LLM_GUARDED_EXECUTION_MAX_TOKENS`

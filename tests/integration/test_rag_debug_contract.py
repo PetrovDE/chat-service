@@ -211,6 +211,19 @@ def test_rag_debug_contract_stable_defaults_include_file_route_language_and_cach
     assert payload["source_datetime_field"] is None
     assert payload["derived_temporal_dimension"] is None
     assert payload["temporal_plan_status"] == "not_requested"
+    assert payload["planner_mode"] == "deterministic"
+    assert payload["analytic_plan_version"] == "none"
+    assert payload["analytic_plan_json"] == {}
+    assert payload["plan_validation_status"] == "not_attempted"
+    assert payload["sql_generation_mode"] == "deterministic"
+    assert payload["sql_validation_status"] == "not_attempted"
+    assert payload["post_execution_validation_status"] == "not_attempted"
+    assert payload["repair_iteration_index"] == 0
+    assert payload["repair_iteration_count"] == 0
+    assert payload["repair_failure_reason"] == "none"
+    assert payload["clarification_triggered_after_retries"] is False
+    assert payload["final_execution_mode"] == "unknown"
+    assert payload["final_selected_route"] == "unknown"
     assert payload["followup_context_used"] is False
     assert payload["prior_tabular_intent_reused"] is False
     assert "debug_sections" in payload
@@ -219,6 +232,8 @@ def test_rag_debug_contract_stable_defaults_include_file_route_language_and_cach
     assert payload["debug_sections"]["retrieval"]["retrieval_hits_count"] == 0
     assert payload["debug_sections"]["tabular"]["temporal_plan_status"] == "not_requested"
     assert payload["debug_sections"]["continuity"]["followup_context_used"] is False
+    assert payload["debug_sections"]["planner"]["planner_mode"] == "deterministic"
+    assert payload["debug_sections"]["planner"]["plan_validation_status"] == "not_attempted"
 
 
 def test_rag_debug_contract_file_aware_tabular_fields_are_preserved():

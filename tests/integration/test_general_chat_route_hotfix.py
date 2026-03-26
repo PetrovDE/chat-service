@@ -45,6 +45,38 @@ def test_no_files_greeting_routes_to_general_chat(monkeypatch):
     assert rag_debug["file_resolution_status"] == "not_requested"
 
 
+def test_general_chat_route_unaffected_when_llm_guarded_tabular_enabled(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+
+    async def fake_get_conversation_files(db, conversation_id, user_id):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_conversation_files)
+    monkeypatch.setattr(rag_builder.settings, "TABULAR_LLM_GUARDED_PLANNER_ENABLED", True)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="hello",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is False
+    assert context_docs == []
+    assert rag_caveats == []
+    assert rag_sources == []
+    assert isinstance(final_prompt, str) and final_prompt
+    assert rag_debug["detected_intent"] == "general_chat"
+    assert rag_debug["selected_route"] == "general_chat"
+    assert rag_debug["retrieval_mode"] == "assistant_direct"
+
+
 def test_no_files_generic_assistant_question_routes_to_general_chat(monkeypatch):
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()

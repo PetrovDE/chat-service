@@ -316,3 +316,24 @@ Continuity diagnostics were added for short tabular follow-up reuse:
 - `prior_tabular_intent_reused`
 
 `debug_sections.tabular` includes temporal planning fields so execution and fallback decisions are auditable for derived time-grain requests.
+
+## Update 2026-03-26 (LLM-Guarded Planner Diagnostics)
+
+Tabular debug payload includes additive guarded-planner observability fields:
+
+- `planner_mode` (`deterministic|llm_guarded`)
+- `analytic_plan_version`
+- `analytic_plan_json`
+- `plan_validation_status`
+- `sql_generation_mode`
+- `sql_validation_status`
+- `post_execution_validation_status`
+- `repair_iteration_index`
+- `repair_iteration_count`
+- `repair_failure_reason`
+- `clarification_triggered_after_retries`
+- `final_execution_mode`
+- `final_selected_route`
+
+`debug_sections` now includes additive `planner` section with the same fields.
+This makes each guarded repair iteration and final outcome inspectable without changing existing debug sections.

@@ -381,6 +381,32 @@ def build_standard_rag_debug_payload(
     payload["temporal_plan_status"] = str(payload.get("temporal_plan_status") or "not_requested")
     temporal_aggregation_plan = payload.get("temporal_aggregation_plan")
     payload["temporal_aggregation_plan"] = temporal_aggregation_plan if isinstance(temporal_aggregation_plan, dict) else {}
+    payload["planner_mode"] = str(payload.get("planner_mode") or "deterministic")
+    payload["analytic_plan_version"] = str(payload.get("analytic_plan_version") or "none")
+    analytic_plan_json = payload.get("analytic_plan_json")
+    payload["analytic_plan_json"] = analytic_plan_json if isinstance(analytic_plan_json, dict) else {}
+    payload["plan_validation_status"] = str(payload.get("plan_validation_status") or "not_attempted")
+    payload["sql_generation_mode"] = str(payload.get("sql_generation_mode") or "deterministic")
+    payload["sql_validation_status"] = str(payload.get("sql_validation_status") or "not_attempted")
+    payload["post_execution_validation_status"] = str(
+        payload.get("post_execution_validation_status") or "not_attempted"
+    )
+    payload["repair_iteration_index"] = int(payload.get("repair_iteration_index", 0) or 0)
+    payload["repair_iteration_count"] = int(payload.get("repair_iteration_count", 0) or 0)
+    payload["repair_failure_reason"] = str(payload.get("repair_failure_reason") or "none")
+    payload["clarification_triggered_after_retries"] = bool(
+        payload.get("clarification_triggered_after_retries", False)
+    )
+    payload["final_execution_mode"] = str(
+        payload.get("final_execution_mode")
+        or payload.get("execution_route")
+        or "unknown"
+    )
+    payload["final_selected_route"] = str(
+        payload.get("final_selected_route")
+        or payload.get("selected_route")
+        or "unknown"
+    )
     payload["followup_context_used"] = bool(payload.get("followup_context_used", False))
     payload["prior_tabular_intent_reused"] = bool(payload.get("prior_tabular_intent_reused", False))
     payload["chart_spec_generated"] = bool(payload.get("chart_spec_generated", False))
@@ -528,6 +554,21 @@ def build_standard_rag_debug_payload(
         "continuity": {
             "followup_context_used": payload["followup_context_used"],
             "prior_tabular_intent_reused": payload["prior_tabular_intent_reused"],
+        },
+        "planner": {
+            "planner_mode": payload["planner_mode"],
+            "analytic_plan_version": payload["analytic_plan_version"],
+            "analytic_plan_json": payload["analytic_plan_json"],
+            "plan_validation_status": payload["plan_validation_status"],
+            "sql_generation_mode": payload["sql_generation_mode"],
+            "sql_validation_status": payload["sql_validation_status"],
+            "post_execution_validation_status": payload["post_execution_validation_status"],
+            "repair_iteration_index": payload["repair_iteration_index"],
+            "repair_iteration_count": payload["repair_iteration_count"],
+            "repair_failure_reason": payload["repair_failure_reason"],
+            "clarification_triggered_after_retries": payload["clarification_triggered_after_retries"],
+            "final_execution_mode": payload["final_execution_mode"],
+            "final_selected_route": payload["final_selected_route"],
         },
         "cache": {
             "cache_hit": payload["cache_hit"],

@@ -114,4 +114,17 @@ Detailed runbook: [docs/20_alembic_clean_slate.md](docs/20_alembic_clean_slate.m
 - [docs/README.md](docs/README.md) (index, categories, reading order)
 - [docs/architecture_guardrails.md](docs/architecture_guardrails.md)
 - [docs/module_boundaries.md](docs/module_boundaries.md)
+- [docs/dev_quality_gates.md](docs/dev_quality_gates.md)
 - [docs/12_architecture_decisions.md](docs/12_architecture_decisions.md)
+
+## Architecture Checks
+Run architecture enforcement gates and a focused contract subset:
+
+```bash
+py -3 scripts/run_architecture_checks.py
+py -3 scripts/run_architecture_checks.py --with-contract-tests
+```
+
+Notes:
+- `--with-contract-tests` expects project dependencies in the active interpreter (`pip install -r requirements.txt`).
+- If optional contract-test dependencies are missing, the script prints a clear skip message and keeps strict architecture gate results as the effective outcome.

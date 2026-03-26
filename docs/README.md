@@ -8,22 +8,23 @@ Read in this order unless a task is narrowly scoped:
 
 1. `docs/architecture_guardrails.md`
 2. `docs/module_boundaries.md`
-3. `docs/00_project_map.md`
-4. `docs/01_service_spec.md`
-5. `docs/02_api_contracts.md`
-6. `docs/01_architecture_overview.md`
-7. `docs/03_rag_pipeline.md`
-8. `docs/04_ingestion_pipeline.md`
-9. `docs/05_query_planner.md`
-10. `docs/06_tabular_runtime.md`
-11. `docs/07_llm_routing.md`
-12. `docs/08_sql_guardrails.md`
-13. `docs/09_observability.md`
-14. `docs/10_eval_framework.md`
-15. `docs/13_persistent_user_files_architecture.md`
-16. `docs/19_big_file_refactor_complex_analytics.md`
-17. `docs/20_alembic_clean_slate.md`
-18. `docs/12_architecture_decisions.md` and all `docs/adr/*`
+3. `docs/dev_quality_gates.md`
+4. `docs/00_project_map.md`
+5. `docs/01_service_spec.md`
+6. `docs/02_api_contracts.md`
+7. `docs/01_architecture_overview.md`
+8. `docs/03_rag_pipeline.md`
+9. `docs/04_ingestion_pipeline.md`
+10. `docs/05_query_planner.md`
+11. `docs/06_tabular_runtime.md`
+12. `docs/07_llm_routing.md`
+13. `docs/08_sql_guardrails.md`
+14. `docs/09_observability.md`
+15. `docs/10_eval_framework.md`
+16. `docs/13_persistent_user_files_architecture.md`
+17. `docs/19_big_file_refactor_complex_analytics.md`
+18. `docs/20_alembic_clean_slate.md`
+19. `docs/12_architecture_decisions.md` and all `docs/adr/*`
 
 ## Reading Order for Codex / AI Agents / New Contributors
 
@@ -52,6 +53,7 @@ Read in this order unless a task is narrowly scoped:
 - `docs/08_sql_guardrails.md`
 - `docs/09_observability.md`
 - `docs/10_eval_framework.md`
+- `docs/dev_quality_gates.md`
 - `docs/12_architecture_decisions.md`
 - `docs/13_persistent_user_files_architecture.md`
 - `docs/19_big_file_refactor_complex_analytics.md`
@@ -75,6 +77,9 @@ Read in this order unless a task is narrowly scoped:
 ### Examples and Reference Material
 - `docs/examples/*`
 - `docs/ux/*`
+
+### Implementation Reports
+- `docs/architecture_enforcement_report.md`
 
 ### Historical / Archived Material
 - `docs/archive/legacy_architecture/*`

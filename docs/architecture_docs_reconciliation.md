@@ -148,16 +148,17 @@ Date: 2026-03-24
 ## 6) Remaining Risks
 
 - Some non-canonical debug/history artifacts may still include mixed-language content; they are archived or explicitly non-canonical, but full historical translation is still pending.
-- Architecture boundaries are documented, but enforcement is currently policy-first; CI automation for import boundaries and complexity checks is still to be implemented.
+- Architecture boundaries are now enforced by lightweight static gates (`scripts/run_architecture_checks.py` + `tests/architecture/test_architecture_enforcement.py`), but coverage is intentionally incremental and includes warning-only debt categories.
 - Large legacy runtime modules still exist and require incremental extraction under the new guardrails.
 - Canonical scope may still need one follow-up decision for frontend-only docs (`docs/04_frontend_architecture.md`) if the UI architecture diverges rapidly from backend release cadence.
 
 ## 7) Next Practical Coding Step
 
-Implement automated quality gates that enforce:
-- Import boundary checks per layer.
-- Module size and complexity thresholds.
-- Contract test coverage checks for routing/fallback/debug/matching behavior.
+Tighten the current gates incrementally:
+- Promote warning-only domain/service coupling checks to strict for changed domain files.
+- Add AST-level silent-fallback anti-pattern checks (first-column/table guesses).
+- Add import cycle checks for chat/tabular/rag/llm slices.
+- Ratchet line/function budgets downward after extraction refactors.
 
 ## 8) Patch List
 

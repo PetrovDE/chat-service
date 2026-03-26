@@ -66,3 +66,17 @@ Target CI and review gates:
 - Contract test suites for routing/fallback/debug and deterministic tabular behavior.
 
 If automated checks are missing, reviewers must enforce these gates manually until CI enforcement is added.
+
+## Current Automated Enforcement (2026-03-26)
+
+Active local/CI-ready command:
+
+```bash
+py -3 scripts/run_architecture_checks.py
+```
+
+Implemented checks are documented in `docs/dev_quality_gates.md` and include:
+- strict static boundary checks,
+- strict growth budgets for known hotspot modules/functions,
+- warning watchlists for existing architecture debt,
+- optional targeted contract-test subset for fallback/matching/debug behavior (`--with-contract-tests`).

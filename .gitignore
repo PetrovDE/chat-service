@@ -93,6 +93,8 @@ docker-compose.db.yml
 !/docs/architecture_guardrails.md
 !/docs/module_boundaries.md
 !/docs/architecture_docs_reconciliation.md
+!/docs/dev_quality_gates.md
+!/docs/architecture_enforcement_report.md
 !/docs/adr/
 !/docs/adr/*.md
 !/docs/runbooks/

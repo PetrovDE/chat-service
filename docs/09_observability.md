@@ -384,7 +384,7 @@ Deterministic tabular execution now emits engine-routing observability for paral
 
 - structured log event:
   - `tabular_analytics_engine_route`
-  - fields: `requested_mode`, `served_mode`, `shadow_enabled`, `fallback_reason`
+  - fields: `requested_mode`, `served_mode`, `shadow_enabled`, `fallback_reason`, `rollback_mode_used`, `legacy_activation_reason`
 - structured error logs:
   - `tabular_analytics_engine_primary_failed`
   - `tabular_analytics_engine_legacy_fallback_failed` (when fail-open fallback also fails)
@@ -395,6 +395,8 @@ Additive debug fields (backward compatible):
 - `analytics_engine_mode_served`
 - `analytics_engine_shadow_enabled`
 - `analytics_engine_fallback_reason`
+- `analytics_engine_rollback_mode_used`
+- `analytics_engine_legacy_activation_reason`
 - `analytics_engine_shadow` (summary of shadow outcome)
 - `analytics_engine_graph_version`
 - `analytics_engine_graph_trace`
@@ -418,6 +420,8 @@ Engine/graph routing visibility (additive):
 - `engine_mode_served` / `analytics_engine_mode_served`
 - `shadow_mode` / `analytics_engine_shadow_enabled`
 - `engine_fallback_reason` / `analytics_engine_fallback_reason`
+- `rollback_mode_used` / `analytics_engine_rollback_mode_used`
+- `legacy_activation_reason` / `analytics_engine_legacy_activation_reason`
 - `graph_run_id` / `analytics_engine_graph_run_id`
 - `graph_node_path` / `analytics_engine_graph_node_path`
 - `graph_attempts` / `analytics_engine_graph_attempts`
@@ -462,6 +466,12 @@ Structured log events now include engine/graph summary fields and correlation ID
 
 - `tabular_analytics_engine_route` includes mode request/serve, shadow state, fallback reason, graph run/path/attempts/stop reason, and correlation IDs.
 - `chat_route_decision` includes additive engine/graph and file/upload/document observability fields when present.
+
+Mode posture clarification for stabilization window:
+
+- default requested mode is `langgraph` when mode is omitted or invalid,
+- `legacy` requested mode is explicit emergency rollback,
+- `legacy_activation_reason` distinguishes explicit rollback (`explicit_rollback_mode`) from fail-open (`langgraph_fail_open_fallback`).
 
 Safety:
 

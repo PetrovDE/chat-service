@@ -209,12 +209,13 @@ Deterministic analytics runtime now supports a parallel LangGraph orchestration 
 
 Configuration:
 
-- `ANALYTICS_ENGINE_MODE=legacy|langgraph`
+- `ANALYTICS_ENGINE_MODE=langgraph|legacy`
 - `ANALYTICS_ENGINE_SHADOW=true|false`
 
 Runtime behavior:
 
-- `legacy` mode serves the existing deterministic execution path.
+- default mode is `langgraph` when mode is omitted or invalid.
+- `legacy` mode serves the existing deterministic execution path only as an explicit emergency rollback posture.
 - `langgraph` mode serves the LangGraph path and keeps explicit fail-open fallback to legacy when graph execution is unavailable.
 - when shadow mode is enabled, the non-served engine runs for comparison/debug only; served payload contract remains unchanged.
 
@@ -261,6 +262,8 @@ Engine-router additive fields are mirrored at the top-level debug contract for b
 - `engine_mode_served` (`legacy|langgraph`)
 - `shadow_mode`
 - `engine_fallback_reason`
+- `rollback_mode_used`
+- `legacy_activation_reason` (`none|explicit_rollback_mode|langgraph_fail_open_fallback`)
 
 These fields are additive and do not change the existing stable tabular/API payload envelope.
 

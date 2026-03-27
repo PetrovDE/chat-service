@@ -12,9 +12,9 @@ EngineExecutor = Callable[..., Awaitable[Optional[Dict[str, Any]]]]
 
 
 def _normalize_engine_mode(raw_mode: str) -> str:
-    normalized = str(raw_mode or "legacy").strip().lower()
+    normalized = str(raw_mode or "langgraph").strip().lower()
     if normalized not in {"legacy", "langgraph"}:
-        return "legacy"
+        return "langgraph"
     return normalized
 
 
@@ -87,6 +87,8 @@ def _attach_engine_debug(
     shadow_enabled: bool,
     shadow_summary: Optional[Dict[str, Any]],
     fallback_reason: str,
+    rollback_mode_used: bool,
+    legacy_activation_reason: str,
 ) -> Optional[Dict[str, Any]]:
     if not isinstance(payload, dict):
         return payload
@@ -121,6 +123,10 @@ def _attach_engine_debug(
         "engine_mode_served": served_mode,
         "shadow_mode": bool(shadow_enabled),
         "engine_fallback_reason": fallback_reason,
+        "analytics_engine_rollback_mode_used": bool(rollback_mode_used),
+        "analytics_engine_legacy_activation_reason": legacy_activation_reason,
+        "rollback_mode_used": bool(rollback_mode_used),
+        "legacy_activation_reason": legacy_activation_reason,
         "graph_run_id": graph_run_id,
         "graph_node_path": node_path,
         "graph_attempts": graph_attempts,
@@ -132,6 +138,21 @@ def _attach_engine_debug(
     debug.update(fields)
     tabular_debug.update(fields)
     return payload
+
+
+def _resolve_legacy_activation_reason(
+    *,
+    requested_mode: str,
+    served_mode: str,
+    fallback_reason: str,
+) -> str:
+    if served_mode != "legacy":
+        return "none"
+    if requested_mode == "legacy":
+        return "explicit_rollback_mode"
+    if str(fallback_reason or "none") != "none":
+        return "langgraph_fail_open_fallback"
+    return "legacy_served_unspecified"
 
 
 async def _run_executor_safe(
@@ -154,22 +175,22 @@ async def execute_tabular_engine_route(
     legacy_executor: EngineExecutor,
     langgraph_executor: EngineExecutor,
 ) -> Optional[Dict[str, Any]]:
-    requested_mode = _normalize_engine_mode(str(getattr(settings, "ANALYTICS_ENGINE_MODE", "legacy") or "legacy"))
+    requested_mode = _normalize_engine_mode(str(getattr(settings, "ANALYTICS_ENGINE_MODE", "langgraph") or "langgraph"))
     shadow_enabled = bool(getattr(settings, "ANALYTICS_ENGINE_SHADOW", False))
 
-    primary_executor = legacy_executor
-    primary_label = "legacy"
+    primary_executor = langgraph_executor
+    primary_label = "langgraph"
     shadow_executor: Optional[EngineExecutor] = None
     shadow_label = "none"
-    if requested_mode == "langgraph":
-        primary_executor = langgraph_executor
-        primary_label = "langgraph"
+    if requested_mode == "legacy":
+        primary_executor = legacy_executor
+        primary_label = "legacy"
         if shadow_enabled:
-            shadow_executor = legacy_executor
-            shadow_label = "legacy"
+            shadow_executor = langgraph_executor
+            shadow_label = "langgraph"
     elif shadow_enabled:
-        shadow_executor = langgraph_executor
-        shadow_label = "langgraph"
+        shadow_executor = legacy_executor
+        shadow_label = "legacy"
 
     primary_payload, primary_error = await _run_executor_safe(
         executor=primary_executor,
@@ -236,6 +257,13 @@ async def execute_tabular_engine_route(
             primary_payload = None
             fallback_reason = "langgraph_none_and_legacy_failed"
 
+    rollback_mode_used = served_mode == "legacy"
+    legacy_activation_reason = _resolve_legacy_activation_reason(
+        requested_mode=requested_mode,
+        served_mode=served_mode,
+        fallback_reason=fallback_reason,
+    )
+
     shadow_summary: Optional[Dict[str, Any]] = None
     if shadow_executor is not None:
         shadow_payload, shadow_error = await _run_executor_safe(
@@ -262,7 +290,8 @@ async def execute_tabular_engine_route(
         (
             "tabular_analytics_engine_route requested_mode=%s served_mode=%s "
             "shadow_enabled=%s fallback_reason=%s graph_run_id=%s graph_node_path=%s "
-            "graph_attempts=%s stop_reason=%s rid=%s uid=%s cid=%s fid=%s upload_id=%s document_id=%s"
+            "graph_attempts=%s stop_reason=%s rollback_mode_used=%s legacy_activation_reason=%s "
+            "rid=%s uid=%s cid=%s fid=%s upload_id=%s document_id=%s"
         ),
         requested_mode,
         served_mode,
@@ -272,6 +301,8 @@ async def execute_tabular_engine_route(
         ",".join([str(node) for node in list(primary_graph.get("analytics_engine_graph_node_path") or [])]),
         primary_graph.get("analytics_engine_graph_attempts"),
         primary_graph.get("analytics_engine_graph_stop_reason"),
+        str(rollback_mode_used).lower(),
+        legacy_activation_reason,
         request_id_ctx.get() or "-",
         user_id_ctx.get() or "-",
         conversation_id_ctx.get() or "-",
@@ -287,4 +318,6 @@ async def execute_tabular_engine_route(
         shadow_enabled=shadow_enabled,
         shadow_summary=shadow_summary,
         fallback_reason=fallback_reason,
+        rollback_mode_used=rollback_mode_used,
+        legacy_activation_reason=legacy_activation_reason,
     )

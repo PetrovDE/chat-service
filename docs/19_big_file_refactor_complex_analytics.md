@@ -434,3 +434,15 @@ Verification:
 - `tests/unit/test_complex_analytics_executor.py`
 - `tests/integration/test_complex_analytics_path.py`
 - `tests/smoke/test_complex_analytics_smoke.py`
+
+## Update 2026-03-27 (Stage 2: Remove Hardcoded Answers)
+
+Scope completed for production complex-analytics runtime:
+- removed template return branches from `codegen.py` for disabled/plan/contract/timeout/runtime failure cases,
+- removed runtime `template_runtime_fallback` execution branch from `_execute_complex_analytics_sync(...)`,
+- `execute_complex_analytics_path(...)` now rejects non-LLM code sources with explicit structured `codegen_failed` error payload,
+- `template_codegen.py` removed from production call graph (retained only as non-production utility).
+
+Compatibility note:
+- external API payload envelope is unchanged,
+- compose-stage deterministic local formatter fallback remains (evidence-based formatting of executed metrics/artifacts).

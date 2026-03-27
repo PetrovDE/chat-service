@@ -126,3 +126,11 @@ Trade-offs:
   - responses must reference concrete columns/metrics when context provides them.
 - External API contract unchanged; only internal behavior and optional debug details were extended.
 
+## Update 2026-03-27 (Stage 2: Remove Hardcoded Answers)
+- Production runtime no longer uses template-generated analytics code fallbacks.
+- `codegen.py` failure paths now return explicit metadata with `code_source=none` instead of template code payload.
+- `executor.py` no longer performs runtime `template_runtime_fallback`.
+- `execute_complex_analytics_path(...)` enforces `code_source=llm` for execution and returns structured `codegen_failed` when unavailable.
+- Compatibility posture:
+  - API envelope and debug structure remain backward compatible,
+  - deterministic compose-stage fallback remains for response quality only (based on executed evidence, not template analytics generation).

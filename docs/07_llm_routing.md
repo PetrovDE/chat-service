@@ -38,7 +38,8 @@ Important behavior:
 - The route is implemented as modular package `app/services/chat/complex_analytics/` with separate planner/codegen/sandbox/executor/composer modules.
 - Codegen/compose use the selected provider/model from request/conversation resolution; explicit local/provider selection has priority.
 - `COMPLEX_ANALYTICS_CODEGEN_FORCE_LOCAL=true` can be used as an operational override, but is not the default behavior contract.
-- Template fallback is enabled by default (`COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK=true`, `COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK=true`) and remains confined to safe complex-analytics template execution path.
+- Stage-2 runtime posture: template/codegen fallback answers are not used in production execution path.
+- If plan/codegen does not produce executable LLM code, route returns explicit structured `codegen_failed` error payload.
 - For visualization-required plans, codegen stage attempts safe auto-repair when generated script omits `save_plot(...)`; this remains inside sandbox constraints.
 - If plan/codegen fails or required visualization artifacts are missing, backend returns reason-specific clarification (no silent fallback to deterministic SQL path).
 - In `complex_analytics` short-circuit responses, report language follows user query language (RU/EN).
@@ -104,10 +105,10 @@ Execution-plane telemetry fields (non-breaking extension):
 - `executor_error_code`: nullable string
 - `artifacts_count`: int
 - `artifacts`: optional list for `complex_analytics` (`name`, relative `path`, `url`, `kind`, `content_type`); also emitted in SSE `done`
-- `rag_debug.complex_analytics.code_source`: `llm | template | none`
+- `rag_debug.complex_analytics.code_source`: `llm | none`
 - `rag_debug.complex_analytics.codegen`: codegen metadata (`codegen_status`, `codegen_error`, provider/mode/model)
-- `rag_debug.complex_analytics.complex_analytics_code_generation_prompt_status`: `success | fallback | disabled`
-- `rag_debug.complex_analytics.complex_analytics_code_generation_source`: `llm | template | none`
+- `rag_debug.complex_analytics.complex_analytics_code_generation_prompt_status`: `success | error | disabled`
+- `rag_debug.complex_analytics.complex_analytics_code_generation_source`: `llm | none`
 - `rag_debug.complex_analytics.complex_analytics_codegen.provider`: effective provider for codegen stage
 - `rag_debug.complex_analytics.codegen_auto_visual_patch_applied`: bool
 - `rag_debug.complex_analytics.complex_analytics_codegen.auto_visual_patch_applied`: bool
@@ -148,3 +149,9 @@ Execution-plane telemetry fields (non-breaking extension):
   - compose runtime moved to `app/services/chat/complex_analytics/executor_compose.py`,
   - executor entrypoint/orchestration remains in `executor.py`.
 
+## Update 2026-03-27 (Stage 2: Remove Hardcoded Answers)
+- Production runtime no longer executes template-generated analytics code for complex analytics.
+- `codegen.py` now returns explicit failure metadata (`code_source=none`) instead of template code on disabled/plan/validation/timeout/runtime failure paths.
+- `executor.py` no longer applies runtime `template_runtime_fallback`; execution errors are classified and returned through structured error payloads.
+- `execute_complex_analytics_path(...)` now rejects non-LLM code sources with explicit `codegen_failed` response path.
+- `template_codegen.py` is kept for non-production utility/testing only and is not in the production execution call graph.

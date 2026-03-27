@@ -770,6 +770,73 @@ result = {
     assert "Request was processed" not in final_response
 
 
+def test_complex_analytics_rejects_template_codegen_source_without_execution(tmp_path: Path, monkeypatch):
+    pytest.importorskip("duckdb")
+
+    adapter = SharedDuckDBParquetStorageAdapter(
+        dataset_root=tmp_path / "datasets",
+        catalog_path=tmp_path / "catalog.duckdb",
+    )
+    csv_path = tmp_path / "template_source.csv"
+    _write_csv(
+        csv_path,
+        [
+            "a,b",
+            "1,10",
+            "2,20",
+        ],
+    )
+    dataset = adapter.ingest(
+        file_id="tmpl-reject-1",
+        file_path=csv_path,
+        file_type="csv",
+        source_filename="template_source.csv",
+    )
+    assert dataset is not None
+    file_obj = SimpleNamespace(
+        id="tmpl-reject-1",
+        file_type="csv",
+        extension="csv",
+        original_filename="template_source.csv",
+        custom_metadata={"tabular_dataset": dataset},
+    )
+
+    async def fake_codegen(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return "result = {'status': 'ok'}", {
+            "code_source": "template",
+            "codegen_status": "error",
+            "codegen_error": "plan_invalid",
+        }
+
+    def fail_execute_sync(**kwargs):  # noqa: ANN003
+        raise AssertionError(f"executor must not run for template/non-llm source: {kwargs}")
+
+    async def fail_compose(**kwargs):  # noqa: ANN003
+        raise AssertionError(f"compose must not run for template/non-llm source: {kwargs}")
+
+    monkeypatch.setattr(ca, "_generate_complex_analysis_code", fake_codegen)
+    monkeypatch.setattr(ca, "_execute_complex_analytics_sync", fail_execute_sync)
+    monkeypatch.setattr(ca, "_compose_complex_analytics_response", fail_compose)
+
+    result = asyncio.run(
+        execute_complex_analytics_path(
+            query="Run python analytics and charts for this file",
+            files=[file_obj],
+            model_source="local",
+            provider_mode="explicit",
+            model_name="llama3.2",
+        )
+    )
+
+    assert result is not None
+    assert result["status"] == "error"
+    assert result["debug"]["executor_error_code"] == ca.COMPLEX_ANALYTICS_ERROR_CODEGEN
+    codegen_debug = result["debug"]["complex_analytics"]["details"]["codegen"]
+    assert codegen_debug["code_source"] == "template"
+    assert codegen_debug["codegen_error"] == "plan_invalid"
+
+
 def test_explicit_local_with_complex_short_circuit_does_not_call_llm(monkeypatch):
     orchestrator = ChatOrchestrator()
 

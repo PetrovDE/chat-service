@@ -111,7 +111,6 @@ def test_complex_executor_timeout_returns_classified_error(monkeypatch):
             )
         ],
         catalog_path=None,
-        sqlite_path=None,
     )
 
     monkeypatch.setattr(
@@ -136,7 +135,15 @@ def test_complex_executor_timeout_returns_classified_error(monkeypatch):
     result = asyncio.run(
         ca.execute_complex_analytics_path(
             query="python pandas analysis",
-            files=[SimpleNamespace(id="f1", file_type="xlsx", original_filename="x.xlsx", custom_metadata={})],
+            files=[
+                SimpleNamespace(
+                    id="f1",
+                    file_type="xlsx",
+                    extension="xlsx",
+                    original_filename="x.xlsx",
+                    custom_metadata={},
+                )
+            ],
         )
     )
     assert result is not None
@@ -279,7 +286,7 @@ result = {
     assert captured.get("provider_mode") == "explicit"
 
 
-def test_codegen_falls_back_to_template_when_generated_code_is_invalid(monkeypatch):
+def test_codegen_returns_error_meta_when_generated_code_is_invalid(monkeypatch):
     async def fake_generate_response(**kwargs):  # noqa: ANN003
         policy_class = str(kwargs.get("policy_class") or "")
         if policy_class == "complex_analytics_plan":
@@ -312,13 +319,13 @@ def test_codegen_falls_back_to_template_when_generated_code_is_invalid(monkeypat
         )
     )
 
-    assert code.lstrip().startswith("import pandas as pd")
-    assert meta.get("code_source") == "template"
-    assert meta.get("codegen_status") == "fallback"
+    assert code == ""
+    assert meta.get("code_source") == "none"
+    assert meta.get("codegen_status") == "error"
     assert str(meta.get("codegen_error") or "")
 
 
-def test_execute_path_returns_codegen_error_when_template_fallback_disabled(monkeypatch):
+def test_execute_path_returns_codegen_error_when_codegen_source_is_not_llm(monkeypatch):
     dataset = ResolvedTabularDataset(
         engine="duckdb_parquet",
         dataset_id="ds-codegen",
@@ -337,7 +344,6 @@ def test_execute_path_returns_codegen_error_when_template_fallback_disabled(monk
             )
         ],
         catalog_path=None,
-        sqlite_path=None,
     )
 
     monkeypatch.setattr(
@@ -352,12 +358,19 @@ def test_execute_path_returns_codegen_error_when_template_fallback_disabled(monk
 
     monkeypatch.setattr(ca.llm_manager, "generate_response", fake_generate_response)
     monkeypatch.setattr(ca.settings, "COMPLEX_ANALYTICS_CODEGEN_ENABLED", True)
-    monkeypatch.setattr(ca.settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK", False)
 
     result = asyncio.run(
         ca.execute_complex_analytics_path(
             query="run python dependency analytics",
-            files=[SimpleNamespace(id="f1", file_type="xlsx", original_filename="x.xlsx", custom_metadata={})],
+            files=[
+                SimpleNamespace(
+                    id="f1",
+                    file_type="xlsx",
+                    extension="xlsx",
+                    original_filename="x.xlsx",
+                    custom_metadata={},
+                )
+            ],
             model_source="local",
             provider_mode="explicit",
             model_name="llama3.2",
@@ -368,7 +381,7 @@ def test_execute_path_returns_codegen_error_when_template_fallback_disabled(monk
     assert result["debug"]["executor_error_code"] == ca.COMPLEX_ANALYTICS_ERROR_CODEGEN
 
 
-def test_execute_path_uses_template_fallback_when_enabled(monkeypatch):
+def test_execute_path_rejects_template_codegen_source(monkeypatch):
     dataset = ResolvedTabularDataset(
         engine="duckdb_parquet",
         dataset_id="ds-template",
@@ -387,7 +400,6 @@ def test_execute_path_uses_template_fallback_when_enabled(monkeypatch):
             )
         ],
         catalog_path=None,
-        sqlite_path=None,
     )
 
     monkeypatch.setattr(
@@ -404,45 +416,36 @@ def test_execute_path_uses_template_fallback_when_enabled(monkeypatch):
             "codegen_error": "missing_visualization_contract",
         }
 
-    def fake_execute_sync(**kwargs):  # noqa: ANN003
-        _ = kwargs
-        return {
-            "status": "ok",
-            "final_response": "template result",
-            "sources": [],
-            "artifacts": [],
-            "debug": {
-                "complex_analytics": {
-                    "metrics": {},
-                    "notes": [],
-                    "stdout": "",
-                    "code_preview": "",
-                    "response_status": "not_attempted",
-                }
-            },
-        }
+    def fail_execute_sync(**kwargs):  # noqa: ANN003
+        raise AssertionError(f"sync executor must not run when code_source is template: {kwargs}")
 
-    async def fake_compose(**kwargs):  # noqa: ANN003
-        _ = kwargs
-        return "", {"response_status": "fallback", "response_error_code": "empty_response"}
+    async def fail_compose(**kwargs):  # noqa: ANN003
+        raise AssertionError(f"compose must not run when code_source is template: {kwargs}")
 
     monkeypatch.setattr(ca, "_generate_complex_analysis_code", fake_codegen)
-    monkeypatch.setattr(ca, "_execute_complex_analytics_sync", fake_execute_sync)
-    monkeypatch.setattr(ca, "_compose_complex_analytics_response", fake_compose)
-    monkeypatch.setattr(ca.settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK", True)
+    monkeypatch.setattr(ca, "_execute_complex_analytics_sync", fail_execute_sync)
+    monkeypatch.setattr(ca, "_compose_complex_analytics_response", fail_compose)
 
     result = asyncio.run(
         ca.execute_complex_analytics_path(
             query="run python analytics with charts",
-            files=[SimpleNamespace(id="f1", file_type="xlsx", original_filename="x.xlsx", custom_metadata={})],
+            files=[
+                SimpleNamespace(
+                    id="f1",
+                    file_type="xlsx",
+                    extension="xlsx",
+                    original_filename="x.xlsx",
+                    custom_metadata={},
+                )
+            ],
             model_source="local",
             provider_mode="explicit",
             model_name="llama3.2",
         )
     )
     assert result is not None
-    assert result["status"] == "ok"
-    assert result["final_response"] == "template result"
+    assert result["status"] == "error"
+    assert result["debug"]["executor_error_code"] == ca.COMPLEX_ANALYTICS_ERROR_CODEGEN
 
 
 def test_broad_query_uses_local_formatter_without_compose_call(monkeypatch):
@@ -464,7 +467,6 @@ def test_broad_query_uses_local_formatter_without_compose_call(monkeypatch):
             )
         ],
         catalog_path=None,
-        sqlite_path=None,
     )
 
     monkeypatch.setattr(
@@ -476,9 +478,9 @@ def test_broad_query_uses_local_formatter_without_compose_call(monkeypatch):
     async def fake_codegen(**kwargs):  # noqa: ANN003
         _ = kwargs
         return "result = {'status': 'ok', 'metrics': {}, 'notes': [], 'artifacts': []}", {
-            "code_source": "template",
-            "codegen_status": "fallback",
-            "codegen_error": "missing_visualization_contract",
+            "code_source": "llm",
+            "codegen_status": "success",
+            "codegen_error": None,
         }
 
     def fake_execute_sync(**kwargs):  # noqa: ANN003
@@ -510,7 +512,15 @@ def test_broad_query_uses_local_formatter_without_compose_call(monkeypatch):
     result = asyncio.run(
         ca.execute_complex_analytics_path(
             query="Answer as senior analyst and analyze this file fully with feature relationships and charts",
-            files=[SimpleNamespace(id="f1", file_type="xlsx", original_filename="x.xlsx", custom_metadata={})],
+            files=[
+                SimpleNamespace(
+                    id="f1",
+                    file_type="xlsx",
+                    extension="xlsx",
+                    original_filename="x.xlsx",
+                    custom_metadata={},
+                )
+            ],
             model_source="local",
             provider_mode="explicit",
             model_name="llama3.2",

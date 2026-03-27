@@ -446,12 +446,8 @@ def run_complex_analytics_quality_eval(cases: Sequence[Dict[str, Any]], temp_dir
         passed = False
         original_generate_response = complex_executor.llm_manager.generate_response
         original_codegen_enabled = bool(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_ENABLED", True))
-        original_template_fallback = bool(getattr(settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK", True))
-        original_runtime_fallback = bool(getattr(settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK", True))
         try:
             settings.COMPLEX_ANALYTICS_CODEGEN_ENABLED = True
-            settings.COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK = True
-            settings.COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK = True
 
             compose_response = str(case.get("compose_response") or "Done.")
             codegen_response = str(case.get("codegen_response") or _default_complex_quality_codegen())
@@ -546,8 +542,6 @@ def run_complex_analytics_quality_eval(cases: Sequence[Dict[str, Any]], temp_dir
         finally:
             complex_executor.llm_manager.generate_response = original_generate_response
             settings.COMPLEX_ANALYTICS_CODEGEN_ENABLED = original_codegen_enabled
-            settings.COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK = original_template_fallback
-            settings.COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK = original_runtime_fallback
 
         latency_ms = (perf_counter() - started) * 1000.0
         latencies_ms.append(latency_ms)

@@ -110,8 +110,8 @@ Codegen controls:
 - `COMPLEX_ANALYTICS_CODEGEN_MAX_TOKENS`
 - `COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS`
 - `COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS_AIHUB_POLICY`
-- `COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK` (default: true)
-- `COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK` (default: true)
+- `COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK` (default: false; retained for compatibility, not used by Stage-2 production runtime path)
+- `COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK` (default: false; retained for compatibility, not used by Stage-2 production runtime path)
 - `COMPLEX_ANALYTICS_PREFER_LOCAL_COMPOSER_FOR_BROAD_QUERY` (default: true)
 - `COMPLEX_ANALYTICS_MAX_ARTIFACTS` (base artifact budget)
 - `COMPLEX_ANALYTICS_MAX_ARTIFACTS_HARD_CAP` (upper bound for adaptive artifact budget)
@@ -350,3 +350,9 @@ Tabular debug payload includes additive guarded-planner observability fields:
 
 `debug_sections` now includes additive `planner` section with the same fields.
 This makes each guarded repair iteration and final outcome inspectable without changing existing debug sections.
+
+## Update 2026-03-27 (Stage 2: Remove Hardcoded Answers)
+- Complex analytics runtime no longer executes template-generated analytics code in production path.
+- Codegen failure outcomes now keep `code_source=none` and explicit `codegen_error`; non-LLM code sources are rejected before sandbox execution.
+- Runtime no longer emits `template_runtime_fallback` execution behavior.
+- Compose-stage local formatter fallback remains unchanged (`response_status=fallback`) because it is deterministic formatting of executed evidence, not template analytics generation.

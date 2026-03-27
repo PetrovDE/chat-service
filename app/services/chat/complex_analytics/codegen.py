@@ -26,7 +26,6 @@ from .planner import (
     resolve_complex_analytics_routing,
 )
 from .sandbox import validate_python_security
-from .template_codegen import build_complex_analysis_code
 from .report_quality import is_broad_full_analysis_query
 
 logger = logging.getLogger(__name__)
@@ -179,7 +178,6 @@ async def generate_complex_analysis_code(
     llm_client: Optional[Any] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     client = llm_client or llm_manager
-    fallback_code = build_complex_analysis_code(query=query, primary_table_name=primary_table_name)
     meta: Dict[str, Any] = {
         "codegen_enabled": bool(getattr(settings, "COMPLEX_ANALYTICS_CODEGEN_ENABLED", True)),
         "codegen_attempted": False,
@@ -202,11 +200,10 @@ async def generate_complex_analysis_code(
     }
 
     if not meta["codegen_enabled"]:
-        meta["code_source"] = "template"
-        meta["complex_analytics_code_generation_source"] = "template"
-        meta["codegen_status"] = "fallback"
+        meta["codegen_status"] = "disabled"
         meta["codegen_error"] = "codegen_disabled"
-        return fallback_code, CodegenMeta(meta).as_dict()
+        inc_counter("complex_analytics_codegen_total", status="fallback", reason="codegen_disabled")
+        return "", CodegenMeta(meta).as_dict()
 
     profile = build_dataframe_profile_for_codegen(primary_frame)
     plan_prompt = build_complex_analysis_plan_prompt(
@@ -329,25 +326,25 @@ async def generate_complex_analysis_code(
 
         if plan_error or not isinstance(parsed_plan, dict):
             logger.info(
-                "complex_analytics.codegen_plan status=fallback reason=%s provider=%s mode=%s",
+                "complex_analytics.codegen_plan status=error reason=%s provider=%s mode=%s",
                 plan_error,
                 routing_source,
                 routing_mode,
             )
-            meta["codegen_plan_status"] = "fallback"
+            meta["codegen_plan_status"] = "error"
             meta["codegen_plan_error"] = plan_error
-            meta["codegen_status"] = "fallback"
+            meta["codegen_status"] = "error"
             meta["codegen_error"] = plan_error
-            meta["code_source"] = "template"
-            meta["complex_analytics_code_generation_prompt_status"] = "fallback"
-            meta["complex_analytics_code_generation_source"] = "template"
+            meta["code_source"] = "none"
+            meta["complex_analytics_code_generation_prompt_status"] = "error"
+            meta["complex_analytics_code_generation_source"] = "none"
             meta["complex_analytics_codegen"] = {
                 "provider": routing_source,
                 "model_route": None,
                 "auto_visual_patch_applied": bool(meta.get("codegen_auto_visual_patch_applied", False)),
             }
             inc_counter("complex_analytics_codegen_total", status="fallback", reason=plan_error)
-            return fallback_code, CodegenMeta(meta).as_dict()
+            return "", CodegenMeta(meta).as_dict()
 
         meta["codegen_plan_status"] = "success"
         meta["complex_analytics_code_generation_prompt_status"] = "success"
@@ -408,22 +405,22 @@ async def generate_complex_analysis_code(
 
         if contract_error:
             logger.info(
-                "complex_analytics.codegen_execute status=fallback reason=%s provider=%s mode=%s",
+                "complex_analytics.codegen_execute status=error reason=%s provider=%s mode=%s",
                 contract_error,
                 routing_source,
                 routing_mode,
             )
-            meta["codegen_status"] = "fallback"
+            meta["codegen_status"] = "error"
             meta["codegen_error"] = contract_error
-            meta["code_source"] = "template"
-            meta["complex_analytics_code_generation_source"] = "template"
+            meta["code_source"] = "none"
+            meta["complex_analytics_code_generation_source"] = "none"
             meta["complex_analytics_codegen"] = {
                 "provider": routing_source,
                 "model_route": codegen_result.get("model_route") if isinstance(codegen_result, dict) else None,
                 "auto_visual_patch_applied": bool(meta.get("codegen_auto_visual_patch_applied", False)),
             }
             inc_counter("complex_analytics_codegen_total", status="fallback", reason=contract_error)
-            return fallback_code, CodegenMeta(meta).as_dict()
+            return "", CodegenMeta(meta).as_dict()
 
         meta["code_source"] = "llm"
         meta["complex_analytics_code_generation_source"] = "llm"
@@ -446,34 +443,34 @@ async def generate_complex_analysis_code(
         return candidate, CodegenMeta(meta).as_dict()
     except TimeoutError:
         logger.info(
-            "complex_analytics.codegen_execute status=fallback reason=timeout provider=%s mode=%s timeout_plan=%ss timeout_codegen=%ss",
+            "complex_analytics.codegen_execute status=error reason=timeout provider=%s mode=%s timeout_plan=%ss timeout_codegen=%ss",
             routing_source,
             routing_mode,
             plan_timeout_seconds,
             code_timeout_seconds,
         )
-        meta["codegen_status"] = "fallback"
+        meta["codegen_status"] = "error"
         meta["codegen_error"] = "timeout"
-        meta["code_source"] = "template"
+        meta["code_source"] = "none"
         meta["complex_analytics_code_generation_prompt_status"] = (
-            "fallback" if meta.get("codegen_plan_status") != "success" else "success"
+            "error" if meta.get("codegen_plan_status") != "success" else "success"
         )
-        meta["complex_analytics_code_generation_source"] = "template"
+        meta["complex_analytics_code_generation_source"] = "none"
         meta["complex_analytics_codegen"] = {
             "provider": routing_source,
             "model_route": None,
             "auto_visual_patch_applied": bool(meta.get("codegen_auto_visual_patch_applied", False)),
         }
         inc_counter("complex_analytics_codegen_total", status="fallback", reason="timeout")
-        return fallback_code, CodegenMeta(meta).as_dict()
+        return "", CodegenMeta(meta).as_dict()
     except Exception as exc:  # pragma: no cover - provider/runtime dependent
-        meta["codegen_status"] = "fallback"
+        meta["codegen_status"] = "error"
         meta["codegen_error"] = f"runtime_error:{type(exc).__name__}"
-        meta["code_source"] = "template"
+        meta["code_source"] = "none"
         meta["complex_analytics_code_generation_prompt_status"] = (
-            "fallback" if meta.get("codegen_plan_status") != "success" else "success"
+            "error" if meta.get("codegen_plan_status") != "success" else "success"
         )
-        meta["complex_analytics_code_generation_source"] = "template"
+        meta["complex_analytics_code_generation_source"] = "none"
         meta["complex_analytics_codegen"] = {
             "provider": routing_source,
             "model_route": None,
@@ -481,11 +478,10 @@ async def generate_complex_analysis_code(
         }
         logger.warning("Complex analytics codegen failed: %s", exc)
         inc_counter("complex_analytics_codegen_total", status="fallback", reason="runtime_error")
-        return fallback_code, CodegenMeta(meta).as_dict()
+        return "", CodegenMeta(meta).as_dict()
 
 # Compatibility aliases.
 _build_codegen_prompt = build_codegen_prompt
 _validate_generated_code_contract = validate_generated_code_contract
 _inject_visualization_fallback = inject_visualization_fallback
 _generate_complex_analysis_code = generate_complex_analysis_code
-_build_complex_analysis_code = build_complex_analysis_code

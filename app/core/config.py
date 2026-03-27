@@ -188,8 +188,11 @@ class Settings(BaseSettings):
     COMPLEX_ANALYTICS_RESPONSE_TIMEOUT_SECONDS_AIHUB_POLICY: float = Field(default=20.0, ge=1.0, le=300.0)
     COMPLEX_ANALYTICS_RESPONSE_MAX_TOKENS: int = Field(default=1800, ge=256, le=4096)
     COMPLEX_ANALYTICS_PREFER_LOCAL_COMPOSER_FOR_BROAD_QUERY: bool = Field(default=True)
-    COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK: bool = Field(default=True)
-    COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK: bool = Field(default=True)
+    # Deprecated compatibility flags.
+    # Stage-2 removed template codegen/runtime fallbacks from production execution path.
+    # These settings are retained to avoid env/config breakage and are intentionally unused.
+    COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK: bool = Field(default=False)
+    COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK: bool = Field(default=False)
     ENABLE_POST_ANSWER_SUMMARIZE: bool = Field(default=False)
     ENABLE_CACHE: bool = Field(default=True)
     MAX_FILESIZE_MB: int = Field(default=50, ge=1)

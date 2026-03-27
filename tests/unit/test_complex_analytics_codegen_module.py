@@ -158,3 +158,23 @@ result = {
     assert meta.get("codegen_status") == "success"
     assert float(meta.get("codegen_plan_timeout_seconds") or 0.0) >= 0.2
     assert float(meta.get("codegen_timeout_seconds") or 0.0) >= 0.2
+
+
+def test_codegen_disabled_returns_explicit_error_without_template_code(monkeypatch):
+    monkeypatch.setattr(codegen.settings, "COMPLEX_ANALYTICS_CODEGEN_ENABLED", False)
+
+    generated_code, meta = asyncio.run(
+        codegen.generate_complex_analysis_code(
+            query="Analyze dataset",
+            primary_table_name="sheet_1",
+            primary_frame=pd.DataFrame({"x": [1, 2, 3]}),
+            model_source="local",
+            provider_mode="explicit",
+            model_name="llama3.2",
+        )
+    )
+
+    assert generated_code == ""
+    assert meta.get("code_source") == "none"
+    assert meta.get("codegen_status") == "disabled"
+    assert meta.get("codegen_error") == "codegen_disabled"

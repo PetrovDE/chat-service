@@ -23,7 +23,6 @@ from .artifacts import (
 )
 from .analysis_enrichment import enrich_metrics_from_dataframe
 from .codegen import (
-    build_complex_analysis_code,
     generate_complex_analysis_code,
 )
 from .composer import (
@@ -194,7 +193,6 @@ def _execute_complex_analytics_sync(
     _cleanup_complex_analytics_artifacts(artifacts_root=artifacts_root)
     artifacts_dir = artifacts_root / run_id
 
-    effective_code = code
     effective_codegen_meta = dict(codegen_meta or {})
     primary_frame = datasets.get(primary_table.table_name)
     max_artifacts_limit = resolve_max_artifacts_limit(
@@ -209,38 +207,17 @@ def _execute_complex_analytics_sync(
     )
     try:
         sandbox_result = execute_sandboxed_python(
-            code=effective_code,
+            code=code,
             datasets=datasets,
             artifacts_dir=artifacts_dir,
             max_output_chars=int(settings.COMPLEX_ANALYTICS_MAX_OUTPUT_CHARS),
             max_artifacts=max_artifacts_limit,
         )
     except Exception as exec_error:
-        if (
-            str((effective_codegen_meta or {}).get("code_source") or "") == "llm"
-            and bool(getattr(settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_RUNTIME_FALLBACK", False))
-        ):
-            fallback_code = _build_complex_analysis_code(
-                query=query,
-                primary_table_name=primary_table.table_name,
-            )
-            effective_code = fallback_code
-            effective_codegen_meta["code_source"] = "template_runtime_fallback"
-            effective_codegen_meta["codegen_status"] = "runtime_fallback"
-            effective_codegen_meta["codegen_error"] = f"runtime_exec:{type(exec_error).__name__}"
-            inc_counter("complex_analytics_codegen_total", status="fallback", reason="runtime_exec_error")
-            sandbox_result = execute_sandboxed_python(
-                code=effective_code,
-                datasets=datasets,
-                artifacts_dir=artifacts_dir,
-                max_output_chars=int(settings.COMPLEX_ANALYTICS_MAX_OUTPUT_CHARS),
-                max_artifacts=max_artifacts_limit,
-            )
-        else:
-            raise ComplexAnalyticsValidationError(
-                COMPLEX_ANALYTICS_ERROR_VALIDATION,
-                f"Generated code runtime failure: {type(exec_error).__name__}: {exec_error}",
-            ) from exec_error
+        raise ComplexAnalyticsValidationError(
+            COMPLEX_ANALYTICS_ERROR_VALIDATION,
+            f"Generated code runtime failure: {type(exec_error).__name__}: {exec_error}",
+        ) from exec_error
 
     metrics = sandbox_result.result.get("metrics")
     notes = sandbox_result.result.get("notes")
@@ -291,7 +268,7 @@ def _execute_complex_analytics_sync(
         metrics=metrics if isinstance(metrics, dict) else {},
         notes=notes if isinstance(notes, list) else [],
         artifacts=response_artifacts,
-        executed_code=effective_code,
+        executed_code=code,
         include_code=_wants_python_code(query),
         insights=insights if isinstance(insights, list) else [],
     )
@@ -323,8 +300,8 @@ def _execute_complex_analytics_sync(
                 "table_version": primary_table.table_version,
                 "table_provenance_id": primary_table.provenance_id,
                 "stdout": sandbox_result.stdout,
-                "code_preview": effective_code[:1200],
-                "code_source": str((effective_codegen_meta or {}).get("code_source") or "template"),
+                "code_preview": code[:1200],
+                "code_source": str((effective_codegen_meta or {}).get("code_source") or "none"),
                 "codegen_auto_visual_patch_applied": bool(
                     (effective_codegen_meta or {}).get("codegen_auto_visual_patch_applied")
                     or (
@@ -405,14 +382,14 @@ async def execute_complex_analytics_path(
         model_name=model_name,
     )
     code_source = str((codegen_meta or {}).get("code_source") or "none")
-    if code_source != "llm" and not bool(getattr(settings, "COMPLEX_ANALYTICS_ALLOW_TEMPLATE_FALLBACK", False)):
+    if code_source != "llm":
         reason = str((codegen_meta or {}).get("codegen_error") or "codegen_unavailable")
         return _build_error_payload(
             query=query,
             target_file=target_file,
             dataset=dataset,
             code=COMPLEX_ANALYTICS_ERROR_CODEGEN,
-            message=f"Template fallback disabled; reason={reason}",
+            message=f"Code generation did not produce executable llm code; reason={reason}",
             debug_details={"codegen": dict(codegen_meta or {})},
         )
 
@@ -467,7 +444,6 @@ _artifact_public_url = artifact_public_url
 _artifact_relative_path = artifact_relative_path
 _sanitize_artifact_for_response = sanitize_artifact_for_response
 _cleanup_complex_analytics_artifacts = cleanup_complex_analytics_artifacts
-_build_complex_analysis_code = build_complex_analysis_code
 _format_complex_analytics_answer = format_complex_analytics_answer
 _wants_python_code = wants_python_code
 _compose_complex_analytics_response = compose_complex_analytics_response

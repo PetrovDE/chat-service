@@ -15,6 +15,7 @@ from app.services.chat.controlled_response_composer import (
 
 logger = logging.getLogger(__name__)
 RagPromptResult = Tuple[str, bool, Optional[Dict[str, Any]], List[Dict[str, Any]], List[str], List[str]]
+READY_PROCESSING_STATUSES = {"ready", "completed", "partial_success", "partial_failed"}
 
 _QUOTED_FILENAME_TOKEN_RE = re.compile(
     r"[\"'`\u00ab]([^\"'`\u00bb]{1,220}\.[A-Za-z0-9]{1,10})[\"'`\u00bb]"
@@ -257,7 +258,6 @@ async def load_conversation_files(
         files = [file_obj for file_obj in files if str(file_obj.id) in allowed_ids]
         logger.info("Conversation files filtered by payload file_ids: %d", len(files))
 
-    ready_statuses = {"ready", "completed", "partial_success", "partial_failed"}
     eligible: List[Any] = []
     skipped_without_active: List[str] = []
     for file_obj in files:
@@ -267,7 +267,7 @@ async def load_conversation_files(
         active_processing = getattr(file_obj, "active_processing", None)
         processing_id = getattr(active_processing, "id", None) if active_processing is not None else None
         processing_status = str(getattr(active_processing, "status", "") or "").lower()
-        if processing_id is None or processing_status not in ready_statuses:
+        if processing_id is None or processing_status not in READY_PROCESSING_STATUSES:
             skipped_without_active.append(str(getattr(file_obj, "id", "-")))
             continue
         eligible.append(file_obj)
@@ -279,6 +279,85 @@ async def load_conversation_files(
             ",".join(skipped_without_active),
         )
     return eligible
+
+
+def _increment_bucket(counter: Dict[str, int], key: str) -> None:
+    counter[key] = int(counter.get(key, 0) or 0) + 1
+
+
+def _build_file_readiness_summary(files: List[Any]) -> Dict[str, Any]:
+    by_file_status: Dict[str, int] = {}
+    by_active_processing_status: Dict[str, int] = {}
+    ready_active = 0
+    pending_active = 0
+    no_active_processing = 0
+
+    for file_obj in files:
+        file_status = str(getattr(file_obj, "status", "") or "").lower() or "unknown"
+        _increment_bucket(by_file_status, file_status)
+
+        active_processing = getattr(file_obj, "active_processing", None)
+        if active_processing is None:
+            no_active_processing += 1
+            _increment_bucket(by_active_processing_status, "missing")
+            continue
+
+        processing_status = str(getattr(active_processing, "status", "") or "").lower() or "unknown"
+        _increment_bucket(by_active_processing_status, processing_status)
+        if processing_status in READY_PROCESSING_STATUSES and getattr(active_processing, "id", None) is not None:
+            ready_active += 1
+        else:
+            pending_active += 1
+
+    return {
+        "linked_files_total": int(len(files)),
+        "ready_active_processing_files": int(ready_active),
+        "pending_or_not_ready_files": int(pending_active),
+        "missing_active_processing_files": int(no_active_processing),
+        "file_status_counts": by_file_status,
+        "active_processing_status_counts": by_active_processing_status,
+    }
+
+
+async def inspect_conversation_file_readiness(
+    *,
+    crud_file_module,
+    db: AsyncSession,
+    conversation_id: uuid.UUID,
+    user_id: uuid.UUID,
+    file_ids: Optional[List[str]],
+) -> Dict[str, Any]:
+    try:
+        files = await crud_file_module.get_conversation_files(db, conversation_id=conversation_id, user_id=user_id)
+    except Exception as exc:
+        logger.warning("Could not inspect conversation file readiness: %s", exc)
+        return {
+            "diagnostics_available": False,
+            "diagnostics_error": type(exc).__name__,
+        }
+
+    if file_ids:
+        allowed_ids = {str(item) for item in file_ids}
+        files = [file_obj for file_obj in files if str(getattr(file_obj, "id", "")) in allowed_ids]
+
+    summary = _build_file_readiness_summary(list(files))
+    linked_total = int(summary.get("linked_files_total", 0) or 0)
+    ready_total = int(summary.get("ready_active_processing_files", 0) or 0)
+    pending_total = int(summary.get("pending_or_not_ready_files", 0) or 0)
+    missing_total = int(summary.get("missing_active_processing_files", 0) or 0)
+
+    if linked_total <= 0:
+        no_context_reason = "no_linked_files"
+    elif ready_total <= 0 and (pending_total > 0 or missing_total > 0):
+        no_context_reason = "indexing_incomplete_or_not_ready"
+    else:
+        no_context_reason = "no_retrievable_files"
+
+    return {
+        "diagnostics_available": True,
+        "no_context_reason": no_context_reason,
+        **summary,
+    }
 
 
 async def resolve_file_references(

@@ -510,6 +510,18 @@ def test_retrieval_where_contract_supports_chat_and_processing():
     assert where["embedding_mode"] == "local"
 
 
+def test_retrieval_where_contract_uses_namespace_field():
+    where = build_where(
+        conversation_id="chat-1",
+        user_id="user-1",
+        file_ids=["file-1"],
+        namespace="documents",
+    )
+    assert where is not None
+    assert where["namespace"] == "documents"
+    assert "collection" not in where
+
+
 def test_grouped_retrieval_passes_processing_ids():
     async def scenario():
         captured = {}

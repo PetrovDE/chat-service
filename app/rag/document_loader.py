@@ -5,6 +5,7 @@ Document loader based on LangChain loaders.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -506,11 +507,86 @@ class DocumentLoader:
         from langchain_community.document_loaders import PyPDFLoader
 
         loader = PyPDFLoader(filepath)
-        docs = loader.load()
-
+        primary_docs = loader.load()
         if metadata:
-            for d in docs:
+            for d in primary_docs:
                 d.metadata.update(metadata)
+
+        if not self._is_near_empty_pdf_extraction(primary_docs):
+            return primary_docs
+
+        logger.warning("Primary PDF extraction is near-empty, trying fallback parser: %s", filepath)
+        fallback_docs = self._load_pdf_fallback(filepath=filepath, metadata=metadata)
+        if not fallback_docs:
+            return primary_docs
+
+        primary_chars = self._pdf_non_whitespace_chars(primary_docs)
+        fallback_chars = self._pdf_non_whitespace_chars(fallback_docs)
+        if fallback_chars > primary_chars:
+            logger.info(
+                "PDF fallback extraction selected: file=%s primary_non_ws=%d fallback_non_ws=%d",
+                Path(filepath).name,
+                primary_chars,
+                fallback_chars,
+            )
+            return fallback_docs
+        return primary_docs
+
+    @staticmethod
+    def _pdf_non_whitespace_chars(docs: List[Document]) -> int:
+        total = 0
+        for doc in docs:
+            total += len(re.sub(r"\s+", "", str(doc.page_content or "")))
+        return total
+
+    @classmethod
+    def _is_near_empty_pdf_extraction(cls, docs: List[Document]) -> bool:
+        if not docs:
+            return True
+        non_empty_pages = 0
+        meaningful_pages = 0
+        for doc in docs:
+            non_ws_chars = len(re.sub(r"\s+", "", str(doc.page_content or "")))
+            if non_ws_chars <= 0:
+                continue
+            non_empty_pages += 1
+            if non_ws_chars >= 24:
+                meaningful_pages += 1
+        if non_empty_pages <= 0:
+            return True
+        if meaningful_pages > 0:
+            return False
+        return cls._pdf_non_whitespace_chars(docs) < max(24, non_empty_pages * 16)
+
+    def _load_pdf_fallback(self, *, filepath: str, metadata: Optional[Dict[str, Any]]) -> List[Document]:
+        try:
+            from pypdf import PdfReader
+        except Exception:
+            logger.warning("PDF fallback parser unavailable (pypdf import failed): %s", filepath, exc_info=True)
+            return []
+
+        try:
+            reader = PdfReader(filepath)
+        except Exception:
+            logger.warning("PDF fallback parser failed to open file: %s", filepath, exc_info=True)
+            return []
+
+        docs: List[Document] = []
+        for index, page in enumerate(reader.pages):
+            try:
+                text = str(page.extract_text() or "").strip()
+            except Exception:
+                text = ""
+            if not text:
+                continue
+            page_meta: Dict[str, Any] = {
+                "source": filepath,
+                "page": index,
+                "page_label": str(index + 1),
+            }
+            if metadata:
+                page_meta.update(metadata)
+            docs.append(Document(page_content=text, metadata=page_meta))
         return docs
 
     async def load_docx(self, filepath: str, metadata: Optional[Dict[str, Any]]) -> List[Document]:

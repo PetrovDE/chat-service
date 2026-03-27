@@ -284,6 +284,27 @@ Ingestion/runtime now expose explicit tabular schema-metadata contract diagnosti
   - `column_metadata_sample_values_trimmed_total`
   - `column_metadata_budget_enforced`
 
+## Update 2026-03-27 (Retrieval Cleanup Diagnostics)
+RAG no-context and hybrid retrieval diagnostics were extended for explainability:
+
+- no-context payload now includes:
+  - `no_context_reason`
+  - `indexing_state` with:
+    - `linked_files_total`
+    - `ready_active_processing_files`
+    - `pending_or_not_ready_files`
+    - `missing_active_processing_files`
+    - `file_status_counts`
+    - `active_processing_status_counts`
+- retriever debug now includes stage counters:
+  - `dense_count`
+  - `lexical_pool_count`
+  - `threshold_filtered_count`
+  - `staged_count`
+  - `selected_count`
+
+These fields preserve existing debug contract keys and only add additive diagnostics.
+
 ## Update 2026-03-26 (Scope Selection Diagnostics)
 
 Deterministic tabular route now emits explicit file/sheet/table scope-selection diagnostics:

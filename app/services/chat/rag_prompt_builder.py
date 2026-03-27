@@ -189,9 +189,17 @@ def _build_no_context_debug_payload(
     no_context_prompt: str,
     rag_mode: Optional[str],
     top_k: int,
+    no_context_indexing_state: Optional[Dict[str, Any]] = None,
     followup_context_used: bool = False,
     prior_tabular_intent_reused: bool = False,
 ) -> Dict[str, Any]:
+    indexing_state = dict(no_context_indexing_state or {})
+    no_context_reason = str(indexing_state.get("no_context_reason") or "no_retrievable_files")
+    escalation_reason = (
+        "indexing_incomplete_or_not_ready"
+        if no_context_reason == "indexing_incomplete_or_not_ready"
+        else "no_ready_files_in_chat"
+    )
     return {
         "intent": top_level_intent,
         "detected_intent": top_level_intent,
@@ -209,6 +217,8 @@ def _build_no_context_debug_payload(
         "rag_mode_effective": "no_context_files",
         "file_ids": [],
         "selected_route": "no_context",
+        "no_context_reason": no_context_reason,
+        "indexing_state": indexing_state,
         "followup_context_used": bool(followup_context_used),
         "prior_tabular_intent_reused": bool(prior_tabular_intent_reused),
         "retrieval_policy": {
@@ -217,8 +227,8 @@ def _build_no_context_debug_payload(
             "requested_top_k": top_k,
             "effective_top_k": 0,
             "expected_chunks_total": 0,
-            "escalation": {"attempted": False, "applied": False, "reason": "no_ready_files_in_chat"},
-            "row_escalation": {"attempted": False, "applied": False, "reason": "no_ready_files_in_chat"},
+            "escalation": {"attempted": False, "applied": False, "reason": escalation_reason},
+            "row_escalation": {"attempted": False, "applied": False, "reason": escalation_reason},
         },
     }
 
@@ -345,9 +355,19 @@ async def build_rag_prompt(
         )
 
     if not files:
+        indexing_state = await file_resolution.inspect_conversation_file_readiness(
+            crud_file_module=crud_file_module,
+            db=db,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            file_ids=file_ids,
+        )
         no_context_prompt = file_resolution.build_no_context_message(preferred_lang=preferred_lang)
         resolution_meta = dict(resolution_meta or {})
         resolution_meta["file_resolution_status"] = "no_context_files"
+        if isinstance(indexing_state, dict):
+            resolution_meta["no_context_reason"] = str(indexing_state.get("no_context_reason") or "no_retrievable_files")
+            resolution_meta["indexing_state"] = indexing_state
         return _finalize_result_with_resolution_debug(
             result=(
                 no_context_prompt,
@@ -357,6 +377,7 @@ async def build_rag_prompt(
                     no_context_prompt=no_context_prompt,
                     rag_mode=rag_mode,
                     top_k=top_k,
+                    no_context_indexing_state=indexing_state,
                     followup_context_used=followup_context.followup_context_used,
                     prior_tabular_intent_reused=followup_context.prior_tabular_intent_reused,
                 ),
@@ -408,7 +429,7 @@ async def build_rag_prompt(
         )
 
     prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = await run_narrative_retrieval_path(
-        query=query,
+        query=effective_query,
         user_id=user_id,
         conversation_id=conversation_id,
         files=files,

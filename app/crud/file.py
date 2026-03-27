@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -58,6 +58,20 @@ def _parse_embedding_identity(raw_value: Optional[str]) -> tuple[str, Optional[s
 
 
 class CRUDFile(CRUDBase[File, dict, dict]):
+    _READY_PROCESSING_STATUSES = ("ready", "completed", "partial_success", "partial_failed")
+
+    @classmethod
+    def _active_ready_profile_exists_clause(cls):
+        return (
+            select(FileProcessingProfile.id)
+            .where(
+                FileProcessingProfile.file_id == File.id,
+                FileProcessingProfile.is_active.is_(True),
+                FileProcessingProfile.status.in_(cls._READY_PROCESSING_STATUSES),
+            )
+            .exists()
+        )
+
     async def create_file(
         self,
         db: AsyncSession,
@@ -170,12 +184,13 @@ class CRUDFile(CRUDBase[File, dict, dict]):
         user_id: UUID,
         limit: int = 300,
     ) -> List[File]:
+        active_ready_exists = self._active_ready_profile_exists_clause()
         query = (
             select(File)
             .where(
                 and_(
                     File.user_id == user_id,
-                    File.status == "ready",
+                    or_(File.status == "ready", active_ready_exists),
                     File.deleted_at.is_(None),
                 )
             )
@@ -187,6 +202,31 @@ class CRUDFile(CRUDBase[File, dict, dict]):
         return list(result.scalars().all())
 
     async def get_conversation_files(
+        self,
+        db: AsyncSession,
+        *,
+        conversation_id: UUID,
+        user_id: UUID,
+    ) -> List[File]:
+        # Retrieval path reads all attached non-deleted files and relies on
+        # active processing readiness checks at orchestration layer.
+        query = (
+            select(File)
+            .join(ConversationFile, File.id == ConversationFile.file_id)
+            .where(
+                and_(
+                    ConversationFile.chat_id == conversation_id,
+                    File.user_id == user_id,
+                    File.deleted_at.is_(None),
+                )
+            )
+            .options(selectinload(File.processing_profiles))
+            .order_by(File.created_at.desc())
+        )
+        result = await db.execute(query)
+        return list(result.scalars().all())
+
+    async def get_conversation_ready_files(
         self,
         db: AsyncSession,
         *,

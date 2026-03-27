@@ -41,6 +41,11 @@ class RetrievalDebug:
     fetch_k: int
     raw_count: int
     returned_count: int
+    dense_count: int = 0
+    lexical_pool_count: int = 0
+    threshold_filtered_count: int = 0
+    staged_count: int = 0
+    selected_count: int = 0
 
 
 class RAGRetriever:
@@ -309,6 +314,11 @@ class RAGRetriever:
                 fetch_k=fetch_k or 0,
                 raw_count=len(docs),
                 returned_count=len(docs),
+                dense_count=0,
+                lexical_pool_count=0,
+                threshold_filtered_count=0,
+                staged_count=len(docs),
+                selected_count=len(docs),
             )
             return (docs, debug) if return_debug else docs
 
@@ -349,6 +359,8 @@ class RAGRetriever:
         )
         dense_rows, lexical_pool = await asyncio.gather(dense_rows_task, lexical_pool_task)
         observe_ms("rag_candidates_duration_ms", (time.perf_counter() - t_denselex) * 1000.0, mode="hybrid")
+        dense_count = len(dense_rows)
+        lexical_pool_count = len(lexical_pool)
 
         t_rerank = time.perf_counter()
         lc_docs = await asyncio.to_thread(
@@ -360,9 +372,14 @@ class RAGRetriever:
         )
         observe_ms("rag_rerank_duration_ms", (time.perf_counter() - t_rerank) * 1000.0, backend="langchain")
 
+        threshold_filtered_count = 0
+        staged_count = 0
+        selected_count = 0
         if lc_docs is not None:
             ranked_rows: List[Dict[str, Any]] = []
+            initial_ranked_count = 0
             for d in lc_docs:
+                initial_ranked_count += 1
                 sim = float(d.metadata.get("similarity_score", 0.0))
                 if score_threshold is not None and sim < float(score_threshold):
                     continue
@@ -377,8 +394,11 @@ class RAGRetriever:
                         "hybrid_score": d.metadata.get("similarity_score", 0.0),
                     }
                 )
+            threshold_filtered_count = max(0, initial_ranked_count - len(ranked_rows))
+            staged_count = len(ranked_rows)
             selected = self._select_with_coverage(ranked_rows, top_k=top_k, per_file_min=1)
             selected = self._staged_tabular_selection(selected, top_k=top_k)
+            selected_count = len(selected)
             docs = self._rows_to_documents(selected, score_key="hybrid_score")
             merged_count = len(ranked_rows)
         else:
@@ -390,10 +410,14 @@ class RAGRetriever:
             )
 
             if score_threshold is not None:
+                merged_before_threshold = len(merged)
                 merged = [r for r in merged if float(r.get("hybrid_score", 0.0)) >= float(score_threshold)]
+                threshold_filtered_count = max(0, merged_before_threshold - len(merged))
 
             staged = self._staged_tabular_selection(merged, top_k=max(top_k * 3, 12))
+            staged_count = len(staged)
             selected = self._select_with_coverage(staged, top_k=top_k, per_file_min=1)
+            selected_count = len(selected)
             docs = self._rows_to_documents(selected, score_key="hybrid_score")
             merged_count = len(merged)
 
@@ -403,6 +427,11 @@ class RAGRetriever:
             fetch_k=fetch_k,
             raw_count=merged_count,
             returned_count=len(docs),
+            dense_count=dense_count,
+            lexical_pool_count=lexical_pool_count,
+            threshold_filtered_count=threshold_filtered_count,
+            staged_count=staged_count,
+            selected_count=selected_count,
         )
         inc_counter("rag_retrieve_total", intent=intent, mode="hybrid", result="ok")
         observe_ms("rag_retrieve_duration_ms", (time.perf_counter() - t0) * 1000.0, intent=intent)
@@ -583,6 +612,11 @@ class RAGRetriever:
                 "fetch_k_applicable": bool(intent != "analyze_full_file"),
                 "raw_count": dbg.raw_count,
                 "returned_count": dbg.returned_count,
+                "dense_count": dbg.dense_count,
+                "lexical_pool_count": dbg.lexical_pool_count,
+                "threshold_filtered_count": dbg.threshold_filtered_count,
+                "staged_count": dbg.staged_count,
+                "selected_count": dbg.selected_count,
                 "score_threshold": score_threshold,
                 "intent": intent,
                 "retrieval_mode": "full_file" if intent == "analyze_full_file" else "hybrid",

@@ -94,7 +94,11 @@ def build_where(
     if chunk_types:
         where["chunk_type"] = {"$in": [str(x) for x in chunk_types]}
     if namespace:
-        where["collection"] = str(namespace)
+        namespace_value = str(namespace).strip()
+        if namespace_value:
+            # Namespace is a logical scope (base collection), not the concrete
+            # hashed Chroma collection name.
+            where["namespace"] = namespace_value
     if embedding_mode:
         mode = str(embedding_mode).strip().lower()
         if mode == "ollama":
@@ -368,4 +372,3 @@ def build_context_prompt(*, query: str, context_documents: List[Dict[str, Any]])
             "Answer:"
         )
     return query
-

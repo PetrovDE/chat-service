@@ -7,7 +7,9 @@ from types import SimpleNamespace
 
 from app.domain.chat.query_planner import (
     INTENT_TABULAR_AGGREGATE,
+    INTENT_NARRATIVE_RETRIEVAL,
     ROUTE_DETERMINISTIC_ANALYTICS,
+    ROUTE_NARRATIVE_RETRIEVAL,
     QueryPlanDecision,
 )
 from app.observability.metrics import reset_metrics, snapshot_metrics
@@ -957,6 +959,373 @@ def test_build_rag_prompt_skips_files_without_active_ready_processing(monkeypatc
     assert rag_sources == []
 
 
+def test_build_rag_prompt_no_context_includes_indexing_diagnostics(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    processing_id = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                status="processing",
+                extension="txt",
+                chunks_count=12,
+                active_processing=SimpleNamespace(id=processing_id, status="embedding"),
+                original_filename="notes.txt",
+                custom_metadata={},
+            )
+        ]
+
+    async def fail_query_rag(**kwargs):  # noqa: ANN003
+        raise AssertionError("query_rag should not run when no active ready processing exists")
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(
+        rag_builder.intent_classifier,
+        "classify_top_level_intent",
+        lambda *, query, resolution_meta: "narrative_retrieval",  # noqa: ARG005
+    )
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fail_query_rag)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Summarize attached notes",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert isinstance(final_prompt, str) and final_prompt
+    assert rag_used is False
+    assert context_docs == []
+    assert rag_caveats == []
+    assert rag_sources == []
+    assert rag_debug["retrieval_mode"] == "no_context_files"
+    assert rag_debug["no_context_reason"] == "indexing_incomplete_or_not_ready"
+    indexing_state = rag_debug["indexing_state"]
+    assert indexing_state["diagnostics_available"] is True
+    assert indexing_state["linked_files_total"] == 1
+    assert indexing_state["pending_or_not_ready_files"] == 1
+
+
+def test_build_rag_prompt_keeps_retrieval_when_file_status_processing_but_active_ready(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    processing_id = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                status="processing",
+                extension="txt",
+                chunks_count=4,
+                active_processing=SimpleNamespace(id=processing_id, status="ready"),
+                original_filename="notes.txt",
+                custom_metadata={},
+                embedding_model="local:nomic-embed-text",
+            )
+        ]
+
+    async def fake_query_rag(
+        query,  # noqa: ARG001
+        top_k=5,  # noqa: ARG001
+        fetch_k=None,  # noqa: ARG001
+        conversation_id=None,  # noqa: ARG001
+        user_id=None,  # noqa: ARG001
+        file_ids=None,
+        processing_ids=None,
+        embedding_mode="local",  # noqa: ARG001
+        embedding_model=None,  # noqa: ARG001
+        score_threshold=None,  # noqa: ARG001
+        debug_return=False,  # noqa: ARG001
+        rag_mode=None,  # noqa: ARG001
+        **kwargs,  # noqa: ARG001
+    ):
+        assert file_ids == [str(file_id)]
+        assert processing_ids == [str(processing_id)]
+        return {
+            "docs": [
+                {
+                    "content": "retrieved context",
+                    "metadata": {"file_id": str(file_id), "chunk_index": 0, "filename": "notes.txt"},
+                    "distance": 0.1,
+                    "similarity_score": 0.9,
+                }
+            ],
+            "debug": {
+                "filters": {"file_id": {"$in": [str(file_id)]}, "processing_id": {"$in": [str(processing_id)]}},
+                "returned_count": 1,
+                "retrieval_mode": "hybrid",
+                "intent": "fact_lookup",
+            },
+        }
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(
+        rag_builder.intent_classifier,
+        "classify_top_level_intent",
+        lambda *, query, resolution_meta: "narrative_retrieval",  # noqa: ARG005
+    )
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
+
+    final_prompt, rag_used, rag_debug, context_docs, rag_caveats, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="What is in notes.txt?",
+            top_k=4,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is True
+    assert context_docs
+    assert rag_sources
+    assert "retrieved context" in final_prompt
+    assert rag_debug["retrieval_mode"] == "hybrid"
+    assert rag_debug.get("no_context_reason") is None
+
+
+def test_build_rag_prompt_honors_explicit_file_ids_with_multiple_files(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_a = uuid.uuid4()
+    file_b = uuid.uuid4()
+    processing_a = uuid.uuid4()
+    processing_b = uuid.uuid4()
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_a,
+                status="ready",
+                extension="txt",
+                chunks_count=5,
+                active_processing=SimpleNamespace(id=processing_a, status="ready"),
+                original_filename="alpha.txt",
+                custom_metadata={},
+                embedding_model="local:nomic-embed-text",
+            ),
+            SimpleNamespace(
+                id=file_b,
+                status="ready",
+                extension="txt",
+                chunks_count=5,
+                active_processing=SimpleNamespace(id=processing_b, status="ready"),
+                original_filename="beta.txt",
+                custom_metadata={},
+                embedding_model="local:nomic-embed-text",
+            ),
+        ]
+
+    async def fake_query_rag(**kwargs):  # noqa: ANN003
+        assert kwargs.get("file_ids") == [str(file_b)]
+        assert kwargs.get("processing_ids") == [str(processing_b)]
+        return {
+            "docs": [
+                {
+                    "content": "beta retrieval context",
+                    "metadata": {"file_id": str(file_b), "chunk_index": 0, "filename": "beta.txt"},
+                    "distance": 0.1,
+                    "similarity_score": 0.95,
+                }
+            ],
+            "debug": {"retrieval_mode": "hybrid", "returned_count": 1, "intent": "fact_lookup"},
+        }
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(
+        rag_builder.intent_classifier,
+        "classify_top_level_intent",
+        lambda *, query, resolution_meta: "narrative_retrieval",  # noqa: ARG005
+    )
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
+
+    final_prompt, rag_used, rag_debug, context_docs, _rag_caveats, _rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Summarize selected file",
+            file_ids=[str(file_b)],
+            top_k=4,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is True
+    assert context_docs
+    assert "beta retrieval context" in final_prompt
+    assert rag_debug["file_ids"] == [str(file_b)]
+
+
+def test_build_rag_prompt_transitions_from_not_ready_to_ready_without_losing_retrieval(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    processing_id = uuid.uuid4()
+    file_obj = SimpleNamespace(
+        id=file_id,
+        status="processing",
+        extension="txt",
+        chunks_count=10,
+        active_processing=SimpleNamespace(id=processing_id, status="embedding"),
+        original_filename="delayed.txt",
+        custom_metadata={},
+        embedding_model="local:nomic-embed-text",
+    )
+    query_calls = {"count": 0}
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [file_obj]
+
+    async def fake_query_rag(**kwargs):  # noqa: ANN003
+        query_calls["count"] += 1
+        return {
+            "docs": [
+                {
+                    "content": "ready context",
+                    "metadata": {"file_id": str(file_id), "chunk_index": 0, "filename": "delayed.txt"},
+                    "distance": 0.2,
+                    "similarity_score": 0.88,
+                }
+            ],
+            "debug": {"retrieval_mode": "hybrid", "returned_count": 1, "intent": "fact_lookup"},
+        }
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(
+        rag_builder.intent_classifier,
+        "classify_top_level_intent",
+        lambda *, query, resolution_meta: "narrative_retrieval",  # noqa: ARG005
+    )
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
+
+    _prompt_1, rag_used_1, rag_debug_1, _docs_1, _caveats_1, _sources_1 = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Summarize delayed file",
+            top_k=6,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used_1 is False
+    assert rag_debug_1["retrieval_mode"] == "no_context_files"
+    assert rag_debug_1["no_context_reason"] == "indexing_incomplete_or_not_ready"
+    assert query_calls["count"] == 0
+
+    file_obj.active_processing.status = "ready"
+    _prompt_2, rag_used_2, rag_debug_2, docs_2, _caveats_2, _sources_2 = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="Summarize delayed file",
+            top_k=6,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used_2 is True
+    assert docs_2
+    assert rag_debug_2["retrieval_mode"] == "hybrid"
+    assert query_calls["count"] >= 1
+
+
+def test_narrative_followup_query_reuses_prior_context_for_retrieval(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    processing_id = uuid.uuid4()
+    captured_queries = []
+
+    async def fake_get_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [
+            SimpleNamespace(
+                id=file_id,
+                status="ready",
+                extension="txt",
+                chunks_count=8,
+                active_processing=SimpleNamespace(id=processing_id, status="ready"),
+                original_filename="notes.txt",
+                custom_metadata={},
+                embedding_model="local:nomic-embed-text",
+            )
+        ]
+
+    async def fake_query_rag(**kwargs):  # noqa: ANN003
+        captured_queries.append(str(kwargs.get("query") or ""))
+        return {
+            "docs": [
+                {
+                    "content": "followup retrieval context",
+                    "metadata": {"file_id": str(file_id), "chunk_index": 0, "filename": "notes.txt"},
+                    "distance": 0.1,
+                    "similarity_score": 0.9,
+                }
+            ],
+            "debug": {"retrieval_mode": "hybrid", "returned_count": 1, "intent": "fact_lookup"},
+        }
+
+    def narrative_planner(*, query, files):  # noqa: ARG001
+        return QueryPlanDecision(
+            route=ROUTE_NARRATIVE_RETRIEVAL,
+            intent=INTENT_NARRATIVE_RETRIEVAL,
+            strategy_mode="semantic",
+            confidence=0.95,
+            requires_clarification=False,
+            reason_codes=["test_force_narrative"],
+        )
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_files)
+    monkeypatch.setattr(
+        rag_builder.intent_classifier,
+        "classify_top_level_intent",
+        lambda *, query, resolution_meta: "narrative_retrieval",  # noqa: ARG005
+    )
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
+
+    _prompt, rag_used, rag_debug, docs, _caveats, _sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="take month from dates",
+            top_k=6,
+            model_source="local",
+            rag_mode="auto",
+            query_planner=narrative_planner,
+            conversation_history=[
+                {"role": "user", "content": "show spending by month in notes.txt"},
+                {"role": "assistant", "content": "Here is the month breakdown."},
+            ],
+        )
+    )
+
+    assert rag_used is True
+    assert docs
+    assert rag_debug["planner_decision"]["followup_context_used"] is True
+    assert captured_queries
+    assert "show spending by month in notes.txt" in captured_queries[0]
+    assert "take month from dates" in captured_queries[0]
+
+
 def test_full_file_small_context_uses_direct_strategy(monkeypatch):
     docs = []
     for idx in range(16):
@@ -1159,4 +1528,3 @@ def test_rag_prompt_emits_coverage_slo_metrics(monkeypatch):
         and "retrieval_mode=full_file" in key
         for key in gauges
     )
-

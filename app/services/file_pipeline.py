@@ -12,6 +12,10 @@ from app.observability.file_lifecycle import log_file_lifecycle_event
 from app.services.llm.manager import llm_manager
 
 
+def _non_whitespace_chars(text: str) -> int:
+    return len("".join(str(text or "").split()))
+
+
 def _provider_source_for_embedding_mode(mode: str) -> str:
     normalized = str(mode or "local").strip().lower()
     if normalized == "corporate":
@@ -357,23 +361,40 @@ async def process_file_pipeline(
                 raise ValueError("No documents loaded from file")
 
             total_chars = sum(len(d.page_content or "") for d in docs)
+            total_non_whitespace_chars = sum(_non_whitespace_chars(d.page_content or "") for d in docs)
+            non_empty_docs = sum(1 for d in docs if str(d.page_content or "").strip())
             xlsx_stats = extract_xlsx_stats_fn(docs) if file_path.suffix.lower() in (".xlsx", ".xls") else {}
             chunk_type_counter = Counter()
             for d in docs:
                 metadata = d.metadata if isinstance(getattr(d, "metadata", None), dict) else {}
                 chunk_type_counter[str(metadata.get("chunk_type") or "unknown")] += 1
             progress["chunk_types_count"] = dict(chunk_type_counter)
+            progress["extracted_text_chars"] = int(total_chars)
+            progress["extracted_non_whitespace_chars"] = int(total_non_whitespace_chars)
+            progress["extracted_non_empty_docs"] = int(non_empty_docs)
             logger_obj.info(
-                "Loaded documents=%d extracted_text_chars=%d file_id=%s chunk_types=%s %s",
+                (
+                    "Loaded documents=%d extracted_text_chars=%d extracted_non_ws_chars=%d "
+                    "non_empty_docs=%d file_id=%s chunk_types=%s %s"
+                ),
                 len(docs),
                 total_chars,
+                total_non_whitespace_chars,
+                non_empty_docs,
                 file_id,
                 dict(chunk_type_counter),
                 " ".join([f"{k}={v}" for k, v in xlsx_stats.items()]) if xlsx_stats else "",
             )
             observe_ms_fn("ingestion_stage_ms", (asyncio.get_running_loop().time() - stage_t0) * 1000.0, stage="extract")
-            if total_chars < 50:
-                raise ValueError("Extracted text is empty/too small (possible scanned PDF).")
+            if non_empty_docs <= 0 or total_non_whitespace_chars <= 0:
+                raise ValueError("Extracted text is empty after parsing.")
+            if total_non_whitespace_chars < 50:
+                logger_obj.warning(
+                    "Extracted content is very small but non-empty: file_id=%s non_ws_chars=%d docs=%d",
+                    file_id,
+                    total_non_whitespace_chars,
+                    non_empty_docs,
+                )
             progress["parsing_ok"] = True
             await _checkpoint(status="parsed", stage="parsed")
             log_file_lifecycle_event(
@@ -401,6 +422,8 @@ async def process_file_pipeline(
                 extras={
                     "documents_loaded": len(docs),
                     "extracted_text_chars": total_chars,
+                    "extracted_non_whitespace_chars": total_non_whitespace_chars,
+                    "extracted_non_empty_docs": non_empty_docs,
                     "chunk_types_count": dict(chunk_type_counter),
                 },
             )
@@ -678,6 +701,7 @@ async def process_file_pipeline(
                     "embedding_mode": embedding_mode,
                     "embedding_model": embedding_model,
                     "collection": getattr(settings_obj, "COLLECTION_NAME", "documents"),
+                    "namespace": namespace,
                     "pipeline_version": str(pipeline_version or ""),
                     "parser_version": str(parser_version or ""),
                     "artifact_version": str(artifact_version or ""),

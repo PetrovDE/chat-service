@@ -594,7 +594,11 @@ async def list_ready_files(
 ):
     target_chat = chat_id
     if target_chat is not None:
-        files = await crud_file.get_conversation_files(db, conversation_id=target_chat, user_id=current_user.id)
+        files = await crud_file.get_conversation_ready_files(
+            db,
+            conversation_id=target_chat,
+            user_id=current_user.id,
+        )
     else:
         files = await crud_file.get_processed_files(db, user_id=current_user.id)
     chat_ids_map = await _chat_ids_by_file(db, [f.id for f in files])

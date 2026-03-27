@@ -99,11 +99,13 @@ Every indexed artifact includes:
 - `embedding_mode`
 - `embedding_model`
 - `embedding_dimension`
+- `namespace` (logical collection scope)
 
 ## Processing / Safety
 - Retrieval uses active processing profile ids per file.
 - Files without active ready processing profile are excluded from RAG retrieval.
-- Chat file list uses only `status=ready` files.
+- Ready-files API list uses only `status=ready` files.
+- RAG conversation file loading reads attached non-deleted files and then applies active-ready processing gating.
 - Durable queue supports lease/heartbeat/retry/dead-letter/recovery.
 - Finalization verifies counter consistency (`expected/processed/indexed/failed`).
 

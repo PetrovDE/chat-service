@@ -170,3 +170,35 @@ Configuration:
 - `TABULAR_LLM_GUARDED_EXECUTION_TIMEOUT_SECONDS`
 - `TABULAR_LLM_GUARDED_PLAN_MAX_TOKENS`
 - `TABULAR_LLM_GUARDED_EXECUTION_MAX_TOKENS`
+
+## Update 2026-03-27 (Guarded Plan/Validation Alignment + Schema Summary Composition)
+
+Guarded planner loop now applies a deterministic normalization/alignment step before plan/spec validation:
+
+- plan/spec enum aliases are normalized to contract values (`task_type`, `requested_output_type`, `chart_type`),
+- confidence gating uses schema-backed structural validation signals (not raw LLM confidence only),
+- semantic metric phrasing can resolve to numeric schema columns through existing metadata-driven resolvers,
+- explicit identifier-like unknown columns still fail fast (no silent guessed fallback).
+
+Schema-question user response composition now has a deterministic short-circuit formatter in chat composition path:
+
+- one-table/multi-table and column/row counts are rendered from schema payload facts,
+- contradictory free-form wording is avoided for schema/file summary responses,
+- route/debug/response contracts remain unchanged.
+
+## Update 2026-03-27 (Guarded Chart Route Taxonomy Alignment)
+
+Guarded execution-spec route taxonomy is aligned to executable deterministic chart paths:
+
+- canonical executable `selected_route` values are now `aggregation|chart|comparison`,
+- temporal chart intent is represented by `selected_route=chart` plus temporal fields:
+  - `derived_time_grain`,
+  - `source_datetime_field`,
+- `trend` remains an accepted semantic alias in plan/spec normalization, but it is canonicalized to `chart` before execution-spec validation.
+
+Guarded execution-spec normalization is now more contract-aligned for supported chart analytics requests:
+
+- `selected_route` can be recovered from `selected_route|route|task_type` aliases,
+- missing/alias route values fall back to deterministic validated-plan route,
+- missing execution-spec shape details are backfilled from validated plan when deterministic equivalents are available (for example `derived_time_grain`, `source_datetime_field`, `filters`, `output_columns`),
+- this avoids pre-execution `invalid_selected_route` failures for supported chart requests while preserving bounded validation and no-guess schema behavior.

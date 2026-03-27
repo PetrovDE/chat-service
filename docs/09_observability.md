@@ -67,6 +67,19 @@ Structured log events for persistent file lifecycle:
   - `status`
   - `is_active_processing`
 
+Vector store startup/reliability logs:
+- `VectorStoreManager configured`:
+  - `persist_directory`
+  - `mode` (`persistent|ephemeral`)
+  - `lazy_initialized` (`false` on config log)
+- `Initializing Chroma client`:
+  - `persist_directory`
+  - `mode` (`persistent|ephemeral`)
+  - `lazy_initialized` (`true` when client is first opened)
+  - `shared_client_created` (`true|false`)
+- `Chroma client initialization failed`:
+  - includes `persist_directory`, `mode`, and local-dev recovery hint
+
 Useful journalctl filters:
 - `journalctl -u llama-service -o cat | rg "file_lifecycle"`
 - `journalctl -u llama-service -o cat | rg "\"uid\":\"<user-uuid>\""`

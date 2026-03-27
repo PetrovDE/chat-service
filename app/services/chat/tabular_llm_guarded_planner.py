@@ -10,13 +10,20 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from app.core.config import settings
 from app.services.chat.language import detect_preferred_response_language, localized_text
 from app.services.chat.tabular_chart_delivery import render_chart_artifact
+from app.services.chat.tabular_llm_guarded_contract_alignment import (
+    normalize_execution_spec_payload,
+    normalize_plan_payload,
+)
 from app.services.chat.tabular_debug_contract import (
     apply_tabular_debug_fields,
     build_dataset_debug_fields,
 )
 from app.services.chat.tabular_response_composer import build_chart_response_text
 from app.services.chat.tabular_schema_resolver import resolve_requested_field
-from app.services.chat.tabular_temporal_planner import build_temporal_bucket_expression
+from app.services.chat.tabular_temporal_planner import (
+    build_temporal_bucket_expression,
+    resolve_temporal_measure_column,
+)
 from app.services.llm.manager import llm_manager
 from app.services.tabular import (
     GuardrailsConfig,
@@ -32,6 +39,7 @@ from app.services.tabular.sql_execution import ResolvedTabularDataset, ResolvedT
 ANALYTIC_PLAN_VERSION = "tabular_analytic_plan_v1"
 EXECUTION_SPEC_VERSION = "tabular_execution_spec_v1"
 ANALYTIC_ROUTES = {"aggregation", "chart", "trend", "comparison"}
+EXECUTABLE_ANALYTIC_ROUTES = {"aggregation", "chart", "comparison"}
 ALLOWED_TASK_TYPES = {"aggregate", "chart", "trend", "comparison"}
 ALLOWED_OUTPUT_TYPES = {"table", "chart", "both"}
 ALLOWED_AGGREGATIONS = {"count", "sum", "avg", "min", "max"}
@@ -187,7 +195,7 @@ def _build_plan_prompt(
 You are a strict analytics planner.
 Return ONLY JSON with this schema:
 {{
-  "task_type": "aggregate|chart|trend|comparison",
+  "task_type": "aggregate|chart|comparison",
   "requested_output_type": "table|chart|both",
   "source_scope": {{"table_name":"string","sheet_name":"string"}},
   "measures": [{{"requested":"string","field":"string|null","aggregation":"count|sum|avg|min|max"}}],
@@ -232,7 +240,7 @@ def _build_execution_spec_prompt(
 You are a strict execution planner.
 Return ONLY JSON with this schema:
 {{
-  "selected_route": "aggregation|chart|trend|comparison",
+  "selected_route": "aggregation|chart|comparison",
   "requested_output_type": "table|chart|both",
   "measure": {{"field":"string|null","aggregation":"count|sum|avg|min|max"}},
   "dimension": {{"field":"string|null"}},
@@ -331,10 +339,43 @@ def _normalize_filters(raw_filters: Any) -> List[Dict[str, str]]:
     return normalized
 
 
+def _effective_plan_confidence(
+    *,
+    provided_confidence: Optional[float],
+    task_type: str,
+    output_type: str,
+    validated_measures: Sequence[Dict[str, Any]],
+    validated_dimensions: Sequence[Dict[str, Any]],
+    derived_time_grain: str,
+    source_datetime_field: Optional[str],
+    explicit_ambiguity: Sequence[str],
+) -> float:
+    base_confidence = float(provided_confidence if provided_confidence is not None else 0.0)
+    heuristic_confidence = 0.0
+    if task_type in ALLOWED_TASK_TYPES:
+        heuristic_confidence += 0.16
+    if output_type in ALLOWED_OUTPUT_TYPES:
+        heuristic_confidence += 0.14
+    if validated_measures:
+        heuristic_confidence += 0.36
+    if validated_dimensions:
+        heuristic_confidence += 0.18
+    if derived_time_grain not in {"none", ""}:
+        heuristic_confidence += 0.08
+    if source_datetime_field:
+        heuristic_confidence += 0.12
+    if output_type in {"chart", "both"}:
+        heuristic_confidence += 0.08
+    if explicit_ambiguity:
+        heuristic_confidence = min(heuristic_confidence, 0.19)
+    return max(0.0, min(1.0, max(base_confidence, heuristic_confidence)))
+
+
 def _validate_plan(
     *,
     plan: Dict[str, Any],
     table: ResolvedTabularTable,
+    query: str = "",
 ) -> StageValidation:
     errors: List[str] = []
     task_type = str(plan.get("task_type") or "").strip().lower()
@@ -343,10 +384,12 @@ def _validate_plan(
     source_datetime_field_raw = str(plan.get("source_datetime_field") or "").strip() or None
     chart_type = str(plan.get("chart_type") or "none").strip().lower()
     confidence_raw = plan.get("confidence")
+    confidence: Optional[float] = None
     try:
-        confidence = float(confidence_raw) if confidence_raw is not None else 0.0
+        if confidence_raw is not None:
+            confidence = max(0.0, min(1.0, float(confidence_raw)))
     except Exception:
-        confidence = 0.0
+        confidence = None
     ambiguity_flags = [str(item).strip().lower() for item in list(plan.get("ambiguity_flags") or []) if str(item).strip()]
 
     if task_type not in ALLOWED_TASK_TYPES:
@@ -357,8 +400,6 @@ def _validate_plan(
         errors.append("invalid_derived_time_grain")
     if chart_type not in ALLOWED_CHART_TYPES:
         errors.append("invalid_chart_type")
-    if confidence < 0.2:
-        errors.append("low_plan_confidence")
     explicit_ambiguity = [flag for flag in ambiguity_flags if flag not in {"none", ""}]
     if explicit_ambiguity:
         errors.append("explicit_plan_ambiguity")
@@ -385,13 +426,29 @@ def _validate_plan(
         if aggregation == "count":
             validated_measures.append({"requested": requested, "field": None, "aggregation": aggregation})
             continue
+        fallback_reason = "none"
         resolved_field, resolution_status = _resolve_column(
             requested_field=field_raw,
             table=table,
             expected_dtype_family="numeric",
         )
+        allow_semantic_fallback = True
+        normalized_raw_field = str(field_raw or "").strip().lower()
+        if normalized_raw_field and re.fullmatch(r"[a-z][a-z0-9_]*", normalized_raw_field):
+            if "_" in normalized_raw_field or normalized_raw_field.endswith("id") or normalized_raw_field.endswith("_id"):
+                allow_semantic_fallback = False
+
+        if not resolved_field and allow_semantic_fallback:
+            semantic_resolution = resolve_temporal_measure_column(
+                query=str(query or ""),
+                table=table,
+                requested_metric_text=requested or field_raw,
+            )
+            if semantic_resolution.status == "resolved" and semantic_resolution.measure_column:
+                resolved_field = str(semantic_resolution.measure_column)
+            fallback_reason = str(semantic_resolution.fallback_reason or semantic_resolution.status or "no_match")
         if not resolved_field:
-            errors.append(f"measure_field_invalid:{resolution_status}")
+            errors.append(f"measure_field_invalid:{fallback_reason if fallback_reason != 'none' else resolution_status}")
             continue
         validated_measures.append({"requested": requested, "field": resolved_field, "aggregation": aggregation})
 
@@ -453,6 +510,19 @@ def _validate_plan(
         if not source_datetime_field:
             errors.append("missing_source_datetime_field")
 
+    effective_confidence = _effective_plan_confidence(
+        provided_confidence=confidence,
+        task_type=task_type,
+        output_type=output_type,
+        validated_measures=validated_measures,
+        validated_dimensions=validated_dimensions,
+        derived_time_grain=derived_time_grain,
+        source_datetime_field=source_datetime_field,
+        explicit_ambiguity=explicit_ambiguity,
+    )
+    if effective_confidence < 0.2:
+        errors.append("low_plan_confidence")
+
     if output_type in {"chart", "both"} and not validated_dimensions and derived_time_grain in {"none", ""}:
         errors.append("chart_requires_dimension")
     if task_type in {"trend", "chart", "comparison"} and not validated_dimensions and derived_time_grain in {"none", ""}:
@@ -471,7 +541,7 @@ def _validate_plan(
         "source_datetime_field": source_datetime_field,
         "filters": validated_filters,
         "chart_type": chart_type,
-        "confidence": confidence,
+        "confidence": effective_confidence,
         "ambiguity_flags": explicit_ambiguity or ["none"],
     }
     return StageValidation(status="success", reason="none", payload=validated_plan)
@@ -480,15 +550,10 @@ def _validate_plan(
 def _route_from_validated_plan(validated_plan: Dict[str, Any]) -> str:
     output_type = str(validated_plan.get("requested_output_type") or "table")
     task_type = str(validated_plan.get("task_type") or "aggregate")
-    derived_time_grain = str(validated_plan.get("derived_time_grain") or "none")
     if task_type == "comparison":
         return "comparison"
-    if task_type == "chart" or output_type in {"chart", "both"}:
-        if derived_time_grain not in {"none", ""}:
-            return "trend"
+    if task_type in {"chart", "trend"} or output_type in {"chart", "both"}:
         return "chart"
-    if task_type == "trend":
-        return "trend"
     return "aggregation"
 
 
@@ -538,7 +603,7 @@ def _validate_execution_spec(
 
     normalized_filters = _normalize_filters(execution_spec.get("filters"))
 
-    if selected_route not in ANALYTIC_ROUTES:
+    if selected_route not in EXECUTABLE_ANALYTIC_ROUTES:
         errors.append("invalid_selected_route")
     if selected_route != plan_route:
         errors.append("selected_route_plan_mismatch")
@@ -930,6 +995,7 @@ def _build_success_payload(
     payload = apply_tabular_debug_fields(
         payload,
         fields={
+            "requested_output_type": str(execution_spec.get("requested_output_type") or "table"),
             "matched_columns": deduped_columns,
             "unmatched_requested_fields": [],
             "requested_time_grain": None
@@ -1098,6 +1164,7 @@ def _build_retry_exhausted_payload(
     payload = apply_tabular_debug_fields(
         payload,
         fields={
+            "requested_output_type": str(last_plan.get("requested_output_type") or "table"),
             "matched_columns": [],
             "unmatched_requested_fields": [],
         },
@@ -1177,7 +1244,8 @@ async def maybe_execute_llm_guarded_tabular(
             )
             continue
 
-        plan_validation = _validate_plan(plan=raw_plan, table=table)
+        normalized_plan = normalize_plan_payload(raw_plan=raw_plan, query=query)
+        plan_validation = _validate_plan(plan=normalized_plan, table=table, query=query)
         plan_validation_status = plan_validation.status
         if plan_validation.status != "success" or not isinstance(plan_validation.payload, dict):
             repair_failure_reason = plan_validation.reason
@@ -1222,8 +1290,12 @@ async def maybe_execute_llm_guarded_tabular(
             )
             continue
 
+        normalized_execution_spec = normalize_execution_spec_payload(
+            raw_execution_spec=execution_spec_raw,
+            validated_plan=last_validated_plan,
+        )
         execution_spec_validation = _validate_execution_spec(
-            execution_spec=execution_spec_raw,
+            execution_spec=normalized_execution_spec,
             validated_plan=last_validated_plan,
         )
         if execution_spec_validation.status != "success" or not isinstance(execution_spec_validation.payload, dict):

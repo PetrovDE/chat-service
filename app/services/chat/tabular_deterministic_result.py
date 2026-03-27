@@ -9,6 +9,7 @@ from app.observability.slo_metrics import observe_retrieval_coverage, observe_ta
 from app.services.chat.language import apply_language_policy_to_prompt
 from app.services.chat.tabular_answer_shaper import build_tabular_answer_quality_guidance
 from app.services.chat.tabular_response_composer import build_chart_response_text
+from app.services.chat.tabular_schema_response_composer import build_schema_summary_response
 
 
 RagPromptResult = Tuple[str, bool, Dict[str, Any], List[Dict[str, Any]], List[str], List[str]]
@@ -174,6 +175,15 @@ def build_tabular_success_route_result(
             rag_debug["controlled_response_state"] = "chart_render_failed"
             rag_debug["artifacts"] = []
             rag_debug["artifacts_count"] = 0
+    elif selected_route_value == "schema_question":
+        rag_debug["short_circuit_response"] = True
+        rag_debug["short_circuit_response_text"] = build_schema_summary_response(
+            preferred_lang=preferred_lang,
+            rag_debug=rag_debug,
+        )
+        rag_debug["fallback_type"] = "none"
+        rag_debug["fallback_reason"] = "none"
+        rag_debug["controlled_response_state"] = "schema_summary_ready"
     else:
         rag_debug["fallback_type"] = "none"
         rag_debug["fallback_reason"] = "none"

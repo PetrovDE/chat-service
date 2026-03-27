@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from langchain_core.documents import Document
@@ -44,7 +45,19 @@ class RetrievalDebug:
 
 class RAGRetriever:
     def __init__(self) -> None:
-        self.vectorstore = VectorStoreManager()
+        self._vectorstore: Optional[VectorStoreManager] = None
+        self._vectorstore_lock = Lock()
+        logger.info("RAGRetriever configured: vectorstore_lazy_initialized=%s", False)
+
+    @property
+    def vectorstore(self) -> VectorStoreManager:
+        if self._vectorstore is not None:
+            return self._vectorstore
+        with self._vectorstore_lock:
+            if self._vectorstore is None:
+                self._vectorstore = VectorStoreManager()
+                logger.info("RAGRetriever vectorstore initialized lazily")
+            return self._vectorstore
 
     def _tokenize(self, text: str) -> List[str]:
         return tokenize_helper(text, TOKEN_RE)
@@ -583,4 +596,3 @@ class RAGRetriever:
 
 
 rag_retriever = RAGRetriever()
-

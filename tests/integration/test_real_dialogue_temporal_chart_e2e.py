@@ -46,6 +46,7 @@ def _llm_payload(response: str) -> dict:
 def test_real_dialogue_temporal_chart_path_executes_end_to_end(monkeypatch, tmp_path: Path):
     pytest.importorskip("duckdb")
     pytest.importorskip("matplotlib")
+    monkeypatch.setattr("app.services.chat.tabular_llm_guarded_planner.settings.TABULAR_LLM_GUARDED_PLANNER_ENABLED", False)
 
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()

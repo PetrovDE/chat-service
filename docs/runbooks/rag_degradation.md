@@ -22,6 +22,26 @@
 - Address metadata/filter bugs before widening limits globally.
 - For deterministic tabular questions, prefer SQL path.
 
+## Local Embedded Chroma Restart Failures
+Symptoms:
+- service restart fails during first vector access after startup;
+- logs include `Chroma client initialization failed`.
+
+Operational checks:
+1. Verify startup log fields: `mode`, `persist_directory`, `lazy_initialized`, `shared_client_created`.
+2. Confirm whether persistent mode is active (`VECTORDB_EPHEMERAL_MODE=false`).
+3. Inspect the persist path from logs and check whether `chroma.sqlite3` looks stale/corrupted.
+
+Safe recovery for local development:
+1. Stop the service.
+2. Backup the persist directory.
+3. Remove only the problematic persisted store file(s) (for example `chroma.sqlite3`) if corruption is suspected.
+4. Restart the service and verify clean startup logs.
+
+Optional fallback mode (local dev only):
+- Set `VECTORDB_EPHEMERAL_MODE=true` to start with in-memory Chroma and bypass persisted local store.
+- Default remains persistent mode; do not enable ephemeral mode in production-intended environments unless explicitly desired.
+
 ## Recovery Criteria
 - Coverage ratios return above baseline thresholds.
 - No recurring `silent_row_loss_detected` on target workloads.

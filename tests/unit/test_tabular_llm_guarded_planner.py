@@ -135,7 +135,8 @@ def test_llm_guarded_planning_path_for_spending_by_month(monkeypatch):
     assert debug["plan_validation_status"] == "success"
     assert debug["sql_validation_status"] == "success"
     assert debug["post_execution_validation_status"] == "success"
-    assert debug["selected_route"] == "trend"
+    assert debug["selected_route"] == "chart"
+    assert debug["requested_output_type"] == "chart"
     assert debug["requested_time_grain"] == "month"
     assert debug["source_datetime_field"] == "created_at"
 

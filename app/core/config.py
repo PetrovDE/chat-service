@@ -80,6 +80,7 @@ class Settings(BaseSettings):
 
     # VectorStore / RAG
     VECTORDB_PATH: str = Field(default="runtime/vector/chromadb")
+    VECTORDB_EPHEMERAL_MODE: bool = Field(default=False)
     COLLECTION_NAME: str = Field(default="documents")
     EMBEDDINGS_MODEL: str = Field(default="nomic-embed-text:latest")
     OLLAMA_CHAT_MODEL: str = Field(default="llama3.2:latest")

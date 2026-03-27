@@ -5,13 +5,15 @@ import json
 import re
 import logging
 from hashlib import sha1
+from threading import Lock
 from typing import List, Dict, Any, Optional, Tuple
 
 from app.core.config import settings
 
 try:
-    from chromadb import PersistentClient
+    from chromadb import EphemeralClient, PersistentClient
 except ImportError:
+    EphemeralClient = None
     PersistentClient = None
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,9 @@ class VectorStoreManager:
     Менеджер ChromaDB с поддержкой динамических коллекций по размерности эмбеддингов.
     """
 
+    _shared_clients: Dict[Tuple[str, str], Any] = {}
+    _shared_clients_lock: Lock = Lock()
+
     def __init__(
         self,
         base_collection_name: str = None,
@@ -29,23 +34,96 @@ class VectorStoreManager:
     ):
         self.base_collection_name = base_collection_name or settings.COLLECTION_NAME
         self.persist_directory = persist_directory or str(settings.get_vectordb_path())
+        self.ephemeral_mode = bool(getattr(settings, "VECTORDB_EPHEMERAL_MODE", False))
 
-        if not PersistentClient:
-            raise ImportError("chromadb library not installed")
-
-        self.client = PersistentClient(path=self.persist_directory)
-
+        self._client: Optional[Any] = None
         self._collections_cache: Dict[Tuple[int, Optional[str], Optional[str]], Any] = {}
         self._current_collection_key: Optional[Tuple[int, Optional[str], Optional[str]]] = None
         self._current_collection: Optional[Any] = None
 
         logger.info(
-            "VectorStoreManager initialized. base=%s dir=%s",
+            (
+                "VectorStoreManager configured: base=%s persist_directory=%s mode=%s "
+                "lazy_initialized=%s"
+            ),
             self.base_collection_name,
             self.persist_directory,
+            self.client_mode,
+            False,
         )
 
     _COLLECTION_TOKEN_RE = re.compile(r"[^a-z0-9_-]+")
+
+    @property
+    def client_mode(self) -> str:
+        return "ephemeral" if self.ephemeral_mode else "persistent"
+
+    @property
+    def client(self) -> Any:
+        return self._get_or_init_client()
+
+    def _cache_key(self) -> Tuple[str, str]:
+        if self.ephemeral_mode:
+            return ("ephemeral", "__shared__")
+        return ("persistent", self.persist_directory)
+
+    def _build_client(self) -> Any:
+        if self.ephemeral_mode:
+            if not EphemeralClient:
+                raise ImportError("chromadb EphemeralClient is not available")
+            return EphemeralClient()
+
+        if not PersistentClient:
+            raise ImportError("chromadb PersistentClient is not available")
+        return PersistentClient(path=self.persist_directory)
+
+    def _get_or_init_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+
+        cache_key = self._cache_key()
+        with self._shared_clients_lock:
+            cached = self._shared_clients.get(cache_key)
+            if cached is None:
+                logger.info(
+                    (
+                        "Initializing Chroma client: mode=%s persist_directory=%s "
+                        "lazy_initialized=%s shared_client_created=%s"
+                    ),
+                    self.client_mode,
+                    self.persist_directory,
+                    True,
+                    True,
+                )
+                try:
+                    cached = self._build_client()
+                except Exception:
+                    logger.exception(
+                        (
+                            "Chroma client initialization failed: mode=%s persist_directory=%s "
+                            "hint=Persisted Chroma store may be corrupted or incompatible. "
+                            "recovery_hint=For local dev, stop the service, backup/remove chroma.sqlite3, "
+                            "or set VECTORDB_EPHEMERAL_MODE=true to start without persisted state."
+                        ),
+                        self.client_mode,
+                        self.persist_directory,
+                    )
+                    raise
+                self._shared_clients[cache_key] = cached
+            else:
+                logger.info(
+                    (
+                        "Initializing Chroma client: mode=%s persist_directory=%s "
+                        "lazy_initialized=%s shared_client_created=%s"
+                    ),
+                    self.client_mode,
+                    self.persist_directory,
+                    True,
+                    False,
+                )
+
+            self._client = cached
+            return cached
 
     def _normalize_collection_token(self, value: Optional[str], *, fallback: str) -> str:
         raw = str(value or "").strip().lower()

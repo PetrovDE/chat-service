@@ -202,3 +202,39 @@ Guarded execution-spec normalization is now more contract-aligned for supported 
 - missing/alias route values fall back to deterministic validated-plan route,
 - missing execution-spec shape details are backfilled from validated plan when deterministic equivalents are available (for example `derived_time_grain`, `source_datetime_field`, `filters`, `output_columns`),
 - this avoids pre-execution `invalid_selected_route` failures for supported chart requests while preserving bounded validation and no-guess schema behavior.
+
+## Update 2026-03-27 (Stage 3: Parallel LangGraph Engine)
+
+Deterministic analytics runtime now supports a parallel LangGraph orchestration path without changing the external tabular/API payload envelope.
+
+Configuration:
+
+- `ANALYTICS_ENGINE_MODE=legacy|langgraph`
+- `ANALYTICS_ENGINE_SHADOW=true|false`
+
+Runtime behavior:
+
+- `legacy` mode serves the existing deterministic execution path.
+- `langgraph` mode serves the LangGraph path and keeps explicit fail-open fallback to legacy when graph execution is unavailable.
+- when shadow mode is enabled, the non-served engine runs for comparison/debug only; served payload contract remains unchanged.
+
+LangGraph node contract (first supported slice):
+
+1. `detect_intent`
+2. `resolve_scope`
+3. `inspect_data_sources`
+4. `build_plan`
+5. `validate_plan`
+6. `build_execution_spec`
+7. `validate_execution_spec`
+8. `execute_tools`
+9. `validate_result`
+10. `repair_or_clarify`
+11. `compose_answer`
+12. `emit_debug_trace`
+
+Reuse posture:
+
+- graph nodes reuse existing audited deterministic and guarded planner code paths (`tabular_sql`, `tabular_intent_router`, `tabular_scope_selector`, `tabular_llm_guarded_planner`, and route payload builders),
+- no new hardcoded analytics answer path is introduced,
+- stable deterministic entrypoint remains `execute_tabular_sql_path(...)`.

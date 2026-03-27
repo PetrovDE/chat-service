@@ -1051,7 +1051,7 @@ def _execute_chart_sync(
     return payload
 
 
-async def execute_tabular_sql_path(
+async def _execute_tabular_sql_path_legacy(
     *,
     query: str,
     files: List[Any],
@@ -1234,6 +1234,8 @@ async def execute_tabular_sql_path(
             detected_language=detected_language,
         )
         return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
+
+
     except Exception as exc:
         error_payload = to_tabular_error_payload(exc)
         error_code = str(error_payload.get("code") or SQL_ERROR_EXECUTION_FAILED)
@@ -1271,4 +1273,20 @@ async def execute_tabular_sql_path(
             detected_language=detected_language,
         )
         return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
+
+
+async def execute_tabular_sql_path(
+    *,
+    query: str,
+    files: List[Any],
+) -> Optional[Dict[str, Any]]:
+    from app.services.chat.tabular_engine_router import execute_tabular_engine_route
+    from app.services.chat.tabular_langgraph import execute_tabular_langgraph_path
+
+    return await execute_tabular_engine_route(
+        query=query,
+        files=files,
+        legacy_executor=_execute_tabular_sql_path_legacy,
+        langgraph_executor=execute_tabular_langgraph_path,
+    )
 

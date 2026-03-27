@@ -162,6 +162,8 @@ class Settings(BaseSettings):
     TABULAR_SQL_MAX_SCANNED_ROWS: int = Field(default=1000000, ge=100, le=100000000)
     TABULAR_SQL_MAX_CHARS: int = Field(default=4000, ge=200, le=50000)
     TABULAR_PROFILE_MAX_COLUMNS: int = Field(default=160, ge=1, le=5000)
+    ANALYTICS_ENGINE_MODE: str = Field(default="legacy")
+    ANALYTICS_ENGINE_SHADOW: bool = Field(default=False)
     TABULAR_LLM_GUARDED_PLANNER_ENABLED: bool = Field(default=False)
     TABULAR_LLM_GUARDED_MAX_ATTEMPTS: int = Field(default=3, ge=1, le=5)
     TABULAR_LLM_GUARDED_PLAN_TIMEOUT_SECONDS: float = Field(default=5.0, ge=1.0, le=60.0)
@@ -235,6 +237,14 @@ class Settings(BaseSettings):
         normalized = str(value or "fallback_default").strip().lower()
         if normalized not in {"fallback_default", "error"}:
             return "fallback_default"
+        return normalized
+
+    @field_validator("ANALYTICS_ENGINE_MODE", mode="before")
+    @classmethod
+    def _normalize_analytics_engine_mode(cls, value: str) -> str:
+        normalized = str(value or "legacy").strip().lower()
+        if normalized not in {"legacy", "langgraph"}:
+            return "legacy"
         return normalized
 
     @property

@@ -356,3 +356,24 @@ This makes each guarded repair iteration and final outcome inspectable without c
 - Codegen failure outcomes now keep `code_source=none` and explicit `codegen_error`; non-LLM code sources are rejected before sandbox execution.
 - Runtime no longer emits `template_runtime_fallback` execution behavior.
 - Compose-stage local formatter fallback remains unchanged (`response_status=fallback`) because it is deterministic formatting of executed evidence, not template analytics generation.
+
+## Update 2026-03-27 (Stage 3: Analytics Engine Routing)
+
+Deterministic tabular execution now emits engine-routing observability for parallel rollout:
+
+- structured log event:
+  - `tabular_analytics_engine_route`
+  - fields: `requested_mode`, `served_mode`, `shadow_enabled`, `fallback_reason`
+- structured error logs:
+  - `tabular_analytics_engine_primary_failed`
+  - `tabular_analytics_engine_legacy_fallback_failed` (when fail-open fallback also fails)
+
+Additive debug fields (backward compatible):
+
+- `analytics_engine_mode_requested`
+- `analytics_engine_mode_served`
+- `analytics_engine_shadow_enabled`
+- `analytics_engine_fallback_reason`
+- `analytics_engine_shadow` (summary of shadow outcome)
+- `analytics_engine_graph_version`
+- `analytics_engine_graph_trace`

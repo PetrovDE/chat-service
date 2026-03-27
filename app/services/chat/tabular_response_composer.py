@@ -11,6 +11,9 @@ from app.services.chat.controlled_response_composer import (
     build_scope_clarification_message as _build_scope_clarification_message,
     build_timeout_message as _build_timeout_message,
 )
+from app.services.chat.tabular_aggregation_response_composer import (
+    build_aggregation_response_text as _build_aggregation_response_text,
+)
 
 
 def build_missing_column_message(
@@ -67,6 +70,27 @@ def build_chart_response_text(
         chart_fallback_reason=chart_fallback_reason,
         result_text=result_text,
         source_scope=source_scope,
+    )
+
+
+def build_aggregation_response_text(
+    *,
+    preferred_lang: str,
+    result_text: str,
+    operation: str,
+    metric_column: str | None = None,
+    group_by_column: str | None = None,
+    source_scope: str | None = None,
+    max_rows: int = 8,
+) -> str:
+    return _build_aggregation_response_text(
+        preferred_lang=preferred_lang,
+        result_text=result_text,
+        operation=operation,
+        metric_column=metric_column,
+        group_by_column=group_by_column,
+        source_scope=source_scope,
+        max_rows=max_rows,
     )
 
 

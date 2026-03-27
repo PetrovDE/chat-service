@@ -6,6 +6,8 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from app.services.chat.language import normalize_preferred_response_language
+
 
 _YEAR_BUCKET_RE = re.compile(r"^(?P<year>\d{4})$")
 _YEAR_MONTH_BUCKET_RE = re.compile(r"^(?P<year>\d{4})[-/](?P<month>\d{1,2})$")
@@ -321,14 +323,62 @@ def _build_contrast_highlight(
     return None
 
 
-def extract_chart_highlights(*, result_text: str, max_items: int = 3) -> List[str]:
+def _localize_highlight_line(*, line: str, preferred_lang: str) -> str:
+    if normalize_preferred_response_language(preferred_lang) != "ru":
+        return line
+
+    localized = str(line or "")
+    localized = localized.replace("Top bucket:", "\u041b\u0438\u0434\u0435\u0440:")
+    localized = localized.replace("Runner-up:", "\u0412\u0442\u043e\u0440\u043e\u0435 \u043c\u0435\u0441\u0442\u043e:")
+    localized = localized.replace("of total", "\u043e\u0442 \u043e\u0431\u0449\u0435\u0433\u043e")
+    localized = localized.replace("is close at", "\u0431\u043b\u0438\u0437\u043a\u043e \u043a \u043b\u0438\u0434\u0435\u0440\u0443:")
+    localized = localized.replace("Shape:", "\u0421\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0430:")
+    localized = localized.replace("concentrated.", "\u043a\u043e\u043d\u0446\u0435\u043d\u0442\u0440\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u0430\u044f.")
+    localized = localized.replace("long-tail.", "\u0434\u043b\u0438\u043d\u043d\u044b\u0439 \u0445\u0432\u043e\u0441\u0442.")
+    localized = localized.replace("balanced across leading buckets", "\u0441\u0431\u0430\u043b\u0430\u043d\u0441\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u0430\u044f \u043f\u043e \u043b\u0438\u0434\u0438\u0440\u0443\u044e\u0449\u0438\u043c \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f\u043c")
+    localized = localized.replace("flat across leading buckets", "\u0440\u043e\u0432\u043d\u0430\u044f \u043f\u043e \u043b\u0438\u0434\u0438\u0440\u0443\u044e\u0449\u0438\u043c \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f\u043c")
+    localized = localized.replace("sparse", "\u0440\u0430\u0437\u0440\u0435\u0436\u0435\u043d\u043d\u0430\u044f")
+    localized = localized.replace("Top ", "\u0422\u043e\u043f-")
+    localized = localized.replace("buckets account for", "\u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0439 \u0434\u0430\u044e\u0442")
+    localized = localized.replace(
+        "so most volume sits in a small set.",
+        "\u043e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 \u0432\u0435\u0441 \u0441\u043e\u0441\u0440\u0435\u0434\u043e\u0442\u043e\u0447\u0435\u043d \u0432 \u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u0438\u0445 \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f\u0445.",
+    )
+    localized = localized.replace("while the remaining", "\u0430 \u043e\u0441\u0442\u0430\u0432\u0448\u0438\u0435\u0441\u044f")
+    localized = localized.replace("buckets share", "\u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0439 \u0434\u0430\u044e\u0442")
+    localized = localized.replace("with no single dominant bucket.", "\u0431\u0435\u0437 \u043e\u0434\u043d\u043e\u0433\u043e \u0434\u043e\u043c\u0438\u043d\u0438\u0440\u0443\u044e\u0449\u0435\u0433\u043e \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u044f.")
+    localized = localized.replace("with very small spread between top values.", "\u0441 \u043c\u0438\u043d\u0438\u043c\u0430\u043b\u044c\u043d\u044b\u043c \u0440\u0430\u0437\u0440\u044b\u0432\u043e\u043c \u043c\u0435\u0436\u0434\u0443 \u043b\u0438\u0434\u0435\u0440\u0430\u043c\u0438.")
+    localized = localized.replace("so a direct bucket-to-bucket comparison is usually enough.", "\u043f\u043e\u044d\u0442\u043e\u043c\u0443 \u0434\u043e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u043e \u043f\u0440\u044f\u043c\u043e\u0433\u043e \u0441\u0440\u0430\u0432\u043d\u0435\u043d\u0438\u044f \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0439.")
+    localized = localized.replace("cover", "\u0434\u0430\u044e\u0442")
+    localized = localized.replace("Trend:", "\u0422\u0440\u0435\u043d\u0434:")
+    localized = localized.replace("increasing over time", "\u0440\u043e\u0441\u0442 \u043f\u043e \u043f\u0435\u0440\u0438\u043e\u0434\u0430\u043c")
+    localized = localized.replace("decreasing over time", "\u0441\u043d\u0438\u0436\u0435\u043d\u0438\u0435 \u043f\u043e \u043f\u0435\u0440\u0438\u043e\u0434\u0430\u043c")
+    localized = localized.replace("flat across time buckets.", "\u0431\u0435\u0437 \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u0439 \u043f\u043e \u043f\u0435\u0440\u0438\u043e\u0434\u0430\u043c.")
+    localized = localized.replace("no clear directional trend across time buckets.", "\u0431\u0435\u0437 \u044f\u0432\u043d\u043e\u0433\u043e \u043d\u0430\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u044f \u043f\u043e \u043f\u0435\u0440\u0438\u043e\u0434\u0430\u043c.")
+    localized = localized.replace("Key contrast:", "\u041a\u043b\u044e\u0447\u0435\u0432\u043e\u0439 \u043a\u043e\u043d\u0442\u0440\u0430\u0441\u0442:")
+    localized = localized.replace("exceeds", "\u0432\u044b\u0448\u0435")
+    localized = localized.replace(" points", " \u043f.\u043f.")
+    localized = localized.replace("top ranks are close", "\u043b\u0438\u0434\u0435\u0440\u044b \u0431\u043b\u0438\u0437\u043a\u0438")
+    localized = localized.replace("differ by", "\u043e\u0442\u043b\u0438\u0447\u0430\u044e\u0442\u0441\u044f \u043d\u0430")
+    return localized
+
+
+def extract_chart_highlights(*, result_text: str, max_items: int = 3, preferred_lang: str = "en") -> List[str]:
     buckets_in_row_order = _parse_chart_buckets(result_text)
     if not buckets_in_row_order:
-        return ["No non-empty buckets were returned by the deterministic chart query."]
+        return [
+            "\u0414\u0435\u0442\u0435\u0440\u043c\u0438\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439 \u0437\u0430\u043f\u0440\u043e\u0441 \u0434\u043b\u044f \u0433\u0440\u0430\u0444\u0438\u043a\u0430 \u043d\u0435 \u0432\u0435\u0440\u043d\u0443\u043b \u043d\u0435\u043f\u0443\u0441\u0442\u044b\u0445 \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0439."
+            if normalize_preferred_response_language(preferred_lang) == "ru"
+            else "No non-empty buckets were returned by the deterministic chart query."
+        ]
 
     ranked = sorted(buckets_in_row_order, key=lambda item: float(item["value"]), reverse=True)
     if not ranked:
-        return ["No numeric chart buckets were returned by the deterministic chart query."]
+        return [
+            "\u0414\u0435\u0442\u0435\u0440\u043c\u0438\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439 \u0437\u0430\u043f\u0440\u043e\u0441 \u0434\u043b\u044f \u0433\u0440\u0430\u0444\u0438\u043a\u0430 \u043d\u0435 \u0432\u0435\u0440\u043d\u0443\u043b \u0447\u0438\u0441\u043b\u043e\u0432\u044b\u0445 \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0439."
+            if normalize_preferred_response_language(preferred_lang) == "ru"
+            else "No numeric chart buckets were returned by the deterministic chart query."
+        ]
 
     max_items = max(1, int(max_items))
     total_value = sum(float(item["value"]) for item in ranked)
@@ -349,4 +399,5 @@ def extract_chart_highlights(*, result_text: str, max_items: int = 3) -> List[st
         if contrast_line:
             highlights.append(contrast_line)
 
-    return highlights[:max_items]
+    compact = highlights[:max_items]
+    return [_localize_highlight_line(line=item, preferred_lang=preferred_lang) for item in compact]

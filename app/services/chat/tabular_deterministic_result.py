@@ -8,7 +8,10 @@ from app.domain.chat.query_planner import QueryPlanDecision
 from app.observability.slo_metrics import observe_retrieval_coverage, observe_tabular_row_coverage
 from app.services.chat.language import apply_language_policy_to_prompt
 from app.services.chat.tabular_answer_shaper import build_tabular_answer_quality_guidance
-from app.services.chat.tabular_response_composer import build_chart_response_text
+from app.services.chat.tabular_response_composer import (
+    build_aggregation_response_text,
+    build_chart_response_text,
+)
 from app.services.chat.tabular_schema_response_composer import build_schema_summary_response
 
 
@@ -105,6 +108,53 @@ def _build_chart_short_circuit_response(
     return response_text
 
 
+def _build_aggregation_short_circuit_response(
+    *,
+    preferred_lang: str,
+    rag_debug: Dict[str, Any],
+) -> str:
+    tabular_debug = rag_debug.get("tabular_sql") if isinstance(rag_debug.get("tabular_sql"), dict) else {}
+    result_text = str(tabular_debug.get("result") or "").strip()
+    if not result_text:
+        return ""
+
+    measure_payload = tabular_debug.get("measure") if isinstance(tabular_debug.get("measure"), dict) else {}
+    dimension_payload = tabular_debug.get("dimension") if isinstance(tabular_debug.get("dimension"), dict) else {}
+    temporal_plan = (
+        tabular_debug.get("temporal_aggregation_plan")
+        if isinstance(tabular_debug.get("temporal_aggregation_plan"), dict)
+        else {}
+    )
+
+    operation = str(
+        tabular_debug.get("operation")
+        or measure_payload.get("aggregation")
+        or temporal_plan.get("operation")
+        or "count"
+    ).strip()
+    metric_column = str(
+        tabular_debug.get("metric_column")
+        or measure_payload.get("field")
+        or temporal_plan.get("measure_column")
+        or ""
+    ).strip() or None
+    group_by_column = str(
+        tabular_debug.get("group_by_column")
+        or dimension_payload.get("field")
+        or temporal_plan.get("derived_grouping_dimension")
+        or ""
+    ).strip() or None
+
+    return build_aggregation_response_text(
+        preferred_lang=preferred_lang,
+        result_text=result_text,
+        operation=operation,
+        metric_column=metric_column,
+        group_by_column=group_by_column,
+        source_scope=_resolve_source_scope(rag_debug=rag_debug),
+    )
+
+
 def build_tabular_success_route_result(
     *,
     query: str,
@@ -184,6 +234,20 @@ def build_tabular_success_route_result(
         rag_debug["fallback_type"] = "none"
         rag_debug["fallback_reason"] = "none"
         rag_debug["controlled_response_state"] = "schema_summary_ready"
+    elif selected_route_value in {"aggregation", "comparison"}:
+        aggregation_response_text = _build_aggregation_short_circuit_response(
+            preferred_lang=preferred_lang,
+            rag_debug=rag_debug,
+        )
+        if aggregation_response_text:
+            rag_debug["short_circuit_response"] = True
+            rag_debug["short_circuit_response_text"] = aggregation_response_text
+            rag_debug["fallback_type"] = "none"
+            rag_debug["fallback_reason"] = "none"
+            rag_debug["controlled_response_state"] = "aggregation_render_success"
+        else:
+            rag_debug["fallback_type"] = "none"
+            rag_debug["fallback_reason"] = "none"
     else:
         rag_debug["fallback_type"] = "none"
         rag_debug["fallback_reason"] = "none"

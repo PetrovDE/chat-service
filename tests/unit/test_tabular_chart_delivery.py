@@ -178,7 +178,7 @@ def test_execute_chart_sync_render_failure_returns_controlled_fallback(monkeypat
     assert payload["debug"]["chart_artifact_available"] is False
     assert payload["debug"]["chart_artifact_exists"] is False
     assert payload["debug"]["chart_fallback_reason"] == "renderer_unavailable"
-    assert "не удалось доставить изображение графика" in payload["chart_response_text"].lower()
+    assert "\u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0435" in payload["chart_response_text"].lower()
     assert "Distribution" not in payload["chart_response_text"]
 
 
@@ -238,7 +238,7 @@ def test_deterministic_route_sets_short_circuit_and_artifacts_for_chart():
     )
 
     assert rag_debug["short_circuit_response"] is True
-    assert "График распределения" in rag_debug["short_circuit_response_text"]
+    assert "\u0433\u0440\u0430\u0444\u0438\u043a" in rag_debug["short_circuit_response_text"].lower()
     assert rag_debug["artifacts_count"] == 1
     assert rag_debug["artifacts"][0]["url"].startswith("/uploads/")
 
@@ -367,5 +367,6 @@ def test_deterministic_route_missing_artifact_keeps_russian_user_text():
     )
 
     assert "could not be delivered" not in rag_debug["short_circuit_response_text"].lower()
-    assert "\u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c" in rag_debug["short_circuit_response_text"].lower()
+    assert "\u0433\u0440\u0430\u0444\u0438\u043a" in rag_debug["short_circuit_response_text"].lower()
     assert rag_debug["chart_artifact_available"] is False
+

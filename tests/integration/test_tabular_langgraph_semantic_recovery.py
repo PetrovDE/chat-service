@@ -235,7 +235,7 @@ def test_langgraph_semantic_recovery_returns_specific_clarification_for_ambiguou
     debug = result.get("debug") or {}
     assert debug.get("analytics_engine_mode_served") == "langgraph"
     assert debug.get("clarification_reason_code") == "ambiguous_date_grain_or_source"
-    assert "datetime column and time grain" in clarification_prompt
+    assert "\u043a\u043e\u043b\u043e\u043d\u043a\u0443 \u0434\u0430\u0442\u044b" in clarification_prompt
     assert "metric column and grouping scope" not in clarification_prompt
     assert "source_datetime" in str(debug.get("analytics_engine_graph_stop_reason") or "") or "datetime" in str(
         debug.get("analytics_engine_graph_stop_reason") or ""

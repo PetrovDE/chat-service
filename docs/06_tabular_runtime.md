@@ -294,3 +294,17 @@ Compatibility:
 
 - external API/tabular payload envelope remains unchanged,
 - debug contract remains additive (including reason-coded clarification diagnostics).
+
+## Update 2026-03-28 (Tabular Answer Composition Polish)
+
+User-facing deterministic tabular composition was tightened for aggregation/chart/clarification UX quality without changing transport contracts.
+
+- aggregation and grouped table deterministic routes now support local short-circuit response composition with compact ranked/table formatting (no raw JSON/list dumps in final user text),
+- chart short-circuit wording is cleaner and language-consistent with localized highlights and source description,
+- clarification wording for guarded planner retry exhaustion is reason-specific and language-aware,
+- internal debug/route mechanics remain in debug payload only and are not surfaced as user-facing wording.
+
+Compatibility:
+
+- API response envelope and `response_contract` fields are unchanged,
+- deterministic SQL execution, chart artifact delivery, and debug sections remain backward compatible.

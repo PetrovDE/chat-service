@@ -849,8 +849,12 @@ def _build_retry_exhausted_clarification(*, preferred_lang: str) -> str:
     return localized_text(
         preferred_lang=preferred_lang,
         ru=(
-            "Please clarify the metric column and grouping scope. "
-            "Example: `sum of amount by month using created_at`."
+            "\u0423\u0442\u043e\u0447\u043d\u0438\u0442\u0435 "
+            "\u043a\u043e\u043b\u043e\u043d\u043a\u0443 "
+            "\u043c\u0435\u0442\u0440\u0438\u043a\u0438 \u0438 "
+            "\u0433\u0440\u0430\u043d\u0438\u0446\u044b "
+            "\u0433\u0440\u0443\u043f\u043f\u0438\u0440\u043e\u0432\u043a\u0438. "
+            "\u041f\u0440\u0438\u043c\u0435\u0440: `sum of amount by month using created_at`."
         ),
         en=(
             "Please clarify the metric column and grouping scope. "

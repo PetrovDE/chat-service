@@ -5,6 +5,7 @@ import json
 from typing import Any, Dict, List
 
 from app.services.chat import tabular_llm_guarded_planner as guarded_planner
+from app.services.chat.language import detect_preferred_response_language
 from app.services.chat.tabular_langgraph import semantic_clarification
 from app.services.chat.tabular_langgraph import semantic_planning
 from app.services.chat.tabular_langgraph import tool_adapters
@@ -352,9 +353,13 @@ def repair_or_clarify(state: TabularLangGraphState) -> Dict[str, object]:
         retry_reason=str(state.get("retry_reason") or "retries_exhausted"),
         table=state.get("table"),
     )
+    preferred_lang = detect_preferred_response_language(state["query"])
     clarification_details = {
         "reason_code": clarification_reason_code,
-        "clarification_prompt": semantic_clarification.build_retry_clarification(reason_code=clarification_reason_code),
+        "clarification_prompt": semantic_clarification.build_retry_clarification(
+            reason_code=clarification_reason_code,
+            preferred_lang=preferred_lang,
+        ),
     }
 
     payload = tool_adapters.build_guarded_retry_payload(

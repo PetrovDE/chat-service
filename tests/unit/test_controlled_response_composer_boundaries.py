@@ -34,7 +34,7 @@ def test_controlled_fallback_templates_cover_file_and_tabular_states() -> None:
     assert "please clarify" in file_ambiguous.lower()
     assert "available options" in missing_column.lower()
     assert "could not be delivered" in chart_failed.lower()
-    assert "reason=artifact_not_accessible" in chart_failed
+    assert "artifact is not accessible" in chart_failed
 
 
 def test_localization_is_preserved_in_controlled_responses() -> None:
@@ -86,3 +86,15 @@ def test_chart_response_text_includes_source_and_top_bucket_hint() -> None:
     assert "Used data: orders.xlsx | sheet=Orders | table=orders_sheet." in message
     assert "Top bucket: `200` (10, 83.3% of total)." in message
     assert "Shape: sparse (2 buckets)" in message
+
+
+def test_scope_clarification_ru_is_specific_without_debug_terms() -> None:
+    message = tabular_composer.build_scope_clarification_message(
+        preferred_lang="ru",
+        scope_kind="sheet",
+        scope_options=["North", "South"],
+    )
+
+    assert "\u0432\u0430\u0440\u0438\u0430\u043d\u0442\u044b" in message.lower()
+    assert "reason=" not in message.lower()
+    assert "stop_reason" not in message.lower()

@@ -4,6 +4,7 @@ import json
 from typing import Any, Dict, List, Sequence
 
 from app.services.chat.chart_insight_shaper import extract_chart_highlights
+from app.services.chat.language import localized_text
 
 
 def _parse_tabular_rows(result_text: str) -> List[List[Any]]:
@@ -27,21 +28,59 @@ def build_column_followup_suggestion(
     *,
     alternatives: Sequence[str],
     requested_fields: Sequence[str],
+    preferred_lang: str = "en",
 ) -> str:
     preferred = str(next((item for item in list(alternatives or []) if str(item or "").strip()), "")).strip()
     requested = str(next((item for item in list(requested_fields or []) if str(item or "").strip()), "")).strip()
     if preferred and requested:
-        return f"Best next question: `Use {preferred} instead of {requested}, then run the same analysis.`"
+        return localized_text(
+            preferred_lang=preferred_lang,
+            ru=(
+                f"\u041b\u0443\u0447\u0448\u0438\u0439 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 \u0437\u0430\u043f\u0440\u043e\u0441: "
+                f"`\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439 {preferred} \u0432\u043c\u0435\u0441\u0442\u043e {requested} "
+                f"\u0438 \u043f\u043e\u0432\u0442\u043e\u0440\u0438 \u0442\u043e\u0442 \u0436\u0435 \u0430\u043d\u0430\u043b\u0438\u0437.`"
+            ),
+            en=f"Best next question: `Use {preferred} instead of {requested}, then run the same analysis.`",
+        )
     if preferred:
-        return f"Best next question: `Run the analysis using {preferred}.`"
-    return "Best next question: `Tell me the exact column name you want to analyze.`"
+        return localized_text(
+            preferred_lang=preferred_lang,
+            ru=f"\u041b\u0443\u0447\u0448\u0438\u0439 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 \u0437\u0430\u043f\u0440\u043e\u0441: `\u0417\u0430\u043f\u0443\u0441\u0442\u0438 \u0430\u043d\u0430\u043b\u0438\u0437 \u043f\u043e {preferred}.`",
+            en=f"Best next question: `Run the analysis using {preferred}.`",
+        )
+    return localized_text(
+        preferred_lang=preferred_lang,
+        ru=(
+            "\u041b\u0443\u0447\u0448\u0438\u0439 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 "
+            "\u0437\u0430\u043f\u0440\u043e\u0441: "
+            "`\u0423\u043a\u0430\u0436\u0438 \u0442\u043e\u0447\u043d\u043e\u0435 "
+            "\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 \u043a\u043e\u043b\u043e\u043d\u043a\u0438 "
+            "\u0434\u043b\u044f \u0430\u043d\u0430\u043b\u0438\u0437\u0430.`"
+        ),
+        en="Best next question: `Tell me the exact column name you want to analyze.`",
+    )
 
 
-def build_scope_followup_suggestion(*, scope_options: Sequence[str]) -> str:
+def build_scope_followup_suggestion(*, scope_options: Sequence[str], preferred_lang: str = "en") -> str:
     preferred = str(next((item for item in list(scope_options or []) if str(item or "").strip()), "")).strip()
     if preferred:
-        return f"Best next question: `Use {preferred}.`"
-    return "Best next question: `Name the file or sheet/table to use.`"
+        return localized_text(
+            preferred_lang=preferred_lang,
+            ru=f"\u041b\u0443\u0447\u0448\u0438\u0439 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 \u0437\u0430\u043f\u0440\u043e\u0441: `\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439 {preferred}.`",
+            en=f"Best next question: `Use {preferred}.`",
+        )
+    return localized_text(
+        preferred_lang=preferred_lang,
+        ru=(
+            "\u041b\u0443\u0447\u0448\u0438\u0439 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 "
+            "\u0437\u0430\u043f\u0440\u043e\u0441: "
+            "`\u0423\u043a\u0430\u0436\u0438 \u0444\u0430\u0439\u043b "
+            "\u0438\u043b\u0438 \u043b\u0438\u0441\u0442/\u0442\u0430\u0431\u043b\u0438\u0446\u0443, "
+            "\u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u043d\u0443\u0436\u043d\u043e "
+            "\u0438\u0441\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u044c.`"
+        ),
+        en="Best next question: `Name the file or sheet/table to use.`",
+    )
 
 
 def _source_scope_hint(rag_sources: Sequence[str]) -> str:
@@ -158,7 +197,13 @@ def _aggregation_hint_block(tabular_sql_result: Dict[str, Any]) -> str:
         return f"Deterministic direct answer candidate: {first[0]}."
     if len(first) >= 2:
         preview_rows = rows[:3]
-        return f"Deterministic grouped result preview (first rows): {json.dumps(preview_rows, ensure_ascii=False)}"
+        preview_items: List[str] = []
+        for row in preview_rows:
+            if len(row) < 2:
+                continue
+            preview_items.append(f"{row[0]} -> {row[1]}")
+        if preview_items:
+            return "Deterministic grouped result preview (first rows): " + "; ".join(preview_items)
     return ""
 
 

@@ -92,7 +92,7 @@ def build_schema_question_payload(
 
 def is_guarded_candidate(*, parsed_query_route: str, selected_route: str) -> bool:
     return bool(
-        guarded_planner._is_guarded_mode_candidate(
+        guarded_planner.is_guarded_mode_candidate(
             parsed_query_route=parsed_query_route,
             selected_route=selected_route,
         )
@@ -100,10 +100,10 @@ def is_guarded_candidate(*, parsed_query_route: str, selected_route: str) -> boo
 
 
 async def call_plan_llm(*, query: str, table: Any, feedback: Sequence[str]) -> tuple[Optional[Dict[str, Any]], str]:
-    prompt = guarded_planner._build_plan_prompt(query=query, table=table, feedback=feedback)
+    prompt = guarded_planner.build_plan_prompt(query=query, table=table, feedback=feedback)
     max_tokens = int(getattr(settings, "TABULAR_LLM_GUARDED_PLAN_MAX_TOKENS", 800) or 800)
     timeout_seconds = float(getattr(settings, "TABULAR_LLM_GUARDED_PLAN_TIMEOUT_SECONDS", 5.0) or 5.0)
-    return await guarded_planner._call_llm_json(
+    return await guarded_planner.call_llm_json(
         prompt=prompt,
         max_tokens=max_tokens,
         timeout_seconds=timeout_seconds,
@@ -113,7 +113,7 @@ async def call_plan_llm(*, query: str, table: Any, feedback: Sequence[str]) -> t
 
 def normalize_and_validate_plan(*, raw_plan: Dict[str, Any], query: str, table: Any) -> Any:
     normalized = guarded_planner.normalize_plan_payload(raw_plan=raw_plan, query=query)
-    return guarded_planner._validate_plan(plan=normalized, table=table, query=query)
+    return guarded_planner.validate_plan(plan=normalized, table=table, query=query)
 
 
 async def call_execution_spec_llm(
@@ -122,14 +122,14 @@ async def call_execution_spec_llm(
     validated_plan: Dict[str, Any],
     feedback: Sequence[str],
 ) -> tuple[Optional[Dict[str, Any]], str]:
-    prompt = guarded_planner._build_execution_spec_prompt(
+    prompt = guarded_planner.build_execution_spec_prompt(
         query=query,
         validated_plan=validated_plan,
         feedback=feedback,
     )
     max_tokens = int(getattr(settings, "TABULAR_LLM_GUARDED_EXECUTION_MAX_TOKENS", 700) or 700)
     timeout_seconds = float(getattr(settings, "TABULAR_LLM_GUARDED_EXECUTION_TIMEOUT_SECONDS", 5.0) or 5.0)
-    return await guarded_planner._call_llm_json(
+    return await guarded_planner.call_llm_json(
         prompt=prompt,
         max_tokens=max_tokens,
         timeout_seconds=timeout_seconds,
@@ -142,15 +142,15 @@ def normalize_and_validate_execution_spec(*, raw_execution_spec: Dict[str, Any],
         raw_execution_spec=raw_execution_spec,
         validated_plan=validated_plan,
     )
-    return guarded_planner._validate_execution_spec(
+    return guarded_planner.validate_execution_spec(
         execution_spec=normalized,
         validated_plan=validated_plan,
     )
 
 
 def validate_sql_for_execution(*, table: Any, execution_spec: Dict[str, Any]) -> tuple[Any, Dict[str, Any]]:
-    sql_bundle = guarded_planner._build_sql_from_execution_spec(table=table, execution_spec=execution_spec)
-    sql_validation = guarded_planner._validate_sql(
+    sql_bundle = guarded_planner.build_sql_from_execution_spec(table=table, execution_spec=execution_spec)
+    sql_validation = guarded_planner.validate_sql(
         sql=str(sql_bundle.get("sql") or ""),
         table=table,
         execution_spec=execution_spec,
@@ -160,7 +160,7 @@ def validate_sql_for_execution(*, table: Any, execution_spec: Dict[str, Any]) ->
 
 async def execute_guarded_sql(*, dataset: Any, table: Any, guarded_sql: str, count_sql: str) -> Dict[str, Any]:
     return await asyncio.to_thread(
-        guarded_planner._execute_sql,
+        guarded_planner.execute_sql,
         dataset=dataset,
         table=table,
         guarded_sql=guarded_sql,
@@ -185,7 +185,7 @@ def build_guarded_success_payload(
     repair_iteration_trace: Sequence[Dict[str, Any]],
     scope_debug_fields: Dict[str, Any],
 ) -> Dict[str, Any]:
-    payload = guarded_planner._build_success_payload(
+    payload = guarded_planner.build_success_payload(
         query=query,
         dataset=dataset,
         table=table,
@@ -219,8 +219,10 @@ def build_guarded_retry_payload(
     repair_failure_reason: str,
     repair_iteration_trace: Sequence[Dict[str, Any]],
     scope_debug_fields: Dict[str, Any],
+    clarification_prompt_override: Optional[str] = None,
+    clarification_reason_code: str = "planner_validation_failed",
 ) -> Dict[str, Any]:
-    payload = guarded_planner._build_retry_exhausted_payload(
+    payload = guarded_planner.build_retry_exhausted_payload(
         query=query,
         dataset=dataset,
         table=table,
@@ -234,6 +236,8 @@ def build_guarded_retry_payload(
         repair_iteration_count=repair_iteration_count,
         repair_failure_reason=repair_failure_reason,
         repair_iteration_trace=repair_iteration_trace,
+        clarification_prompt_override=clarification_prompt_override,
+        clarification_reason_code=clarification_reason_code,
     )
     return apply_scope_debug(payload=payload, scope_debug_fields=scope_debug_fields)
 

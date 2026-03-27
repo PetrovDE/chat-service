@@ -5,6 +5,8 @@ import json
 from typing import Any, Dict, List
 
 from app.services.chat import tabular_llm_guarded_planner as guarded_planner
+from app.services.chat.tabular_langgraph import semantic_clarification
+from app.services.chat.tabular_langgraph import semantic_planning
 from app.services.chat.tabular_langgraph import tool_adapters
 from app.services.chat.tabular_langgraph.node_utils import append_trace
 from app.services.chat.tabular_langgraph.state import TabularLangGraphState
@@ -67,6 +69,12 @@ async def build_plan(state: TabularLangGraphState) -> Dict[str, object]:
         }
 
     table = state.get("table")
+    selected_route = str(state.get("selected_route") or "aggregation")
+    semantic_plan_hint = semantic_planning.build_semantic_plan_hint(
+        query=state["query"],
+        table=table,
+        selected_route=selected_route,
+    )
     raw_plan, plan_call_status = await tool_adapters.call_plan_llm(
         query=state["query"],
         table=table,
@@ -77,21 +85,37 @@ async def build_plan(state: TabularLangGraphState) -> Dict[str, object]:
             "skip_guarded_plan": True,
             "next_step": "execute_tools",
             "plan_validation_failures": [str(plan_call_status)],
+            "semantic_plan_hint": semantic_plan_hint,
             "node_trace": append_trace(state, node="build_plan", status="skipped", reason=plan_call_status),
         }
 
     if plan_call_status != "success" or not isinstance(raw_plan, dict):
+        if isinstance(semantic_plan_hint, dict) and semantic_plan_hint:
+            return {
+                "raw_plan": semantic_plan_hint,
+                "semantic_plan_hint": semantic_plan_hint,
+                "plan_validation_failures": [f"plan_parse_failed:{plan_call_status}", "semantic_plan_fallback"],
+                "next_step": "validate_plan",
+                "node_trace": append_trace(
+                    state,
+                    node="build_plan",
+                    status="ok",
+                    reason="plan_invalid_json_semantic_fallback",
+                ),
+            }
         return {
             "retry_next": True,
             "retry_reason": "plan_invalid_json",
             "plan_feedback": [f"plan parse failed: {plan_call_status}"],
             "plan_validation_failures": [f"plan_parse_failed:{plan_call_status}"],
+            "semantic_plan_hint": semantic_plan_hint,
             "next_step": "repair_or_clarify",
             "node_trace": append_trace(state, node="build_plan", status="retry", reason="plan_invalid_json"),
         }
 
     return {
         "raw_plan": raw_plan,
+        "semantic_plan_hint": semantic_plan_hint,
         "plan_validation_failures": [],
         "next_step": "validate_plan",
         "node_trace": append_trace(state, node="build_plan", status="ok"),
@@ -109,11 +133,25 @@ def validate_plan(state: TabularLangGraphState) -> Dict[str, object]:
             "node_trace": append_trace(state, node="validate_plan", status="retry", reason="missing_raw_plan"),
         }
 
+    semantic_hint = state.get("semantic_plan_hint") if isinstance(state.get("semantic_plan_hint"), dict) else {}
+    merged_plan = (
+        semantic_planning.merge_plan_with_semantic_hint(raw_plan=raw_plan, semantic_hint=semantic_hint)
+        if semantic_hint
+        else dict(raw_plan)
+    )
     validation = tool_adapters.normalize_and_validate_plan(
-        raw_plan=raw_plan,
+        raw_plan=merged_plan,
         query=state["query"],
         table=state.get("table"),
     )
+    if validation.status != "success" and semantic_hint:
+        semantic_validation = tool_adapters.normalize_and_validate_plan(
+            raw_plan=semantic_hint,
+            query=state["query"],
+            table=state.get("table"),
+        )
+        if semantic_validation.status == "success" and isinstance(semantic_validation.payload, dict):
+            validation = semantic_validation
     if validation.status != "success" or not isinstance(validation.payload, dict):
         errors = _compact_errors(validation.errors, fallback=str(validation.reason or "plan_validation_failed"))
         return {
@@ -128,6 +166,7 @@ def validate_plan(state: TabularLangGraphState) -> Dict[str, object]:
     validated_plan = dict(validation.payload)
     return {
         "validated_plan": validated_plan,
+        "semantic_plan_hint": semantic_hint,
         "plan_hash": _json_hash(validated_plan),
         "plan_summary": _plan_summary(validated_plan),
         "plan_validation_failures": [],
@@ -147,6 +186,7 @@ async def build_execution_spec(state: TabularLangGraphState) -> Dict[str, object
             "node_trace": append_trace(state, node="build_execution_spec", status="retry", reason="missing_validated_plan"),
         }
 
+    execution_spec_hint = semantic_planning.build_execution_spec_hint(validated_plan=validated_plan)
     raw_execution_spec, execution_call_status = await tool_adapters.call_execution_spec_llm(
         query=state["query"],
         validated_plan=validated_plan,
@@ -157,21 +197,40 @@ async def build_execution_spec(state: TabularLangGraphState) -> Dict[str, object
             "skip_guarded_plan": True,
             "execution_spec_validation_failures": [str(execution_call_status)],
             "next_step": "execute_tools",
+            "execution_spec_hint": execution_spec_hint,
             "node_trace": append_trace(state, node="build_execution_spec", status="skipped", reason=execution_call_status),
         }
 
     if execution_call_status != "success" or not isinstance(raw_execution_spec, dict):
+        if isinstance(execution_spec_hint, dict) and execution_spec_hint:
+            return {
+                "raw_execution_spec": execution_spec_hint,
+                "execution_spec_hint": execution_spec_hint,
+                "execution_spec_validation_failures": [
+                    f"execution_spec_parse_failed:{execution_call_status}",
+                    "semantic_execution_spec_fallback",
+                ],
+                "next_step": "validate_execution_spec",
+                "node_trace": append_trace(
+                    state,
+                    node="build_execution_spec",
+                    status="ok",
+                    reason="execution_spec_invalid_json_semantic_fallback",
+                ),
+            }
         return {
             "retry_next": True,
             "retry_reason": "execution_spec_invalid_json",
             "execution_feedback": [f"execution spec parse failed: {execution_call_status}"],
             "execution_spec_validation_failures": [f"execution_spec_parse_failed:{execution_call_status}"],
+            "execution_spec_hint": execution_spec_hint,
             "next_step": "repair_or_clarify",
             "node_trace": append_trace(state, node="build_execution_spec", status="retry", reason="execution_spec_invalid_json"),
         }
 
     return {
         "raw_execution_spec": raw_execution_spec,
+        "execution_spec_hint": execution_spec_hint,
         "execution_spec_validation_failures": [],
         "next_step": "validate_execution_spec",
         "node_trace": append_trace(state, node="build_execution_spec", status="ok"),
@@ -190,10 +249,26 @@ def validate_execution_spec(state: TabularLangGraphState) -> Dict[str, object]:
             "node_trace": append_trace(state, node="validate_execution_spec", status="retry", reason="execution_spec_missing"),
         }
 
-    execution_validation = tool_adapters.normalize_and_validate_execution_spec(
+    execution_spec_hint = (
+        state.get("execution_spec_hint")
+        if isinstance(state.get("execution_spec_hint"), dict)
+        else semantic_planning.build_execution_spec_hint(validated_plan=validated_plan)
+    )
+    merged_execution_spec = semantic_planning.merge_execution_spec_with_hint(
         raw_execution_spec=raw_execution_spec,
+        spec_hint=execution_spec_hint,
+    )
+    execution_validation = tool_adapters.normalize_and_validate_execution_spec(
+        raw_execution_spec=merged_execution_spec,
         validated_plan=validated_plan,
     )
+    if execution_validation.status != "success":
+        semantic_validation = tool_adapters.normalize_and_validate_execution_spec(
+            raw_execution_spec=execution_spec_hint,
+            validated_plan=validated_plan,
+        )
+        if semantic_validation.status == "success" and isinstance(semantic_validation.payload, dict):
+            execution_validation = semantic_validation
     if execution_validation.status != "success" or not isinstance(execution_validation.payload, dict):
         errors = _compact_errors(
             execution_validation.errors,
@@ -231,7 +306,7 @@ def validate_execution_spec(state: TabularLangGraphState) -> Dict[str, object]:
         "guarded_sql": str(sql_validation.payload.get("guarded_sql") or ""),
         "count_sql": str(sql_bundle.get("count_sql") or ""),
         "guard_debug": dict(sql_validation.payload.get("guard_debug") or {}),
-        "raw_execution_spec": raw_execution_spec,
+        "raw_execution_spec": merged_execution_spec,
         "execution_spec_validation_failures": [],
         "next_step": "execute_tools",
         "node_trace": append_trace(state, node="validate_execution_spec", status="ok"),
@@ -272,7 +347,15 @@ def repair_or_clarify(state: TabularLangGraphState) -> Dict[str, object]:
     validated_plan = state.get("validated_plan") if isinstance(state.get("validated_plan"), dict) else {}
     selected_route = str(state.get("selected_route") or "aggregation")
     if validated_plan:
-        selected_route = guarded_planner._route_from_validated_plan(validated_plan)
+        selected_route = guarded_planner.route_from_validated_plan(validated_plan)
+    clarification_reason_code = semantic_clarification.classify_retry_reason(
+        retry_reason=str(state.get("retry_reason") or "retries_exhausted"),
+        table=state.get("table"),
+    )
+    clarification_details = {
+        "reason_code": clarification_reason_code,
+        "clarification_prompt": semantic_clarification.build_retry_clarification(reason_code=clarification_reason_code),
+    }
 
     payload = tool_adapters.build_guarded_retry_payload(
         query=state["query"],
@@ -289,11 +372,14 @@ def repair_or_clarify(state: TabularLangGraphState) -> Dict[str, object]:
         repair_failure_reason=str(state.get("retry_reason") or "retries_exhausted"),
         repair_iteration_trace=list(state.get("node_trace") or []),
         scope_debug_fields=dict(state.get("scope_debug_fields") or {}),
+        clarification_prompt_override=str(clarification_details.get("clarification_prompt") or "").strip() or None,
+        clarification_reason_code=str(clarification_details.get("reason_code") or "planner_validation_failed"),
     )
     return {
         "payload": payload,
         "retry_next": False,
         "graph_stop_reason": str(state.get("retry_reason") or "retries_exhausted"),
+        "clarification_reason_code": str(clarification_details.get("reason_code") or "planner_validation_failed"),
         "next_step": "compose_answer",
         "node_trace": append_trace(state, node="repair_or_clarify", status="ok", reason="retries_exhausted"),
     }

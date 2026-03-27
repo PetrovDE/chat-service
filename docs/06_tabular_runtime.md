@@ -263,3 +263,34 @@ Engine-router additive fields are mirrored at the top-level debug contract for b
 - `engine_fallback_reason`
 
 These fields are additive and do not change the existing stable tabular/API payload envelope.
+
+## Update 2026-03-27 (Stage 5: LangGraph Semantic Planning Normalization)
+
+LangGraph tabular planning now owns schema-aware semantic normalization before guarded deterministic validation/execution:
+
+- planning path now applies a semantic hint layer in LangGraph nodes before guarded plan/spec validation,
+- semantic layer resolves common analytics intent structure (measure, grouping, time-grain, chart/table intent) from:
+  - parsed query signals,
+  - schema-first field resolution,
+  - temporal measure/datetime resolvers,
+- when LLM plan/spec payload is weak or structurally inconsistent, LangGraph performs bounded semantic repair before validator retries.
+
+Deterministic SQL posture is unchanged in safety terms and remains executor/validator backend:
+
+- SQL still derives from validated structured execution-spec only,
+- SQL guardrails and bounded execution limits are unchanged,
+- no unrestricted direct query-to-SQL generation is introduced.
+
+Repair/clarification behavior improvement:
+
+- retry exhaustion no longer returns one generic clarification for all failures,
+- clarification is reason-coded for dominant planner failure classes:
+  - missing measure,
+  - missing grouping dimension,
+  - ambiguous datetime source or date-grain,
+  - no numeric columns for requested aggregation.
+
+Compatibility:
+
+- external API/tabular payload envelope remains unchanged,
+- debug contract remains additive (including reason-coded clarification diagnostics).

@@ -715,7 +715,7 @@ def _build_sql_from_execution_spec(
         value_expr = "COUNT(*)"
     else:
         metric_q = _quote_ident(str(measure_field or ""))
-        numeric_expr = f"CAST(REPLACE(NULLIF(TRIM({metric_q}), ''), ',', '.') AS DOUBLE)"
+        numeric_expr = f"CAST(REPLACE(NULLIF(TRIM(CAST({metric_q} AS VARCHAR)), ''), ',', '.') AS DOUBLE)"
         operation = {"sum": "SUM", "avg": "AVG", "min": "MIN", "max": "MAX"}[aggregation]
         value_expr = f"ROUND({operation}({numeric_expr}), 6)"
 
@@ -1100,9 +1100,15 @@ def _build_retry_exhausted_payload(
     repair_iteration_count: int,
     repair_failure_reason: str,
     repair_iteration_trace: Sequence[Dict[str, Any]],
+    clarification_prompt_override: Optional[str] = None,
+    clarification_reason_code: str = "planner_validation_failed",
 ) -> Dict[str, Any]:
     preferred_lang = detect_preferred_response_language(query)
-    clarification_prompt = _build_retry_exhausted_clarification(preferred_lang=preferred_lang)
+    clarification_prompt = (
+        str(clarification_prompt_override).strip()
+        if str(clarification_prompt_override or "").strip()
+        else _build_retry_exhausted_clarification(preferred_lang=preferred_lang)
+    )
     payload = {
         "status": "error",
         "clarification_prompt": clarification_prompt,
@@ -1167,6 +1173,7 @@ def _build_retry_exhausted_payload(
             "requested_output_type": str(last_plan.get("requested_output_type") or "table"),
             "matched_columns": [],
             "unmatched_requested_fields": [],
+            "clarification_reason_code": str(clarification_reason_code or "planner_validation_failed"),
         },
     )
     return payload
@@ -1180,6 +1187,157 @@ def _is_guarded_mode_candidate(*, parsed_query_route: str, selected_route: str) 
     if normalized_selected == "unsupported_missing_column" and normalized_parsed in ANALYTIC_ROUTES:
         return True
     return normalized_parsed in ANALYTIC_ROUTES
+
+
+def build_plan_prompt(*, query: str, table: ResolvedTabularTable, feedback: Sequence[str]) -> str:
+    return _build_plan_prompt(query=query, table=table, feedback=feedback)
+
+
+async def call_llm_json(
+    *,
+    prompt: str,
+    max_tokens: int,
+    timeout_seconds: float,
+    policy_class: str,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    return await _call_llm_json(
+        prompt=prompt,
+        max_tokens=max_tokens,
+        timeout_seconds=timeout_seconds,
+        policy_class=policy_class,
+    )
+
+
+def validate_plan(*, plan: Dict[str, Any], table: ResolvedTabularTable, query: str = "") -> StageValidation:
+    return _validate_plan(plan=plan, table=table, query=query)
+
+
+def route_from_validated_plan(validated_plan: Dict[str, Any]) -> str:
+    return _route_from_validated_plan(validated_plan)
+
+
+def build_execution_spec_prompt(
+    *,
+    query: str,
+    validated_plan: Dict[str, Any],
+    feedback: Sequence[str],
+) -> str:
+    return _build_execution_spec_prompt(
+        query=query,
+        validated_plan=validated_plan,
+        feedback=feedback,
+    )
+
+
+def validate_execution_spec(*, execution_spec: Dict[str, Any], validated_plan: Dict[str, Any]) -> StageValidation:
+    return _validate_execution_spec(
+        execution_spec=execution_spec,
+        validated_plan=validated_plan,
+    )
+
+
+def build_sql_from_execution_spec(*, table: ResolvedTabularTable, execution_spec: Dict[str, Any]) -> Dict[str, Any]:
+    return _build_sql_from_execution_spec(table=table, execution_spec=execution_spec)
+
+
+def validate_sql(*, sql: str, table: ResolvedTabularTable, execution_spec: Dict[str, Any]) -> StageValidation:
+    return _validate_sql(sql=sql, table=table, execution_spec=execution_spec)
+
+
+def validate_post_execution(*, rows: Sequence[Tuple[Any, ...]], execution_spec: Dict[str, Any]) -> StageValidation:
+    return _validate_post_execution(rows=rows, execution_spec=execution_spec)
+
+
+def execute_sql(
+    *,
+    dataset: ResolvedTabularDataset,
+    table: ResolvedTabularTable,
+    guarded_sql: str,
+    count_sql: str,
+) -> Dict[str, Any]:
+    return _execute_sql(
+        dataset=dataset,
+        table=table,
+        guarded_sql=guarded_sql,
+        count_sql=count_sql,
+    )
+
+
+def build_success_payload(
+    *,
+    query: str,
+    dataset: ResolvedTabularDataset,
+    table: ResolvedTabularTable,
+    target_file: Any,
+    validated_plan: Dict[str, Any],
+    execution_spec: Dict[str, Any],
+    guarded_sql: str,
+    guard_debug: Dict[str, Any],
+    rows: Sequence[Tuple[Any, ...]],
+    rows_effective: int,
+    repair_iteration_index: int,
+    repair_iteration_count: int,
+    repair_iteration_trace: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    return _build_success_payload(
+        query=query,
+        dataset=dataset,
+        table=table,
+        target_file=target_file,
+        validated_plan=validated_plan,
+        execution_spec=execution_spec,
+        guarded_sql=guarded_sql,
+        guard_debug=guard_debug,
+        rows=rows,
+        rows_effective=rows_effective,
+        repair_iteration_index=repair_iteration_index,
+        repair_iteration_count=repair_iteration_count,
+        repair_iteration_trace=repair_iteration_trace,
+    )
+
+
+def build_retry_exhausted_payload(
+    *,
+    query: str,
+    dataset: ResolvedTabularDataset,
+    table: ResolvedTabularTable,
+    target_file: Any,
+    selected_route: str,
+    last_plan: Dict[str, Any],
+    plan_validation_status: str,
+    sql_validation_status: str,
+    post_execution_validation_status: str,
+    repair_iteration_index: int,
+    repair_iteration_count: int,
+    repair_failure_reason: str,
+    repair_iteration_trace: Sequence[Dict[str, Any]],
+    clarification_prompt_override: Optional[str] = None,
+    clarification_reason_code: str = "planner_validation_failed",
+) -> Dict[str, Any]:
+    return _build_retry_exhausted_payload(
+        query=query,
+        dataset=dataset,
+        table=table,
+        target_file=target_file,
+        selected_route=selected_route,
+        last_plan=last_plan,
+        plan_validation_status=plan_validation_status,
+        sql_validation_status=sql_validation_status,
+        post_execution_validation_status=post_execution_validation_status,
+        repair_iteration_index=repair_iteration_index,
+        repair_iteration_count=repair_iteration_count,
+        repair_failure_reason=repair_failure_reason,
+        repair_iteration_trace=repair_iteration_trace,
+        clarification_prompt_override=clarification_prompt_override,
+        clarification_reason_code=clarification_reason_code,
+    )
+
+
+def is_guarded_mode_candidate(*, parsed_query_route: str, selected_route: str) -> bool:
+    return _is_guarded_mode_candidate(
+        parsed_query_route=parsed_query_route,
+        selected_route=selected_route,
+    )
 
 
 async def maybe_execute_llm_guarded_tabular(

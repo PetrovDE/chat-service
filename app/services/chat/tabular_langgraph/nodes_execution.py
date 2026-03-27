@@ -52,7 +52,7 @@ async def execute_tools(state: TabularLangGraphState) -> Dict[str, object]:
                 )
                 rows = list(execution_output.get("rows") or [])
                 rows_effective = int(execution_output.get("rows_effective", 0) or 0)
-                post_validation = guarded_planner._validate_post_execution(rows=rows, execution_spec=execution_spec)
+                post_validation = guarded_planner.validate_post_execution(rows=rows, execution_spec=execution_spec)
                 if post_validation.status != "success":
                     tool_errors = _append_compact(
                         tool_errors,
@@ -255,6 +255,11 @@ def emit_debug_trace(state: TabularLangGraphState) -> Dict[str, object]:
     executed_tools = [str(item) for item in list(state.get("executed_tools") or []) if str(item or "").strip()]
     tool_errors = [str(item) for item in list(state.get("tool_errors") or []) if str(item or "").strip()]
     planner_mode = "llm_guarded" if bool(state.get("guarded_enabled", False)) and not bool(state.get("skip_guarded_plan", False)) else "deterministic"
+    clarification_reason_code = str(
+        state.get("clarification_reason_code")
+        or debug.get("clarification_reason_code")
+        or "none"
+    )
     additive_fields = {
         "analytics_engine_graph_version": GRAPH_VERSION,
         "analytics_engine_graph_trace": graph_trace,
@@ -274,6 +279,7 @@ def emit_debug_trace(state: TabularLangGraphState) -> Dict[str, object]:
         "execution_spec_validation_failures": execution_spec_validation_failures,
         "executed_tools": executed_tools,
         "tool_errors": tool_errors,
+        "clarification_reason_code": clarification_reason_code,
     }
     debug.update(additive_fields)
     tabular_debug.update(additive_fields)

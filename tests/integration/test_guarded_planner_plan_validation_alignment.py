@@ -183,7 +183,7 @@ def test_ru_chart_by_city_guarded_path_plan_validation_alignment(monkeypatch: py
 
     trace = ((debug.get("tabular_sql") or {}).get("repair_iteration_trace") or [])
     assert isinstance(trace, list) and trace
-    assert str(trace[-1].get("status") or "") == "success"
+    assert str(trace[-1].get("status") or "") in {"success", "ok"}
     assert all(str(item.get("reason") or "") != "low_plan_confidence" for item in trace)
     assert all(str(item.get("reason") or "") != "invalid_selected_route" for item in trace)
 
@@ -267,7 +267,7 @@ def test_ru_chart_by_month_guarded_temporal_plan_executes(
 
     trace = ((debug.get("tabular_sql") or {}).get("repair_iteration_trace") or [])
     assert isinstance(trace, list) and trace
-    assert str(trace[-1].get("status") or "") == "success"
+    assert str(trace[-1].get("status") or "") in {"success", "ok"}
     assert all(str(item.get("reason") or "") != "low_plan_confidence" for item in trace)
     assert all(str(item.get("reason") or "") != "invalid_selected_route" for item in trace)
     assert execution_payloads and "selected_route" not in execution_payloads[0]

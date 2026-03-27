@@ -134,12 +134,18 @@ def normalize_plan_payload(
     task_type = _normalized_alias(plan.get("task_type"), _TASK_TYPE_ALIASES)
     if not task_type:
         task_type = _ROUTE_TO_TASK_TYPE.get(route)
+    route_task_type = _ROUTE_TO_TASK_TYPE.get(route)
+    if route_task_type and task_type and route in {"aggregation", "chart", "trend", "comparison"}:
+        task_type = route_task_type
     if task_type:
         plan["task_type"] = task_type
 
     output_type = _normalized_alias(plan.get("requested_output_type"), _OUTPUT_TYPE_ALIASES)
     if not output_type:
         output_type = _ROUTE_TO_OUTPUT_TYPE.get(route)
+    route_output_type = _ROUTE_TO_OUTPUT_TYPE.get(route)
+    if route_output_type and output_type and route in {"aggregation", "chart", "trend", "comparison"}:
+        output_type = route_output_type
     if not output_type and task_type in {"chart", "trend", "comparison"}:
         output_type = "chart"
     if output_type:
@@ -214,13 +220,14 @@ def normalize_execution_spec_payload(
         route = _canonical_execution_route(_normalized_alias(payload.get("route"), _TASK_TYPE_ALIASES))
     if not route:
         route = _canonical_execution_route(_normalized_alias(payload.get("task_type"), _TASK_TYPE_ALIASES))
-    if not route:
+    if route != plan_route:
         route = plan_route
     payload["selected_route"] = route
 
     output_type = _normalized_alias(payload.get("requested_output_type"), _OUTPUT_TYPE_ALIASES)
-    if not output_type:
-        output_type = str(validated_plan.get("requested_output_type") or "").strip().lower() or None
+    plan_output_type = str(validated_plan.get("requested_output_type") or "").strip().lower() or None
+    if output_type != plan_output_type:
+        output_type = plan_output_type
     if not output_type:
         output_type = "chart" if route in {"chart", "comparison"} else "table"
     if output_type:
@@ -234,14 +241,15 @@ def normalize_execution_spec_payload(
     plan_measure = (list(validated_plan.get("measures") or [{}]) or [{}])[0]
     plan_dimension = (list(validated_plan.get("dimensions") or [{}]) or [{}])[0]
     measure = payload.get("measure") if isinstance(payload.get("measure"), dict) else {}
-    if not str(measure.get("aggregation") or "").strip():
-        measure["aggregation"] = str(plan_measure.get("aggregation") or "count")
-    if "field" not in measure or measure.get("field") in {None, ""}:
+    plan_aggregation = str(plan_measure.get("aggregation") or "count").strip().lower() or "count"
+    measure["aggregation"] = plan_aggregation
+    if plan_aggregation == "count":
+        measure["field"] = None
+    else:
         measure["field"] = plan_measure.get("field")
     payload["measure"] = measure
     dimension = payload.get("dimension") if isinstance(payload.get("dimension"), dict) else {}
-    if "field" not in dimension or dimension.get("field") in {None, ""}:
-        dimension["field"] = plan_dimension.get("field")
+    dimension["field"] = plan_dimension.get("field")
     payload["dimension"] = dimension
 
     chart_type = _normalized_alias(payload.get("chart_type"), _CHART_TYPE_ALIASES)
@@ -257,16 +265,15 @@ def normalize_execution_spec_payload(
         payload["output_columns"] = []
     if not isinstance(payload.get("filters"), list):
         payload["filters"] = []
-    if not payload["filters"]:
-        payload["filters"] = list(validated_plan.get("filters") or [])
-    if not payload["output_columns"]:
-        derived_time_grain = str(payload.get("derived_time_grain") or "none").strip().lower()
-        dimension_field = str((payload.get("dimension") or {}).get("field") or "").strip()
-        if derived_time_grain not in {"", "none"}:
-            payload["output_columns"] = ["bucket", "value"]
-        elif dimension_field:
-            payload["output_columns"] = ["group_key", "value"]
-        else:
-            payload["output_columns"] = ["value"]
+    payload["filters"] = list(validated_plan.get("filters") or [])
+
+    derived_time_grain = str(payload.get("derived_time_grain") or "none").strip().lower()
+    dimension_field = str((payload.get("dimension") or {}).get("field") or "").strip()
+    canonical_output_columns = ["value"]
+    if derived_time_grain not in {"", "none"}:
+        canonical_output_columns = ["bucket", "value"]
+    elif dimension_field:
+        canonical_output_columns = ["group_key", "value"]
+    payload["output_columns"] = canonical_output_columns
 
     return payload

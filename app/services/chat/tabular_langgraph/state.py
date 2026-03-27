@@ -29,11 +29,13 @@ class TabularLangGraphState(TypedDict):
     execution_feedback: NotRequired[List[str]]
 
     raw_plan: NotRequired[Dict[str, Any]]
+    semantic_plan_hint: NotRequired[Dict[str, Any]]
     validated_plan: NotRequired[Dict[str, Any]]
     plan_hash: NotRequired[str]
     plan_summary: NotRequired[Dict[str, Any]]
     plan_validation_failures: NotRequired[List[str]]
     raw_execution_spec: NotRequired[Dict[str, Any]]
+    execution_spec_hint: NotRequired[Dict[str, Any]]
     execution_spec: NotRequired[Dict[str, Any]]
     execution_spec_summary: NotRequired[Dict[str, Any]]
     execution_spec_validation_failures: NotRequired[List[str]]
@@ -46,6 +48,7 @@ class TabularLangGraphState(TypedDict):
     retry_reason: NotRequired[str]
     retry_next: NotRequired[bool]
     skip_guarded_plan: NotRequired[bool]
+    clarification_reason_code: NotRequired[str]
 
     payload: NotRequired[Optional[Dict[str, Any]]]
     terminal_none_payload: NotRequired[bool]

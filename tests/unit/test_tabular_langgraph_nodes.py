@@ -66,7 +66,7 @@ def test_inspect_data_sources_routes_to_execute_tools_when_guarded_disabled(monk
     assert result["guarded_enabled"] is False
 
 
-def test_build_plan_invalid_json_schedules_repair(monkeypatch):
+def test_build_plan_invalid_json_uses_semantic_fallback(monkeypatch):
     async def _bad_plan(**kwargs):  # noqa: ANN003
         _ = kwargs
         return None, "invalid_json"
@@ -86,8 +86,8 @@ def test_build_plan_invalid_json_schedules_repair(monkeypatch):
     import asyncio
 
     output = asyncio.run(result)
-    assert output["next_step"] == "repair_or_clarify"
-    assert output["retry_next"] is True
+    assert output["next_step"] == "validate_plan"
+    assert isinstance(output.get("semantic_plan_hint"), dict)
 
 
 def test_emit_debug_trace_adds_graph_and_planner_visibility_fields():

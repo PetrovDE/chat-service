@@ -651,12 +651,19 @@ def resolve_temporal_measure_column(
             expected_dtype_family="numeric",
         )
         if resolution.status == "matched" and resolution.matched_column:
-            return TemporalMeasureResolution(
-                status="resolved",
-                measure_column=str(resolution.matched_column),
-                candidate_columns=list(resolution.candidate_columns),
-                scored_candidates=list(resolution.scored_candidates),
-            )
+            matched_column = str(resolution.matched_column)
+            alias = str(aliases.get(matched_column, ""))
+            column_meta = metadata.get(matched_column, {})
+            dtype_family = _dtype_family_from_text(str(column_meta.get("dtype") or ""))
+            descriptor = normalize_text(" ".join([matched_column, alias]))
+            metric_like = any(token in descriptor for token in _METRIC_NAME_TOKENS)
+            if dtype_family == "numeric" or metric_like:
+                return TemporalMeasureResolution(
+                    status="resolved",
+                    measure_column=matched_column,
+                    candidate_columns=list(resolution.candidate_columns),
+                    scored_candidates=list(resolution.scored_candidates),
+                )
         if resolution.status == "ambiguous":
             return TemporalMeasureResolution(
                 status="ambiguous",

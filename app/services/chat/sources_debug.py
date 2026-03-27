@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.services.chat.debug_observability import apply_stage4_observability_enrichment
 from app.services.chat.language import normalize_preferred_response_language
 
 
@@ -588,7 +589,11 @@ def build_standard_rag_debug_payload(
             "llm_prompt_tokens_estimate": payload["llm_prompt_tokens_estimate"],
         },
     }
-    return payload
+    return apply_stage4_observability_enrichment(
+        payload=payload,
+        context_docs=context_docs,
+        rag_sources=rag_sources,
+    )
 
 
 def build_context_coverage_summary(context_documents: List[Dict[str, Any]], max_items: int = 12) -> str:

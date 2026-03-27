@@ -30,6 +30,7 @@ def test_resolve_scope_ambiguous_file_moves_to_compose(monkeypatch):
 
     assert result["next_step"] == "compose_answer"
     assert isinstance(result.get("payload"), dict)
+    assert result.get("graph_stop_reason") == "ambiguous_file_scope"
 
 
 def test_inspect_data_sources_routes_to_execute_tools_when_guarded_disabled(monkeypatch):
@@ -87,3 +88,39 @@ def test_build_plan_invalid_json_schedules_repair(monkeypatch):
     output = asyncio.run(result)
     assert output["next_step"] == "repair_or_clarify"
     assert output["retry_next"] is True
+
+
+def test_emit_debug_trace_adds_graph_and_planner_visibility_fields():
+    state = {
+        "payload": {"status": "ok", "debug": {"tabular_sql": {}, "planner_mode": "llm_guarded"}},
+        "graph_run_id": "graph-run-1",
+        "graph_stop_reason": "payload_ready",
+        "repair_iteration_index": 1,
+        "repair_iteration_count": 2,
+        "guarded_enabled": True,
+        "skip_guarded_plan": False,
+        "node_trace": [
+            {"node": "detect_intent", "status": "ok", "reason": "none"},
+            {"node": "execute_tools", "status": "ok", "reason": "guarded_success"},
+        ],
+        "plan_hash": "abc123",
+        "plan_summary": {"selected_route": "aggregation"},
+        "execution_spec_summary": {"selected_route": "aggregation"},
+        "plan_validation_failures": [],
+        "execution_spec_validation_failures": [],
+        "executed_tools": ["execute_guarded_sql"],
+        "tool_errors": [],
+    }
+
+    output = nodes.emit_debug_trace(state)
+    payload = output["payload"]
+    debug = payload.get("debug") or {}
+
+    assert debug.get("analytics_engine_graph_run_id") == "graph-run-1"
+    assert debug.get("analytics_engine_graph_attempts") == 2
+    assert debug.get("analytics_engine_graph_stop_reason") == "payload_ready"
+    assert debug.get("graph_node_path") == ["detect_intent", "execute_tools"]
+    assert debug.get("plan_hash") == "abc123"
+    assert debug.get("plan_summary") == {"selected_route": "aggregation"}
+    assert debug.get("execution_spec_summary") == {"selected_route": "aggregation"}
+    assert debug.get("executed_tools") == ["execute_guarded_sql"]

@@ -13,6 +13,9 @@ from app.services.chat.context import (
     should_include_assistant_history_for_generation,
 )
 from app.services.chat.controlled_debug import CACHE_KEY_VERSION, build_cache_observability
+from app.services.chat.orchestrator_helpers import (
+    build_rag_debug_payload as build_orchestrator_rag_debug_payload,
+)
 from app.services.chat_orchestrator import ChatOrchestrator
 from app.schemas import ChatMessage
 
@@ -173,6 +176,116 @@ def test_found_file_with_empty_retrieval_returns_file_aware_controlled_fallback(
     assert rag_debug["fallback_type"] == "retrieval_empty"
 
 
+def test_narrative_retrieval_path_emits_stage4_observability_fields(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    processing_id = uuid.uuid4()
+    attached_file = SimpleNamespace(
+        id=file_id,
+        embedding_model="local:nomic-embed-text:latest",
+        file_type="txt",
+        chunks_count=4,
+        original_filename="notes.txt",
+        stored_filename=f"{file_id}_notes.txt",
+        active_processing=SimpleNamespace(id=processing_id, status="ready"),
+        custom_metadata={"upload_id": "upload-1", "document_id": "document-1"},
+    )
+
+    async def fake_get_conversation_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [attached_file]
+
+    async def fake_query_rag(**kwargs):  # noqa: ANN003
+        assert kwargs.get("processing_ids") == [str(processing_id)]
+        return {
+            "docs": [
+                {
+                    "content": "Customer churn increased in Q3 by 3%.",
+                    "metadata": {
+                        "file_id": str(file_id),
+                        "filename": "notes.txt",
+                        "chunk_index": 0,
+                        "sheet_name": "Overview",
+                    },
+                    "similarity_score": 0.94,
+                },
+                {
+                    "content": "Retention plan includes monthly cohort analysis.",
+                    "metadata": {
+                        "file_id": str(file_id),
+                        "filename": "notes.txt",
+                        "chunk_index": 1,
+                        "sheet_name": "Overview",
+                    },
+                    "similarity_score": 0.89,
+                },
+            ],
+            "debug": {
+                "intent": "fact_lookup",
+                "retrieval_mode": "hybrid",
+                "where": {
+                    "file_id": {"$in": [str(file_id)]},
+                    "processing_id": {"$in": [str(processing_id)]},
+                    "sheet_name": {"$in": ["Overview"]},
+                },
+                "top_k": int(kwargs.get("top_k", 0) or 0),
+                "fetch_k": 24,
+                "returned_count": 2,
+            },
+        }
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_conversation_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
+
+    prompt, rag_used, rag_debug, context_docs, _, rag_sources = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="What does notes.txt say about churn?",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+        )
+    )
+
+    assert rag_used is True
+    assert "churn" in prompt.lower()
+    assert len(context_docs) == 2
+    assert rag_debug["retrieval_mode"] == "hybrid"
+
+    payload = build_orchestrator_rag_debug_payload(
+        rag_debug=rag_debug,
+        context_docs=context_docs,
+        rag_sources=rag_sources,
+        llm_tokens_used=77,
+        provider_debug=None,
+    )
+    assert payload is not None
+
+    assert payload["file_resolution_status"] == "conversation_match"
+    assert payload["resolved_file_ids"] == [str(file_id)]
+    assert payload["upload_id"] == "upload-1"
+    assert payload["document_id"] == "document-1"
+    assert payload["retrieval_filters"]["file_id"] == {"$in": [str(file_id)]}
+    assert payload["applied_filters"] == payload["retrieval_filters"]
+    assert payload["retrieval_scope"]["file_ids"] == [str(file_id)]
+    assert payload["retrieval_scope"]["processing_ids"] == [str(processing_id)]
+    assert payload["retrieval_scope"]["sheet_names"] == ["Overview"]
+    assert payload["top_chunks_total"] == 2
+    assert len(payload["top_chunks"]) == 2
+    assert payload["top_chunks"][0]["file_id"] == str(file_id)
+    assert payload["top_chunks"][0]["score"] > 0.0
+    assert payload["avg_similarity"] > 0.0
+    assert payload["source_count"] == len(rag_sources)
+    assert payload["context_chars"] > 0
+    assert payload["context_tokens"] > 0
+    assert payload["retrieval_skipped"] is False
+    assert payload["retrieval_skip_reason"] == "none"
+    assert payload["debug_sections"]["retrieval"]["retrieval_scope"]["file_ids"] == [str(file_id)]
+    assert payload["debug_sections"]["retrieval"]["retrieval_skipped"] is False
+
+
 def test_russian_controlled_fallbacks_stay_russian(monkeypatch):
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
@@ -325,8 +438,11 @@ def test_cache_key_includes_route_language_and_file_resolution_dimensions():
     )
 
     assert base["cache_key_version"] == CACHE_KEY_VERSION
-    assert base["cache_miss"] is True
+    assert base["cache_miss"] is False
     assert base["cache_hit"] is False
+    assert base["cache_supported"] is False
+    assert base["cache_active"] is False
+    assert base["cache_status"] == "inactive"
     assert base["cache_key"] != changed_route["cache_key"]
     assert base["cache_key"] != changed_language["cache_key"]
     assert base["cache_key"] != changed_files["cache_key"]

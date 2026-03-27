@@ -56,10 +56,14 @@ def build_cache_observability(
     cache_key = hashlib.sha256(cache_key_raw.encode("utf-8")).hexdigest()[:24]
     return {
         "cache_hit": False,
-        "cache_miss": True,
+        "cache_miss": False,
+        "cache_supported": False,
+        "cache_active": False,
+        "cache_status": "inactive",
+        "cache_reason": "response_cache_not_implemented",
         "cache_key_version": CACHE_KEY_VERSION,
         "cache_key": cache_key,
-        "cache_scope": "response_cache_disabled",
+        "cache_scope": "response_cache_inactive",
     }
 
 

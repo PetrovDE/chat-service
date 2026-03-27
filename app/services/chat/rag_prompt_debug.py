@@ -5,6 +5,7 @@ import uuid
 from typing import Any, Dict, Optional, Tuple
 
 from app.observability.metrics import inc_counter
+from app.observability.context import request_id_ctx
 from app.services.chat.controlled_debug import annotate_controlled_debug
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,18 @@ def inject_file_resolution_debug(
     payload["requested_file_names"] = list(resolution_meta.get("requested_file_names") or [])
     payload["resolved_file_names"] = list(resolution_meta.get("resolved_file_names") or [])
     payload["resolved_file_ids"] = list(resolution_meta.get("resolved_file_ids") or [])
+    payload["resolved_upload_ids"] = list(resolution_meta.get("resolved_upload_ids") or [])
+    payload["resolved_document_ids"] = list(resolution_meta.get("resolved_document_ids") or [])
     payload["file_resolution_status"] = str(resolution_meta.get("file_resolution_status") or "not_requested")
+    payload["request_id"] = str(payload.get("request_id") or request_id_ctx.get() or "").strip() or None
+    payload["conversation_id"] = str(payload.get("conversation_id") or conversation_id)
+    payload["user_id"] = str(payload.get("user_id") or user_id) if user_id is not None else None
+    if payload.get("file_id") is None and payload["resolved_file_ids"]:
+        payload["file_id"] = str(payload["resolved_file_ids"][0])
+    if payload.get("upload_id") is None and payload["resolved_upload_ids"]:
+        payload["upload_id"] = str(payload["resolved_upload_ids"][0])
+    if payload.get("document_id") is None and payload["resolved_document_ids"]:
+        payload["document_id"] = str(payload["resolved_document_ids"][0])
     fallback_type, fallback_reason = infer_fallback_meta(rag_debug=payload, resolution_meta=resolution_meta)
     return annotate_controlled_debug(
         rag_debug=payload,
@@ -149,7 +161,7 @@ def log_fallback_cache_event(
         fallback_type,
         fallback_reason,
         str(cache_hit).lower(),
-        str(bool(payload.get("cache_miss", True))).lower(),
+        str(bool(payload.get("cache_miss", False))).lower(),
         cache_version,
         response_language,
         selected_route,

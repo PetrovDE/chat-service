@@ -4,6 +4,7 @@ import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.core.config import settings
+from app.observability.context import conversation_id_ctx, request_id_ctx, user_id_ctx
 
 
 logger = logging.getLogger(__name__)
@@ -19,12 +20,62 @@ def _normalize_engine_mode(raw_mode: str) -> str:
 
 def _payload_summary(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
-        return {"status": "none", "selected_route": "unknown", "fallback_reason": "none"}
+        return {
+            "status": "none",
+            "selected_route": "unknown",
+            "fallback_reason": "none",
+            "graph_run_id": None,
+            "stop_reason": "none",
+        }
     debug = payload.get("debug") if isinstance(payload.get("debug"), dict) else {}
     return {
         "status": str(payload.get("status") or "unknown"),
         "selected_route": str(debug.get("selected_route") or "unknown"),
         "fallback_reason": str(debug.get("fallback_reason") or "none"),
+        "graph_run_id": str(debug.get("analytics_engine_graph_run_id") or "").strip() or None,
+        "stop_reason": str(debug.get("analytics_engine_graph_stop_reason") or "none"),
+    }
+
+
+def _extract_graph_runtime(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {
+            "analytics_engine_graph_run_id": None,
+            "analytics_engine_graph_node_path": [],
+            "analytics_engine_graph_attempts": 0,
+            "analytics_engine_graph_stop_reason": "none",
+        }
+    debug = payload.get("debug") if isinstance(payload.get("debug"), dict) else {}
+    tabular_debug = debug.get("tabular_sql") if isinstance(debug.get("tabular_sql"), dict) else {}
+
+    graph_trace = debug.get("analytics_engine_graph_trace")
+    node_path: List[str] = []
+    if isinstance(graph_trace, list):
+        for item in graph_trace:
+            if not isinstance(item, dict):
+                continue
+            node_name = str(item.get("node") or "").strip()
+            if node_name:
+                node_path.append(node_name)
+
+    graph_attempts = debug.get("analytics_engine_graph_attempts")
+    if graph_attempts is None:
+        graph_attempts = tabular_debug.get("repair_iteration_count")
+    try:
+        normalized_attempts = int(graph_attempts or (1 if node_path else 0))
+    except Exception:
+        normalized_attempts = 0
+
+    stop_reason = str(
+        debug.get("analytics_engine_graph_stop_reason")
+        or debug.get("analytics_engine_graph_stop")
+        or "none"
+    )
+    return {
+        "analytics_engine_graph_run_id": str(debug.get("analytics_engine_graph_run_id") or "").strip() or None,
+        "analytics_engine_graph_node_path": node_path,
+        "analytics_engine_graph_attempts": max(0, normalized_attempts),
+        "analytics_engine_graph_stop_reason": stop_reason,
     }
 
 
@@ -50,11 +101,30 @@ def _attach_engine_debug(
         tabular_debug = {}
         debug["tabular_sql"] = tabular_debug
 
+    graph_runtime = _extract_graph_runtime(payload)
+    node_path = list(graph_runtime.get("analytics_engine_graph_node_path") or [])
+    graph_run_id = graph_runtime.get("analytics_engine_graph_run_id")
+    graph_attempts = int(graph_runtime.get("analytics_engine_graph_attempts", 0) or 0)
+    stop_reason = str(graph_runtime.get("analytics_engine_graph_stop_reason") or "none")
+    if stop_reason == "none" and fallback_reason != "none":
+        stop_reason = f"engine_fallback:{fallback_reason}"
     fields = {
         "analytics_engine_mode_requested": requested_mode,
         "analytics_engine_mode_served": served_mode,
         "analytics_engine_shadow_enabled": bool(shadow_enabled),
         "analytics_engine_fallback_reason": fallback_reason,
+        "analytics_engine_graph_run_id": graph_run_id,
+        "analytics_engine_graph_node_path": node_path,
+        "analytics_engine_graph_attempts": graph_attempts,
+        "analytics_engine_graph_stop_reason": stop_reason,
+        "engine_mode_requested": requested_mode,
+        "engine_mode_served": served_mode,
+        "shadow_mode": bool(shadow_enabled),
+        "engine_fallback_reason": fallback_reason,
+        "graph_run_id": graph_run_id,
+        "graph_node_path": node_path,
+        "graph_attempts": graph_attempts,
+        "stop_reason": stop_reason,
     }
     if isinstance(shadow_summary, dict):
         fields["analytics_engine_shadow"] = shadow_summary
@@ -111,9 +181,15 @@ async def execute_tabular_engine_route(
     fallback_reason = "none"
     if primary_error is not None:
         logger.exception(
-            "tabular_analytics_engine_primary_failed mode=%s error=%s",
+            (
+                "tabular_analytics_engine_primary_failed mode=%s error=%s "
+                "rid=%s uid=%s cid=%s"
+            ),
             primary_label,
             type(primary_error).__name__,
+            request_id_ctx.get() or "-",
+            user_id_ctx.get() or "-",
+            conversation_id_ctx.get() or "-",
         )
         if primary_label == "langgraph":
             legacy_payload, legacy_error = await _run_executor_safe(
@@ -126,8 +202,14 @@ async def execute_tabular_engine_route(
             fallback_reason = "langgraph_exception"
             if legacy_error is not None:
                 logger.exception(
-                    "tabular_analytics_engine_legacy_fallback_failed error=%s",
+                    (
+                        "tabular_analytics_engine_legacy_fallback_failed error=%s "
+                        "rid=%s uid=%s cid=%s"
+                    ),
                     type(legacy_error).__name__,
+                    request_id_ctx.get() or "-",
+                    user_id_ctx.get() or "-",
+                    conversation_id_ctx.get() or "-",
                 )
                 primary_payload = None
                 fallback_reason = "langgraph_and_legacy_failed"
@@ -142,8 +224,14 @@ async def execute_tabular_engine_route(
         fallback_reason = "langgraph_none_payload"
         if legacy_error is not None:
             logger.exception(
-                "tabular_analytics_engine_legacy_fallback_failed error=%s",
+                (
+                    "tabular_analytics_engine_legacy_fallback_failed error=%s "
+                    "rid=%s uid=%s cid=%s"
+                ),
                 type(legacy_error).__name__,
+                request_id_ctx.get() or "-",
+                user_id_ctx.get() or "-",
+                conversation_id_ctx.get() or "-",
             )
             primary_payload = None
             fallback_reason = "langgraph_none_and_legacy_failed"
@@ -161,15 +249,35 @@ async def execute_tabular_engine_route(
             "result": _payload_summary(shadow_payload),
         }
 
+    primary_graph = _extract_graph_runtime(primary_payload)
+    primary_debug = primary_payload.get("debug") if isinstance(primary_payload, dict) and isinstance(primary_payload.get("debug"), dict) else {}
+    file_id = (
+        str(primary_debug.get("file_id") or primary_debug.get("scope_selected_file_id") or "").strip()
+        if isinstance(primary_debug, dict)
+        else ""
+    )
+    upload_id = str(primary_debug.get("upload_id") or "").strip() if isinstance(primary_debug, dict) else ""
+    document_id = str(primary_debug.get("document_id") or "").strip() if isinstance(primary_debug, dict) else ""
     logger.info(
         (
             "tabular_analytics_engine_route requested_mode=%s served_mode=%s "
-            "shadow_enabled=%s fallback_reason=%s"
+            "shadow_enabled=%s fallback_reason=%s graph_run_id=%s graph_node_path=%s "
+            "graph_attempts=%s stop_reason=%s rid=%s uid=%s cid=%s fid=%s upload_id=%s document_id=%s"
         ),
         requested_mode,
         served_mode,
         str(shadow_enabled).lower(),
         fallback_reason,
+        primary_graph.get("analytics_engine_graph_run_id"),
+        ",".join([str(node) for node in list(primary_graph.get("analytics_engine_graph_node_path") or [])]),
+        primary_graph.get("analytics_engine_graph_attempts"),
+        primary_graph.get("analytics_engine_graph_stop_reason"),
+        request_id_ctx.get() or "-",
+        user_id_ctx.get() or "-",
+        conversation_id_ctx.get() or "-",
+        file_id or "-",
+        upload_id or "-",
+        document_id or "-",
     )
 
     return _attach_engine_debug(

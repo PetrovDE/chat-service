@@ -6,6 +6,9 @@ from typing import Any, Dict, List, NotRequired, Optional, TypedDict
 class TabularLangGraphState(TypedDict):
     query: str
     files: List[Any]
+    graph_run_id: NotRequired[str]
+    graph_started_at_ms: NotRequired[int]
+    graph_stop_reason: NotRequired[str]
 
     parsed_route: NotRequired[str]
     scope_status: NotRequired[str]
@@ -27,11 +30,18 @@ class TabularLangGraphState(TypedDict):
 
     raw_plan: NotRequired[Dict[str, Any]]
     validated_plan: NotRequired[Dict[str, Any]]
+    plan_hash: NotRequired[str]
+    plan_summary: NotRequired[Dict[str, Any]]
+    plan_validation_failures: NotRequired[List[str]]
     raw_execution_spec: NotRequired[Dict[str, Any]]
     execution_spec: NotRequired[Dict[str, Any]]
+    execution_spec_summary: NotRequired[Dict[str, Any]]
+    execution_spec_validation_failures: NotRequired[List[str]]
     guarded_sql: NotRequired[str]
     count_sql: NotRequired[str]
     guard_debug: NotRequired[Dict[str, Any]]
+    executed_tools: NotRequired[List[str]]
+    tool_errors: NotRequired[List[str]]
 
     retry_reason: NotRequired[str]
     retry_next: NotRequired[bool]

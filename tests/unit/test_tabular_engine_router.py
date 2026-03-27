@@ -41,6 +41,11 @@ def test_engine_router_serves_legacy_mode(monkeypatch):
     assert debug.get("analytics_engine_mode_requested") == "legacy"
     assert debug.get("analytics_engine_mode_served") == "legacy"
     assert debug.get("analytics_engine_fallback_reason") == "none"
+    assert debug.get("engine_mode_requested") == "legacy"
+    assert debug.get("engine_mode_served") == "legacy"
+    assert debug.get("engine_fallback_reason") == "none"
+    assert isinstance(debug.get("graph_node_path"), list)
+    assert debug.get("graph_attempts") == 0
 
 
 def test_engine_router_serves_langgraph_mode(monkeypatch):
@@ -61,6 +66,9 @@ def test_engine_router_serves_langgraph_mode(monkeypatch):
     assert debug.get("analytics_engine_mode_requested") == "langgraph"
     assert debug.get("analytics_engine_mode_served") == "langgraph"
     assert debug.get("analytics_engine_fallback_reason") == "none"
+    assert debug.get("engine_mode_requested") == "langgraph"
+    assert debug.get("engine_mode_served") == "langgraph"
+    assert debug.get("stop_reason") in {"none", "completed", "payload_ready", "payload_error_ready"}
 
 
 def test_engine_router_falls_back_to_legacy_when_langgraph_raises(monkeypatch):
@@ -85,6 +93,8 @@ def test_engine_router_falls_back_to_legacy_when_langgraph_raises(monkeypatch):
     assert debug.get("analytics_engine_mode_requested") == "langgraph"
     assert debug.get("analytics_engine_mode_served") == "legacy"
     assert debug.get("analytics_engine_fallback_reason") == "langgraph_exception"
+    assert debug.get("engine_fallback_reason") == "langgraph_exception"
+    assert str(debug.get("stop_reason") or "").startswith("engine_fallback:")
 
 
 def test_engine_router_populates_shadow_summary(monkeypatch):
@@ -104,5 +114,6 @@ def test_engine_router_populates_shadow_summary(monkeypatch):
     debug = result.get("debug") or {}
     shadow = debug.get("analytics_engine_shadow") if isinstance(debug.get("analytics_engine_shadow"), dict) else {}
     assert debug.get("analytics_engine_shadow_enabled") is True
+    assert debug.get("shadow_mode") is True
     assert shadow.get("mode") == "langgraph"
     assert shadow.get("error") is None

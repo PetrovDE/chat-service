@@ -238,3 +238,28 @@ Reuse posture:
 - graph nodes reuse existing audited deterministic and guarded planner code paths (`tabular_sql`, `tabular_intent_router`, `tabular_scope_selector`, `tabular_llm_guarded_planner`, and route payload builders),
 - no new hardcoded analytics answer path is introduced,
 - stable deterministic entrypoint remains `execute_tabular_sql_path(...)`.
+
+## Update 2026-03-27 (Stage 4: End-to-End Engine Explainability)
+
+LangGraph execution now emits additive per-run explainability fields in deterministic debug payload:
+
+- `analytics_engine_graph_run_id`
+- `analytics_engine_graph_node_path`
+- `analytics_engine_graph_attempts`
+- `analytics_engine_graph_stop_reason`
+- `plan_hash`
+- `plan_summary`
+- `plan_validation_failures`
+- `execution_spec_summary`
+- `execution_spec_validation_failures`
+- `executed_tools`
+- `tool_errors`
+
+Engine-router additive fields are mirrored at the top-level debug contract for both legacy-served and langgraph-served responses:
+
+- `engine_mode_requested` (`legacy|langgraph`)
+- `engine_mode_served` (`legacy|langgraph`)
+- `shadow_mode`
+- `engine_fallback_reason`
+
+These fields are additive and do not change the existing stable tabular/API payload envelope.

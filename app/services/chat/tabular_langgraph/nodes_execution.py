@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict, List
 
 from app.services.chat import tabular_llm_guarded_planner as guarded_planner
 from app.services.chat.tabular_langgraph import tool_adapters
@@ -8,10 +8,21 @@ from app.services.chat.tabular_langgraph.node_utils import GRAPH_VERSION, append
 from app.services.chat.tabular_langgraph.state import TabularLangGraphState
 
 
+def _append_compact(values: List[str], value: Any, *, limit: int = 16) -> List[str]:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return list(values or [])
+    merged = list(values or [])
+    merged.append(candidate)
+    return merged[-limit:]
+
+
 async def execute_tools(state: TabularLangGraphState) -> Dict[str, object]:
     if isinstance(state.get("payload"), dict) or bool(state.get("terminal_none_payload", False)):
         return {
             "next_step": "validate_result",
+            "executed_tools": list(state.get("executed_tools") or []),
+            "tool_errors": list(state.get("tool_errors") or []),
             "node_trace": append_trace(state, node="execute_tools", status="ok", reason="payload_already_set"),
         }
 
@@ -22,6 +33,8 @@ async def execute_tools(state: TabularLangGraphState) -> Dict[str, object]:
     table = state.get("table")
     target_file = state.get("target_file")
     selected_route = str(state.get("selected_route") or "")
+    executed_tools = [str(item) for item in list(state.get("executed_tools") or []) if str(item or "").strip()]
+    tool_errors = [str(item) for item in list(state.get("tool_errors") or []) if str(item or "").strip()]
 
     if bool(state.get("guarded_enabled", False)) and not bool(state.get("skip_guarded_plan", False)):
         execution_spec = state.get("execution_spec") if isinstance(state.get("execution_spec"), dict) else None
@@ -29,6 +42,7 @@ async def execute_tools(state: TabularLangGraphState) -> Dict[str, object]:
         count_sql = str(state.get("count_sql") or "").strip() or guarded_sql
         validated_plan = state.get("validated_plan") if isinstance(state.get("validated_plan"), dict) else {}
         if execution_spec and guarded_sql:
+            executed_tools = _append_compact(executed_tools, "execute_guarded_sql")
             try:
                 execution_output = await tool_adapters.execute_guarded_sql(
                     dataset=dataset,
@@ -40,10 +54,16 @@ async def execute_tools(state: TabularLangGraphState) -> Dict[str, object]:
                 rows_effective = int(execution_output.get("rows_effective", 0) or 0)
                 post_validation = guarded_planner._validate_post_execution(rows=rows, execution_spec=execution_spec)
                 if post_validation.status != "success":
+                    tool_errors = _append_compact(
+                        tool_errors,
+                        f"post_execution_validation_failed:{post_validation.reason}",
+                    )
                     return {
                         "retry_next": True,
                         "retry_reason": str(post_validation.reason or "post_execution_validation_failed"),
                         "execution_feedback": [f"post execution validation failed: {post_validation.reason}"],
+                        "executed_tools": executed_tools,
+                        "tool_errors": tool_errors,
                         "next_step": "repair_or_clarify",
                         "node_trace": append_trace(
                             state,
@@ -74,19 +94,25 @@ async def execute_tools(state: TabularLangGraphState) -> Dict[str, object]:
                 return {
                     "payload": payload,
                     "retry_next": False,
+                    "executed_tools": executed_tools,
+                    "tool_errors": tool_errors,
                     "next_step": "validate_result",
                     "node_trace": append_trace(state, node="execute_tools", status="ok", reason="guarded_success"),
                 }
             except Exception as exc:  # pragma: no cover - defensive runtime guard
+                tool_errors = _append_compact(tool_errors, f"execute_guarded_sql:{type(exc).__name__}")
                 return {
                     "retry_next": True,
                     "retry_reason": type(exc).__name__,
                     "execution_feedback": [f"execution failed: {type(exc).__name__}"],
+                    "executed_tools": executed_tools,
+                    "tool_errors": tool_errors,
                     "next_step": "repair_or_clarify",
                     "node_trace": append_trace(state, node="execute_tools", status="retry", reason=type(exc).__name__),
                 }
 
     if selected_route == "unsupported_missing_column":
+        executed_tools = _append_compact(executed_tools, "build_missing_column_payload")
         payload = tool_adapters.build_missing_column_payload(
             query=query,
             decision=decision,
@@ -96,6 +122,7 @@ async def execute_tools(state: TabularLangGraphState) -> Dict[str, object]:
             scope_debug_fields=scope_debug_fields,
         )
     elif selected_route == "schema_question":
+        executed_tools = _append_compact(executed_tools, "build_schema_question_payload")
         payload = tool_adapters.build_schema_question_payload(
             query=query,
             decision=decision,
@@ -105,6 +132,7 @@ async def execute_tools(state: TabularLangGraphState) -> Dict[str, object]:
             scope_debug_fields=scope_debug_fields,
         )
     else:
+        executed_tools = _append_compact(executed_tools, "execute_deterministic_payload")
         payload = await tool_adapters.execute_deterministic_payload(
             query=query,
             decision=decision,
@@ -114,9 +142,22 @@ async def execute_tools(state: TabularLangGraphState) -> Dict[str, object]:
             scope_debug_fields=scope_debug_fields,
         )
 
+    if isinstance(payload, dict) and str(payload.get("status") or "").lower() == "error":
+        payload_debug = payload.get("debug") if isinstance(payload.get("debug"), dict) else {}
+        tool_errors = _append_compact(
+            tool_errors,
+            str(
+                payload_debug.get("fallback_reason")
+                or payload_debug.get("executor_error_code")
+                or "deterministic_payload_error"
+            ),
+        )
+
     return {
         "payload": payload,
         "retry_next": False,
+        "executed_tools": executed_tools,
+        "tool_errors": tool_errors,
         "next_step": "validate_result",
         "node_trace": append_trace(state, node="execute_tools", status="ok", reason="deterministic"),
     }
@@ -127,12 +168,14 @@ def validate_result(state: TabularLangGraphState) -> Dict[str, object]:
     if payload is None and bool(state.get("terminal_none_payload", False)):
         return {
             "next_step": "emit_debug_trace",
+            "graph_stop_reason": "terminal_none_payload",
             "node_trace": append_trace(state, node="validate_result", status="ok", reason="none_payload"),
         }
     if not isinstance(payload, dict):
         return {
             "retry_next": True,
             "retry_reason": "invalid_executor_payload",
+            "graph_stop_reason": "invalid_executor_payload",
             "next_step": "repair_or_clarify",
             "node_trace": append_trace(state, node="validate_result", status="retry", reason="invalid_executor_payload"),
         }
@@ -142,12 +185,14 @@ def validate_result(state: TabularLangGraphState) -> Dict[str, object]:
         return {
             "retry_next": True,
             "retry_reason": "invalid_status",
+            "graph_stop_reason": "invalid_status",
             "next_step": "repair_or_clarify",
             "node_trace": append_trace(state, node="validate_result", status="retry", reason="invalid_status"),
         }
 
     return {
         "next_step": "compose_answer",
+        "graph_stop_reason": "payload_ready" if status == "ok" else "payload_error_ready",
         "node_trace": append_trace(state, node="validate_result", status="ok"),
     }
 
@@ -155,6 +200,7 @@ def validate_result(state: TabularLangGraphState) -> Dict[str, object]:
 def compose_answer(state: TabularLangGraphState) -> Dict[str, object]:
     return {
         "next_step": "emit_debug_trace",
+        "graph_stop_reason": str(state.get("graph_stop_reason") or "compose_answer"),
         "node_trace": append_trace(state, node="compose_answer", status="ok"),
     }
 
@@ -164,6 +210,7 @@ def emit_debug_trace(state: TabularLangGraphState) -> Dict[str, object]:
     if not isinstance(payload, dict):
         return {
             "next_step": "done",
+            "graph_stop_reason": str(state.get("graph_stop_reason") or "none_payload"),
             "node_trace": append_trace(state, node="emit_debug_trace", status="ok", reason="none_payload"),
         }
 
@@ -177,11 +224,56 @@ def emit_debug_trace(state: TabularLangGraphState) -> Dict[str, object]:
         debug["tabular_sql"] = tabular_debug
 
     graph_trace = list(state.get("node_trace") or [])
+    node_path = [
+        str(item.get("node") or "").strip()
+        for item in graph_trace
+        if isinstance(item, dict) and str(item.get("node") or "").strip()
+    ]
+    guarded_mode_used = bool(state.get("guarded_enabled", False)) and not bool(state.get("skip_guarded_plan", False))
+    repair_index = int(state.get("repair_iteration_index", 0) or 0)
+    repair_count = int(state.get("repair_iteration_count", 0) or 0)
+    if guarded_mode_used:
+        graph_attempts = max(1, repair_index + 1, repair_count)
+    else:
+        graph_attempts = 1 if node_path else 0
+    stop_reason = str(state.get("graph_stop_reason") or "completed")
+
+    plan_summary = state.get("plan_summary") if isinstance(state.get("plan_summary"), dict) else {}
+    execution_spec_summary = (
+        state.get("execution_spec_summary")
+        if isinstance(state.get("execution_spec_summary"), dict)
+        else {}
+    )
+    plan_validation_failures = [
+        str(item) for item in list(state.get("plan_validation_failures") or []) if str(item or "").strip()
+    ]
+    execution_spec_validation_failures = [
+        str(item)
+        for item in list(state.get("execution_spec_validation_failures") or [])
+        if str(item or "").strip()
+    ]
+    executed_tools = [str(item) for item in list(state.get("executed_tools") or []) if str(item or "").strip()]
+    tool_errors = [str(item) for item in list(state.get("tool_errors") or []) if str(item or "").strip()]
     planner_mode = "llm_guarded" if bool(state.get("guarded_enabled", False)) and not bool(state.get("skip_guarded_plan", False)) else "deterministic"
     additive_fields = {
         "analytics_engine_graph_version": GRAPH_VERSION,
         "analytics_engine_graph_trace": graph_trace,
+        "analytics_engine_graph_run_id": str(state.get("graph_run_id") or "").strip() or None,
+        "analytics_engine_graph_node_path": node_path,
+        "analytics_engine_graph_attempts": graph_attempts,
+        "analytics_engine_graph_stop_reason": stop_reason,
+        "graph_run_id": str(state.get("graph_run_id") or "").strip() or None,
+        "graph_node_path": node_path,
+        "graph_attempts": graph_attempts,
+        "stop_reason": stop_reason,
         "planner_mode": str(debug.get("planner_mode") or planner_mode),
+        "plan_hash": str(state.get("plan_hash") or "").strip() or None,
+        "plan_summary": plan_summary,
+        "plan_validation_failures": plan_validation_failures,
+        "execution_spec_summary": execution_spec_summary,
+        "execution_spec_validation_failures": execution_spec_validation_failures,
+        "executed_tools": executed_tools,
+        "tool_errors": tool_errors,
     }
     debug.update(additive_fields)
     tabular_debug.update(additive_fields)

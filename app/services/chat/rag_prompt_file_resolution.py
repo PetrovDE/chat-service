@@ -102,6 +102,33 @@ def _deduplicate_files(files: Sequence[Any]) -> List[Any]:
     return unique
 
 
+def _extract_optional_source_ids(file_obj: Any) -> Tuple[Optional[str], Optional[str]]:
+    custom_metadata = getattr(file_obj, "custom_metadata", None)
+    if not isinstance(custom_metadata, dict):
+        return None, None
+    source_payload = custom_metadata.get("source")
+    source_dict = source_payload if isinstance(source_payload, dict) else {}
+    upload_id = str(custom_metadata.get("upload_id") or source_dict.get("upload_id") or "").strip() or None
+    document_id = str(custom_metadata.get("document_id") or source_dict.get("document_id") or "").strip() or None
+    return upload_id, document_id
+
+
+def _collect_optional_source_ids(files: Sequence[Any]) -> Tuple[List[str], List[str]]:
+    upload_ids: List[str] = []
+    document_ids: List[str] = []
+    seen_upload = set()
+    seen_document = set()
+    for file_obj in files:
+        upload_id, document_id = _extract_optional_source_ids(file_obj)
+        if upload_id and upload_id not in seen_upload:
+            seen_upload.add(upload_id)
+            upload_ids.append(upload_id)
+        if document_id and document_id not in seen_document:
+            seen_document.add(document_id)
+            document_ids.append(document_id)
+    return upload_ids, document_ids
+
+
 async def _load_user_ready_files_for_resolution(
     *,
     crud_file_module: Any,
@@ -273,6 +300,8 @@ async def resolve_file_references(
         "requested_file_names": requested_file_names,
         "resolved_file_names": [],
         "resolved_file_ids": [],
+        "resolved_upload_ids": [],
+        "resolved_document_ids": [],
         "file_resolution_status": "not_requested",
     }
     if not requested_file_names:
@@ -292,12 +321,15 @@ async def resolve_file_references(
 
     if not unresolved_candidates:
         resolved = _deduplicate_files([item for values in conversation_matches.values() for item in values])
+        resolved_upload_ids, resolved_document_ids = _collect_optional_source_ids(resolved)
         resolution_meta["file_resolution_status"] = "conversation_match"
         resolution_meta["resolved_file_ids"] = [str(getattr(item, "id")) for item in resolved]
         resolution_meta["resolved_file_names"] = [
             str(getattr(item, "original_filename", "") or getattr(item, "stored_filename", "") or "")
             for item in resolved
         ]
+        resolution_meta["resolved_upload_ids"] = resolved_upload_ids
+        resolution_meta["resolved_document_ids"] = resolved_document_ids
         return files, resolution_meta, None
 
     try:
@@ -371,10 +403,13 @@ async def resolve_file_references(
             )
 
     merged = _deduplicate_files([*files, *unique_additions])
+    resolved_upload_ids, resolved_document_ids = _collect_optional_source_ids(unique_additions)
     resolution_meta["file_resolution_status"] = "resolved_unique"
     resolution_meta["resolved_file_ids"] = [str(getattr(item, "id")) for item in unique_additions if getattr(item, "id", None)]
     resolution_meta["resolved_file_names"] = [
         str(getattr(item, "original_filename", "") or getattr(item, "stored_filename", "") or "")
         for item in unique_additions
     ]
+    resolution_meta["resolved_upload_ids"] = resolved_upload_ids
+    resolution_meta["resolved_document_ids"] = resolved_document_ids
     return merged, resolution_meta, None

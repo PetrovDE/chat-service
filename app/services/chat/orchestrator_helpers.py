@@ -70,6 +70,20 @@ def execution_telemetry(ctx: Dict[str, Any]) -> Dict[str, Any]:
     executor_status = "not_attempted"
     executor_error_code = None
     artifacts_count = 0
+    analytics_engine_mode_requested = None
+    analytics_engine_mode_served = None
+    analytics_engine_shadow_enabled = None
+    analytics_engine_fallback_reason = None
+    analytics_engine_graph_run_id = None
+    analytics_engine_graph_node_path = None
+    analytics_engine_graph_attempts = None
+    analytics_engine_graph_stop_reason = None
+    request_id = None
+    user_id = None
+    conversation_id = None
+    file_id = None
+    upload_id = None
+    document_id = None
 
     if isinstance(rag_debug, dict):
         route_value = str(rag_debug.get("execution_route") or "").strip().lower()
@@ -97,6 +111,22 @@ def execution_telemetry(ctx: Dict[str, Any]) -> Dict[str, Any]:
             artifacts_count = max(0, int(artifacts_raw or 0))
         except Exception:
             artifacts_count = 0
+        analytics_engine_mode_requested = rag_debug.get("analytics_engine_mode_requested") or rag_debug.get("engine_mode_requested")
+        analytics_engine_mode_served = rag_debug.get("analytics_engine_mode_served") or rag_debug.get("engine_mode_served")
+        analytics_engine_shadow_enabled = rag_debug.get("analytics_engine_shadow_enabled")
+        if analytics_engine_shadow_enabled is None:
+            analytics_engine_shadow_enabled = rag_debug.get("shadow_mode")
+        analytics_engine_fallback_reason = rag_debug.get("analytics_engine_fallback_reason") or rag_debug.get("engine_fallback_reason")
+        analytics_engine_graph_run_id = rag_debug.get("analytics_engine_graph_run_id") or rag_debug.get("graph_run_id")
+        analytics_engine_graph_node_path = rag_debug.get("analytics_engine_graph_node_path") or rag_debug.get("graph_node_path")
+        analytics_engine_graph_attempts = rag_debug.get("analytics_engine_graph_attempts") or rag_debug.get("graph_attempts")
+        analytics_engine_graph_stop_reason = rag_debug.get("analytics_engine_graph_stop_reason") or rag_debug.get("stop_reason")
+        request_id = rag_debug.get("request_id")
+        user_id = rag_debug.get("user_id")
+        conversation_id = rag_debug.get("conversation_id")
+        file_id = rag_debug.get("file_id")
+        upload_id = rag_debug.get("upload_id")
+        document_id = rag_debug.get("document_id")
 
     return {
         "execution_route": execution_route,
@@ -104,6 +134,20 @@ def execution_telemetry(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "executor_status": executor_status,
         "executor_error_code": executor_error_code,
         "artifacts_count": artifacts_count,
+        "analytics_engine_mode_requested": analytics_engine_mode_requested,
+        "analytics_engine_mode_served": analytics_engine_mode_served,
+        "analytics_engine_shadow_enabled": analytics_engine_shadow_enabled,
+        "analytics_engine_fallback_reason": analytics_engine_fallback_reason,
+        "analytics_engine_graph_run_id": analytics_engine_graph_run_id,
+        "analytics_engine_graph_node_path": analytics_engine_graph_node_path,
+        "analytics_engine_graph_attempts": analytics_engine_graph_attempts,
+        "analytics_engine_graph_stop_reason": analytics_engine_graph_stop_reason,
+        "request_id": request_id,
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+        "file_id": file_id,
+        "upload_id": upload_id,
+        "document_id": document_id,
     }
 
 

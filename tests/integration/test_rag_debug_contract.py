@@ -203,7 +203,10 @@ def test_rag_debug_contract_stable_defaults_include_file_route_language_and_cach
     assert payload["detected_language"] == "ru"
     assert payload["response_language"] == "ru"
     assert payload["cache_hit"] is False
-    assert payload["cache_miss"] is True
+    assert payload["cache_miss"] is False
+    assert payload["cache_supported"] is False
+    assert payload["cache_active"] is False
+    assert payload["cache_status"] == "inactive"
     assert payload["cache_key_version"] == "unknown"
     assert payload["chart_artifact_available"] is False
     assert payload["chart_artifact_exists"] is False
@@ -234,6 +237,8 @@ def test_rag_debug_contract_stable_defaults_include_file_route_language_and_cach
     assert payload["debug_sections"]["continuity"]["followup_context_used"] is False
     assert payload["debug_sections"]["planner"]["planner_mode"] == "deterministic"
     assert payload["debug_sections"]["planner"]["plan_validation_status"] == "not_attempted"
+    assert payload["debug_sections"]["cache"]["cache_status"] == "inactive"
+    assert payload["debug_sections"]["retrieval"]["retrieval_skipped"] is False
 
 
 def test_rag_debug_contract_file_aware_tabular_fields_are_preserved():
@@ -277,6 +282,8 @@ def test_rag_debug_contract_file_aware_tabular_fields_are_preserved():
     assert payload["fallback_reason"] == "missing_required_columns"
     assert payload["response_language"] == "ru"
     assert payload["cache_key"] == "abc123"
+    assert payload["cache_miss"] is False
+    assert payload["cache_status"] == "inactive"
     assert payload["debug_sections"]["tabular"]["unmatched_requested_fields"] == ["birth_date"]
     assert payload["debug_sections"]["continuity"]["followup_context_used"] is True
     assert payload["debug_sections"]["continuity"]["prior_tabular_intent_reused"] is True
@@ -412,3 +419,37 @@ def test_rag_debug_contract_extracts_embedding_and_collection_namespace_details(
     assert payload["retrieval_namespaces"] == ["documents"]
     assert payload["collection"] == "documents_1536d"
     assert payload["namespace"] == "documents"
+
+
+def test_rag_debug_contract_redacts_sensitive_values_and_exposes_correlation_fields():
+    payload = build_standard_rag_debug_payload(
+        rag_debug={
+            "retrieval_mode": "hybrid",
+            "request_id": "rid-1",
+            "conversation_id": "cid-1",
+            "user_id": "uid-1",
+            "file_id": "fid-1",
+            "upload_id": "upl-1",
+            "document_id": "doc-1",
+            "provider_debug": {
+                "authorization": "Bearer top-secret-token",
+                "api_key": "sk-verysecret",
+                "prompt_chars_before": 120,
+            },
+        },
+        context_docs=[],
+        rag_sources=[],
+        llm_tokens_used=0,
+        max_items=8,
+    )
+
+    assert payload["request_id"] == "rid-1"
+    assert payload["conversation_id"] == "cid-1"
+    assert payload["user_id"] == "uid-1"
+    assert payload["file_id"] == "fid-1"
+    assert payload["upload_id"] == "upl-1"
+    assert payload["document_id"] == "doc-1"
+    assert payload["provider_debug"]["authorization"] == "<redacted>"
+    assert payload["provider_debug"]["api_key"] == "<redacted>"
+    assert payload["provider_debug"]["prompt_chars_before"] == 120
+    assert payload["debug_sections"]["correlation"]["request_id"] == "rid-1"

@@ -377,3 +377,79 @@ Additive debug fields (backward compatible):
 - `analytics_engine_shadow` (summary of shadow outcome)
 - `analytics_engine_graph_version`
 - `analytics_engine_graph_trace`
+
+## Update 2026-03-27 (Stage 4: Observability + Debug Mode)
+
+Additive debug/log observability now covers end-to-end explainability for deterministic analytics and LangGraph paths.
+
+Correlation fields (when available) are now propagated into debug payload and structured logs:
+
+- `request_id`
+- `conversation_id`
+- `user_id`
+- `file_id`
+- `upload_id`
+- `document_id`
+
+Engine/graph routing visibility (additive):
+
+- `engine_mode_requested` / `analytics_engine_mode_requested`
+- `engine_mode_served` / `analytics_engine_mode_served`
+- `shadow_mode` / `analytics_engine_shadow_enabled`
+- `engine_fallback_reason` / `analytics_engine_fallback_reason`
+- `graph_run_id` / `analytics_engine_graph_run_id`
+- `graph_node_path` / `analytics_engine_graph_node_path`
+- `graph_attempts` / `analytics_engine_graph_attempts`
+- `stop_reason` / `analytics_engine_graph_stop_reason`
+
+Planning/execution visibility (additive):
+
+- `plan_hash`
+- `plan_summary`
+- `plan_validation_failures`
+- `execution_spec_summary`
+- `execution_spec_validation_failures`
+- `executed_tools`
+- `tool_errors`
+- `planner_path` (`deterministic|llm_guarded`)
+
+Retrieval/source visibility (additive):
+
+- `retrieval_skipped`
+- `retrieval_skip_reason`
+- `retrieval_scope` (normalized scope derived from retrieval filters when available)
+- `source_count`
+- retrieval `source_evidence_summary` in `debug_sections.retrieval`
+
+Context visibility (additive):
+
+- `context_chars`
+- `context_tokens`
+- `artifacts_present`
+- `deterministic_fallback_formatting_used`
+- `deterministic_fallback_formatting_reason`
+
+Cache semantics are now explicit and truthful when response cache is inactive:
+
+- `cache_supported=false`
+- `cache_active=false`
+- `cache_status=inactive`
+- `cache_reason=response_cache_not_implemented`
+- compatibility keys `cache_hit` and `cache_miss` remain present and are both `false` when inactive
+
+Structured log events now include engine/graph summary fields and correlation IDs:
+
+- `tabular_analytics_engine_route` includes mode request/serve, shadow state, fallback reason, graph run/path/attempts/stop reason, and correlation IDs.
+- `chat_route_decision` includes additive engine/graph and file/upload/document observability fields when present.
+
+Safety:
+
+- Debug payloads are sanitized to redact sensitive key/value patterns (for example API keys, bearer tokens, auth/password fields) before emission.
+
+LangSmith tracing:
+
+- Optional LangGraph invoke metadata is now gated by config flags:
+  - `LANGSMITH_TRACING_ENABLED`
+  - `LANGSMITH_PROJECT`
+  - `LANGSMITH_TAGS`
+- Repo-native tracing remains the default behavior when this flag is disabled.

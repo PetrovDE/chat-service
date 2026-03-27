@@ -101,3 +101,6 @@ def test_langgraph_eval_slice_queries(
     debug = result.get("debug") or {}
     assert debug.get("analytics_engine_mode_served") == "langgraph"
     assert str(debug.get("selected_route") or "") == expected_route
+    assert isinstance(debug.get("analytics_engine_graph_run_id"), str)
+    assert isinstance(debug.get("analytics_engine_graph_node_path"), list)
+    assert debug.get("analytics_engine_graph_stop_reason") in {"payload_ready", "payload_error_ready", "completed"}

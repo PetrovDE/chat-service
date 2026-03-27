@@ -13,6 +13,7 @@ def detect_intent(state: TabularLangGraphState) -> Dict[str, object]:
     parsed = parse_tabular_query(state["query"])
     return {
         "parsed_route": str(parsed.route or ""),
+        "graph_stop_reason": "in_progress",
         "next_step": "resolve_scope",
         "node_trace": append_trace(state, node="detect_intent", status="ok"),
     }
@@ -28,6 +29,7 @@ def resolve_scope(state: TabularLangGraphState) -> Dict[str, object]:
             "scope_status": scope.status,
             "terminal_none_payload": True,
             "payload": None,
+            "graph_stop_reason": "no_tabular_dataset",
             "next_step": "emit_debug_trace",
             "scope_debug_fields": scope_debug_fields,
             "node_trace": append_trace(state, node="resolve_scope", status="ok", reason="no_tabular_dataset"),
@@ -44,6 +46,7 @@ def resolve_scope(state: TabularLangGraphState) -> Dict[str, object]:
             "scope_status": scope.status,
             "payload": payload,
             "scope_debug_fields": scope_debug_fields,
+            "graph_stop_reason": "ambiguous_file_scope",
             "next_step": "compose_answer",
             "node_trace": append_trace(state, node="resolve_scope", status="ok", reason="ambiguous_file"),
         }
@@ -59,6 +62,7 @@ def resolve_scope(state: TabularLangGraphState) -> Dict[str, object]:
             "scope_status": scope.status,
             "payload": payload,
             "scope_debug_fields": scope_debug_fields,
+            "graph_stop_reason": "ambiguous_table_scope",
             "next_step": "compose_answer",
             "node_trace": append_trace(state, node="resolve_scope", status="ok", reason="ambiguous_table"),
         }
@@ -83,6 +87,7 @@ def inspect_data_sources(state: TabularLangGraphState) -> Dict[str, object]:
         return {
             "terminal_none_payload": True,
             "payload": None,
+            "graph_stop_reason": "missing_scope_data",
             "next_step": "emit_debug_trace",
             "node_trace": append_trace(state, node="inspect_data_sources", status="error", reason="missing_scope_data"),
         }
@@ -93,6 +98,7 @@ def inspect_data_sources(state: TabularLangGraphState) -> Dict[str, object]:
         return {
             "terminal_none_payload": True,
             "payload": None,
+            "graph_stop_reason": "unknown_intent",
             "next_step": "emit_debug_trace",
             "node_trace": append_trace(state, node="inspect_data_sources", status="error", reason="unknown_intent"),
         }
@@ -116,6 +122,11 @@ def inspect_data_sources(state: TabularLangGraphState) -> Dict[str, object]:
         "repair_iteration_count": max_attempts,
         "plan_feedback": [],
         "execution_feedback": [],
+        "plan_validation_failures": [],
+        "execution_spec_validation_failures": [],
+        "executed_tools": [],
+        "tool_errors": [],
+        "graph_stop_reason": "in_progress",
         "next_step": "build_plan" if guarded_enabled else "execute_tools",
         "node_trace": append_trace(state, node="inspect_data_sources", status="ok"),
     }

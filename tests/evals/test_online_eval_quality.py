@@ -80,6 +80,7 @@ def test_online_eval_collects_complex_quality_metric(monkeypatch):
     assert report["score"] == 1.0
     assert report["metrics"]["complex_analytics_report_quality"]["score"] == 1.0
     assert report["by_dataset"]["complex_analytics_quality_online"]["score"] == 1.0
+    assert report["skipped_cases_count"] == 0
 
 
 def test_online_eval_raises_on_missing_env_placeholder(monkeypatch):
@@ -106,3 +107,44 @@ def test_online_eval_raises_on_missing_env_placeholder(monkeypatch):
             base_url="http://localhost:8000",
             timeout_seconds=5.0,
         )
+
+
+def test_online_eval_payload_path_operators_and_env_gated_skip(monkeypatch):
+    monkeypatch.setattr("scripts.evals.online.httpx.AsyncClient", _FakeAsyncClient)
+    monkeypatch.delenv("EVAL_OPTIONAL_CASE_ENABLED", raising=False)
+
+    datasets = {
+        "rag_retrieval_quality_online": [
+            {
+                "id": "case-path-checks",
+                "online_metric": "retrieval_relevance",
+                "online_request": {"message": "check payload operators"},
+                "online_expect": {
+                    "payload_present": ["rag_debug.complex_analytics.metrics.rows_total"],
+                    "payload_equals": {"executor_status": "success"},
+                    "payload_in": {"execution_route": ["tabular_sql", "complex_analytics"]},
+                    "payload_min": {"rag_debug.complex_analytics.metrics.rows_total": 5},
+                    "payload_contains_any": {"response": ["insight", "analysis"]},
+                },
+            },
+            {
+                "id": "case-env-gated",
+                "online_metric": "retrieval_relevance",
+                "enabled_if_env": "EVAL_OPTIONAL_CASE_ENABLED",
+                "online_request": {"message": "must be skipped"},
+                "online_expect": {"payload_equals": {"executor_status": "success"}},
+            },
+        ]
+    }
+
+    report = run_online_eval_sync(
+        datasets=datasets,
+        base_url="http://localhost:8000",
+        timeout_seconds=5.0,
+    )
+
+    assert report["executed_cases"] == 1
+    assert report["passed_cases"] == 1
+    assert report["metrics"]["retrieval_relevance"]["score"] == 1.0
+    assert report["skipped_cases_count"] == 1
+    assert report["skipped_cases"][0]["id"] == "case-env-gated"

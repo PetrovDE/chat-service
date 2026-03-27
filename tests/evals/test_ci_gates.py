@@ -69,3 +69,48 @@ def test_ci_gates_fail_when_online_complex_quality_below_preprod_threshold():
         check["name"] == "online_complex_analytics_report_quality" and check["passed"] is False
         for check in result["checks"]
     )
+
+
+def test_ci_gates_enforce_configured_offline_and_online_metric_buckets():
+    summary = {
+        "metrics": {
+            "numeric_exact_match": {"score": 1.0},
+            "citation_faithfulness": {"score": 1.0},
+            "route_correctness": {"score": 1.0},
+            "complex_analytics_report_quality": {"score": 1.0},
+            "langgraph_eval_correctness": {"score": 1.0},
+            "langgraph_vs_legacy_correctness_delta": {"score": 0.0},
+            "langgraph_explainability_gain": {"score": 1.0},
+        },
+        "latency": {"violations": [], "p95_ms_by_dataset": {}},
+        "online_report": {
+            "metrics": {
+                "retrieval_relevance": {"score": 1.0},
+                "explainability_debug_usefulness": {"score": 1.0},
+            },
+            "latency_violations": [],
+            "latency_p95_ms_by_dataset": {},
+        },
+    }
+    gate_config = {
+        "numeric_exact_match_min": 1.0,
+        "citation_faithfulness_min": 1.0,
+        "route_correctness_min": 1.0,
+        "complex_analytics_report_quality_min": 1.0,
+        "max_latency_violations": 0,
+        "p95_latency_ms": {},
+        "offline_metric_min_scores": {
+            "langgraph_eval_correctness": 1.0,
+            "langgraph_vs_legacy_correctness_delta": 0.0,
+            "langgraph_explainability_gain": 1.0,
+        },
+        "online_metric_min_scores": {
+            "retrieval_relevance": 0.9,
+            "explainability_debug_usefulness": 1.0,
+        },
+    }
+
+    result = evaluate_ci_gates(summary, gate_config)
+    assert result["passed"] is True
+    assert any(check["name"] == "offline_metric::langgraph_eval_correctness" for check in result["checks"])
+    assert any(check["name"] == "online_metric::retrieval_relevance" for check in result["checks"])

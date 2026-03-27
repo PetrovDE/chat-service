@@ -13,11 +13,14 @@ DEFAULT_GATES: Dict[str, Any] = {
     "online_complex_analytics_report_quality_min": 0.0,
     "max_latency_violations": 0,
     "online_max_latency_violations": 0,
+    "offline_metric_min_scores": {},
+    "online_metric_min_scores": {},
     "p95_latency_ms": {
         "tabular_aggregate_golden": 2500.0,
         "tabular_profile_golden": 3000.0,
         "fallback_route_golden": 1500.0,
         "complex_analytics_quality_golden": 4000.0,
+        "tabular_langgraph_eval_slice_golden": 5000.0,
     },
     "online_p95_latency_ms": {},
 }
@@ -37,6 +40,19 @@ def load_gate_config(path: Optional[Path]) -> Dict[str, Any]:
 def _metric_score(summary: Dict[str, Any], metric_name: str) -> float:
     metrics = summary.get("metrics", {})
     payload = metrics.get(metric_name, {})
+    return float(payload.get("score", 0.0) or 0.0)
+
+
+def _online_metric_score(summary: Dict[str, Any], metric_name: str) -> float:
+    online_report = summary.get("online_report")
+    if not isinstance(online_report, dict):
+        return 0.0
+    metrics = online_report.get("metrics")
+    if not isinstance(metrics, dict):
+        return 0.0
+    payload = metrics.get(metric_name)
+    if not isinstance(payload, dict):
+        return 0.0
     return float(payload.get("score", 0.0) or 0.0)
 
 
@@ -94,6 +110,19 @@ def evaluate_ci_gates(summary: Dict[str, Any], gate_config: Dict[str, Any]) -> D
         threshold=complex_quality_threshold,
     )
 
+    offline_metric_thresholds = gate_config.get("offline_metric_min_scores")
+    if isinstance(offline_metric_thresholds, dict):
+        for metric_name, threshold in sorted(offline_metric_thresholds.items()):
+            metric_score = _metric_score(summary, str(metric_name))
+            threshold_value = float(threshold)
+            _add_check(
+                checks,
+                name=f"offline_metric::{metric_name}",
+                passed=metric_score >= threshold_value,
+                observed=round(metric_score, 6),
+                threshold=threshold_value,
+            )
+
     latency_payload = summary.get("latency", {})
     violations = latency_payload.get("violations", [])
     max_violations = int(gate_config.get("max_latency_violations", 0))
@@ -132,6 +161,20 @@ def evaluate_ci_gates(summary: Dict[str, Any], gate_config: Dict[str, Any]) -> D
             observed=round(online_score, 6),
             threshold=online_threshold,
         )
+
+    online_metric_thresholds = gate_config.get("online_metric_min_scores")
+    if isinstance(online_metric_thresholds, dict):
+        for metric_name, threshold in sorted(online_metric_thresholds.items()):
+            threshold_value = float(threshold)
+            observed_score = _online_metric_score(summary, str(metric_name))
+            passed_check = observed_score >= threshold_value if online_report is not None else threshold_value <= 0.0
+            _add_check(
+                checks,
+                name=f"online_metric::{metric_name}",
+                passed=passed_check,
+                observed=round(observed_score, 6),
+                threshold=threshold_value,
+            )
 
     online_max_violations = gate_config.get("online_max_latency_violations")
     if online_report is not None and online_max_violations is not None:

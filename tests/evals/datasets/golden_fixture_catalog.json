@@ -1,0 +1,62 @@
+{
+  "catalog_version": "stage6_golden_fixtures_v1",
+  "last_updated": "2026-03-27",
+  "fixtures": [
+    {
+      "fixture_id": "text_heavy_policy_bundle",
+      "category": "text-heavy docs",
+      "formats": ["txt", "md", "docx"],
+      "description": "Long narrative files with dense policy language, cross-references, and glossary terms.",
+      "target_eval_usage": ["multi-document retrieval", "grounding", "follow-up retrieval"]
+    },
+    {
+      "fixture_id": "tabular_sales_timeseries",
+      "category": "tabular files",
+      "formats": ["csv", "xlsx"],
+      "description": "Clean transactional table with datetime, numeric measure, and category dimensions.",
+      "target_eval_usage": ["counts", "aggregations", "temporal grouping", "chart correctness"]
+    },
+    {
+      "fixture_id": "mixed_ops_package",
+      "category": "mixed-format uploads",
+      "formats": ["pdf", "xlsx", "txt"],
+      "description": "One conversation receives narrative PDF, KPI spreadsheet, and incident notes.",
+      "target_eval_usage": ["cross-file retrieval", "synthesis", "source grounding"]
+    },
+    {
+      "fixture_id": "noisy_export_bundle",
+      "category": "noisy or poorly structured files",
+      "formats": ["csv", "txt", "pdf"],
+      "description": "Inconsistent headers, sparse rows, OCR artifacts, and duplicated fields.",
+      "target_eval_usage": ["schema discovery", "clarification behavior", "robust retrieval"]
+    },
+    {
+      "fixture_id": "large_volume_table",
+      "category": "large files",
+      "formats": ["csv", "parquet"],
+      "description": "High-row-count dataset for latency and retrieval-scope stress checks.",
+      "target_eval_usage": ["latency", "fallback rate", "operational readiness"]
+    },
+    {
+      "fixture_id": "multi_doc_conversation_pack",
+      "category": "multiple documents in one conversation",
+      "formats": ["pdf", "txt", "csv"],
+      "description": "Three to five documents with overlapping entities and conflicting evidence.",
+      "target_eval_usage": ["multi-doc retrieval", "follow-up continuity", "explainability"]
+    },
+    {
+      "fixture_id": "short_valid_snippets",
+      "category": "short but valid files",
+      "formats": ["txt", "csv"],
+      "description": "Very small but non-empty files with valid schema/content.",
+      "target_eval_usage": ["short-context correctness", "no over-fallback"]
+    },
+    {
+      "fixture_id": "weak_near_empty_pdf",
+      "category": "weak-pdf and near-empty pdf edge cases",
+      "formats": ["pdf"],
+      "description": "Image-only or near-empty PDFs with minimal extractable text.",
+      "target_eval_usage": ["indexing-not-ready explainability", "no-context diagnostics"]
+    }
+  ]
+}

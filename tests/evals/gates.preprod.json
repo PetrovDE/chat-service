@@ -1,7 +1,18 @@
 {
+  "online_metric_min_scores": {
+    "retrieval_relevance": 0.9,
+    "grounding_uploaded_content": 0.9,
+    "chart_execution_correctness": 0.9,
+    "followup_continuity": 0.9,
+    "fallback_rate_control": 0.9,
+    "explainability_debug_usefulness": 1.0
+  },
   "online_complex_analytics_report_quality_min": 1.0,
   "online_max_latency_violations": 0,
   "online_p95_latency_ms": {
-    "complex_analytics_quality_online": 12000.0
+    "complex_analytics_quality_online": 12000.0,
+    "rag_retrieval_quality_online": 12000.0,
+    "rag_failure_explainability_online": 12000.0,
+    "tabular_followup_continuity_online": 12000.0
   }
 }

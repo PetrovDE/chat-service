@@ -46,6 +46,139 @@ def _complex_debug(response_payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _ENV_PLACEHOLDER_RE = re.compile(r"^\$\{([A-Z0-9_]+)\}$")
+_MISSING = object()
+
+
+def _resolve_path(payload: Any, path: str) -> Any:
+    node = payload
+    for token in str(path or "").split("."):
+        if not token:
+            return _MISSING
+        if isinstance(node, dict):
+            if token not in node:
+                return _MISSING
+            node = node[token]
+            continue
+        if isinstance(node, list) and token.isdigit():
+            index = int(token)
+            if index < 0 or index >= len(node):
+                return _MISSING
+            node = node[index]
+            continue
+        return _MISSING
+    return node
+
+
+def _append_payload_equals_checks(checks: List[Dict[str, Any]], *, payload: Dict[str, Any], expected: Dict[str, Any]) -> None:
+    payload_equals = expected.get("payload_equals")
+    if not isinstance(payload_equals, dict):
+        return
+    for raw_path, expected_value in payload_equals.items():
+        path = str(raw_path)
+        observed_value = _resolve_path(payload, path)
+        checks.append(
+            {
+                "name": f"payload_equals::{path}",
+                "passed": (observed_value is not _MISSING) and (observed_value == expected_value),
+                "observed": None if observed_value is _MISSING else observed_value,
+                "expected": expected_value,
+            }
+        )
+
+
+def _append_payload_in_checks(checks: List[Dict[str, Any]], *, payload: Dict[str, Any], expected: Dict[str, Any]) -> None:
+    payload_in = expected.get("payload_in")
+    if not isinstance(payload_in, dict):
+        return
+    for raw_path, allowed_values in payload_in.items():
+        if not isinstance(allowed_values, list):
+            continue
+        path = str(raw_path)
+        observed_value = _resolve_path(payload, path)
+        checks.append(
+            {
+                "name": f"payload_in::{path}",
+                "passed": (observed_value is not _MISSING) and (observed_value in allowed_values),
+                "observed": None if observed_value is _MISSING else observed_value,
+                "expected": list(allowed_values),
+            }
+        )
+
+
+def _append_payload_present_checks(
+    checks: List[Dict[str, Any]], *, payload: Dict[str, Any], expected: Dict[str, Any]
+) -> None:
+    payload_present = expected.get("payload_present")
+    if not isinstance(payload_present, list):
+        return
+    for item in payload_present:
+        path = str(item or "")
+        observed_value = _resolve_path(payload, path)
+        observed_present = observed_value is not _MISSING and observed_value is not None
+        checks.append(
+            {
+                "name": f"payload_present::{path}",
+                "passed": observed_present,
+                "observed": observed_present,
+                "expected": True,
+            }
+        )
+
+
+def _append_payload_numeric_checks(
+    checks: List[Dict[str, Any]], *, payload: Dict[str, Any], expected: Dict[str, Any], op_name: str, comparator: str
+) -> None:
+    raw_thresholds = expected.get(op_name)
+    if not isinstance(raw_thresholds, dict):
+        return
+    for raw_path, threshold in raw_thresholds.items():
+        path = str(raw_path)
+        observed_value = _resolve_path(payload, path)
+        passed = False
+        observed_numeric: float | None = None
+        threshold_value = float(threshold)
+        try:
+            observed_numeric = float(observed_value)
+            if comparator == "min":
+                passed = observed_numeric >= threshold_value
+            else:
+                passed = observed_numeric <= threshold_value
+        except (TypeError, ValueError):
+            passed = False
+        checks.append(
+            {
+                "name": f"{op_name}::{path}",
+                "passed": passed,
+                "observed": observed_numeric,
+                "expected": threshold_value,
+            }
+        )
+
+
+def _append_payload_text_checks(
+    checks: List[Dict[str, Any]], *, payload: Dict[str, Any], expected: Dict[str, Any], op_name: str, mode: str
+) -> None:
+    raw_payload = expected.get(op_name)
+    if not isinstance(raw_payload, dict):
+        return
+    for raw_path, raw_values in raw_payload.items():
+        if not isinstance(raw_values, list):
+            continue
+        path = str(raw_path)
+        observed_value = _resolve_path(payload, path)
+        observed_text = str(observed_value or "")
+        if mode == "all":
+            passed = _contains_all(observed_text, [str(item) for item in raw_values])
+        else:
+            passed = _contains_any(observed_text, [str(item) for item in raw_values])
+        checks.append(
+            {
+                "name": f"{op_name}::{path}",
+                "passed": observed_value is not _MISSING and passed,
+                "observed": observed_text,
+                "expected": list(raw_values),
+            }
+        )
 
 
 def _resolve_placeholders(value: Any) -> Any:
@@ -163,6 +296,38 @@ def _evaluate_case_response(case: Dict[str, Any], response_payload: Dict[str, An
                 }
             )
 
+    _append_payload_equals_checks(checks, payload=response_payload, expected=expected)
+    _append_payload_in_checks(checks, payload=response_payload, expected=expected)
+    _append_payload_present_checks(checks, payload=response_payload, expected=expected)
+    _append_payload_numeric_checks(
+        checks,
+        payload=response_payload,
+        expected=expected,
+        op_name="payload_min",
+        comparator="min",
+    )
+    _append_payload_numeric_checks(
+        checks,
+        payload=response_payload,
+        expected=expected,
+        op_name="payload_max",
+        comparator="max",
+    )
+    _append_payload_text_checks(
+        checks,
+        payload=response_payload,
+        expected=expected,
+        op_name="payload_contains",
+        mode="all",
+    )
+    _append_payload_text_checks(
+        checks,
+        payload=response_payload,
+        expected=expected,
+        op_name="payload_contains_any",
+        mode="any",
+    )
+
     passed = all(bool(check.get("passed")) for check in checks) if checks else True
     return {"passed": passed, "checks": checks}
 
@@ -208,10 +373,21 @@ async def run_online_eval(
     passed = 0
     by_dataset: Dict[str, Dict[str, int]] = {}
     latency_violations: List[Dict[str, Any]] = []
+    skipped_cases: List[Dict[str, Any]] = []
 
     async with httpx.AsyncClient(base_url=base_url, timeout=timeout_seconds, headers=headers) as client:
         for dataset_name, rows in datasets.items():
             for case in rows:
+                enabled_if_env = str(case.get("enabled_if_env") or "").strip()
+                if enabled_if_env and not os.getenv(enabled_if_env):
+                    skipped_cases.append(
+                        {
+                            "id": case.get("id"),
+                            "dataset": dataset_name,
+                            "reason": f"missing_env:{enabled_if_env}",
+                        }
+                    )
+                    continue
                 request_payload = case.get("online_request")
                 if not isinstance(request_payload, dict):
                     continue
@@ -281,6 +457,8 @@ async def run_online_eval(
         "latency_p95_ms": _percentile(latencies, 0.95),
         "latency_p95_ms_by_dataset": dataset_latency_p95,
         "latency_violations": latency_violations,
+        "skipped_cases": skipped_cases,
+        "skipped_cases_count": len(skipped_cases),
         "by_dataset": by_dataset_with_score,
         "metrics": metrics,
         "cases": case_results,

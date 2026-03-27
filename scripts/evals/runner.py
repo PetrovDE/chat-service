@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
+from app.core.config import settings
 from scripts.evals.datasets import load_named_datasets
+from scripts.evals.offline_langgraph_slice import run_tabular_langgraph_eval_slice
 from scripts.evals.offline import (
     run_complex_analytics_quality_eval,
     run_fallback_route_eval,
@@ -20,11 +23,23 @@ OFFLINE_DATASET_NAMES = (
     "narrative_rag_golden",
     "fallback_route_golden",
     "complex_analytics_quality_golden",
+    "tabular_langgraph_eval_slice_golden",
 )
 
 ONLINE_DATASET_NAMES = (
     "complex_analytics_quality_online",
+    "rag_retrieval_quality_online",
+    "rag_failure_explainability_online",
+    "tabular_followup_continuity_online",
 )
+
+
+def _configure_resource_limits() -> None:
+    # Keep offline eval deterministic in constrained CI/dev environments.
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 
 def _safe_ratio(passed: int, total: int) -> float:
@@ -54,6 +69,7 @@ def _build_metrics(offline_reports: Dict[str, Dict[str, Any]]) -> Dict[str, Any]
     narrative = offline_reports["narrative_rag_golden"]
     fallback = offline_reports["fallback_route_golden"]
     complex_quality = offline_reports["complex_analytics_quality_golden"]
+    langgraph_slice = offline_reports["tabular_langgraph_eval_slice_golden"]
 
     numeric_passed = int(aggregate.get("numeric_checks_passed", 0)) + int(profile.get("numeric_checks_passed", 0))
     numeric_total = int(aggregate.get("numeric_checks_total", 0)) + int(profile.get("numeric_checks_total", 0))
@@ -65,6 +81,10 @@ def _build_metrics(offline_reports: Dict[str, Dict[str, Any]]) -> Dict[str, Any]
     route_checks_total = int(fallback.get("route_checks_total", 0))
     quality_checks_passed = int(complex_quality.get("quality_checks_passed", 0))
     quality_checks_total = int(complex_quality.get("quality_checks_total", 0))
+    langgraph_passed = int(langgraph_slice.get("langgraph_passed_cases", 0))
+    legacy_passed = int(langgraph_slice.get("legacy_passed_cases", 0))
+    langgraph_total = int(langgraph_slice.get("total_cases", 0))
+    explainability_gain_cases = int(langgraph_slice.get("explainability_gain_cases", 0))
 
     return {
         "numeric_exact_match": {
@@ -87,6 +107,22 @@ def _build_metrics(offline_reports: Dict[str, Dict[str, Any]]) -> Dict[str, Any]
             "total": quality_checks_total,
             "score": _safe_ratio(quality_checks_passed, quality_checks_total),
         },
+        "langgraph_eval_correctness": {
+            "passed": langgraph_passed,
+            "total": langgraph_total,
+            "score": _safe_ratio(langgraph_passed, langgraph_total),
+        },
+        "langgraph_vs_legacy_correctness_delta": {
+            "langgraph_passed": langgraph_passed,
+            "legacy_passed": legacy_passed,
+            "total": langgraph_total,
+            "score": _safe_ratio(langgraph_passed, langgraph_total) - _safe_ratio(legacy_passed, langgraph_total),
+        },
+        "langgraph_explainability_gain": {
+            "passed": explainability_gain_cases,
+            "total": langgraph_total,
+            "score": _safe_ratio(explainability_gain_cases, langgraph_total),
+        },
     }
 
 
@@ -98,6 +134,7 @@ def run_eval_suite(
     online_timeout_seconds: float = 20.0,
     online_auth_bearer_token: str | None = None,
 ) -> Dict[str, Any]:
+    _configure_resource_limits()
     selected_mode = str(mode or "offline").strip().lower()
     if selected_mode not in {"offline", "online", "hybrid"}:
         raise ValueError("mode must be one of: offline, online, hybrid")
@@ -118,16 +155,28 @@ def run_eval_suite(
     if selected_mode in {"offline", "hybrid"}:
         with tempfile.TemporaryDirectory(prefix="llama_eval_") as tmp_dir_raw:
             tmp_dir = Path(tmp_dir_raw)
-            offline_reports["tabular_aggregate_golden"] = run_tabular_aggregate_eval(
-                offline_datasets["tabular_aggregate_golden"],
-                temp_dir=tmp_dir,
-            )
-            offline_reports["tabular_profile_golden"] = run_tabular_profile_eval(
-                offline_datasets["tabular_profile_golden"],
-                temp_dir=tmp_dir,
-            )
-            offline_reports["complex_analytics_quality_golden"] = run_complex_analytics_quality_eval(
-                offline_datasets["complex_analytics_quality_golden"],
+            original_mode = str(settings.ANALYTICS_ENGINE_MODE)
+            original_shadow = bool(settings.ANALYTICS_ENGINE_SHADOW)
+            try:
+                settings.ANALYTICS_ENGINE_MODE = "legacy"
+                settings.ANALYTICS_ENGINE_SHADOW = False
+                offline_reports["tabular_aggregate_golden"] = run_tabular_aggregate_eval(
+                    offline_datasets["tabular_aggregate_golden"],
+                    temp_dir=tmp_dir,
+                )
+                offline_reports["tabular_profile_golden"] = run_tabular_profile_eval(
+                    offline_datasets["tabular_profile_golden"],
+                    temp_dir=tmp_dir,
+                )
+                offline_reports["complex_analytics_quality_golden"] = run_complex_analytics_quality_eval(
+                    offline_datasets["complex_analytics_quality_golden"],
+                    temp_dir=tmp_dir,
+                )
+            finally:
+                settings.ANALYTICS_ENGINE_MODE = original_mode
+                settings.ANALYTICS_ENGINE_SHADOW = original_shadow
+            offline_reports["tabular_langgraph_eval_slice_golden"] = run_tabular_langgraph_eval_slice(
+                offline_datasets["tabular_langgraph_eval_slice_golden"],
                 temp_dir=tmp_dir,
             )
         offline_reports["narrative_rag_golden"] = run_narrative_rag_eval(offline_datasets["narrative_rag_golden"])

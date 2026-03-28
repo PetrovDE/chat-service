@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from time import perf_counter
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.core.config import settings
-from app.observability.metrics import inc_counter, observe_ms
+from app.observability.context import (
+    conversation_id_ctx,
+    request_id_ctx,
+    user_id_ctx,
+)
+from app.observability.metrics import observe_ms
 from app.services.chat.tabular_chart_delivery import render_chart_artifact
 from app.services.chat.language import detect_preferred_response_language
 from app.services.chat.tabular_debug_contract import (
@@ -16,7 +19,6 @@ from app.services.chat.tabular_debug_contract import (
 )
 from app.services.chat.tabular_intent_router import (
     TabularIntentDecision,
-    classify_tabular_query,
     detect_legacy_tabular_intent,
 )
 from app.services.chat.tabular_query_parser import parse_tabular_query
@@ -27,7 +29,6 @@ from app.services.chat.tabular_response_composer import (
     build_missing_column_message,
     build_timeout_message,
 )
-from app.services.chat.tabular_scope_selector import select_tabular_scope
 from app.services.chat.tabular_schema_resolver import (
     normalize_text,
     resolve_requested_field,
@@ -50,7 +51,6 @@ from app.services.chat.tabular_sql_pipeline import (
     execute_lookup_sync_pipeline,
     execute_profile_sync_pipeline,
 )
-from app.services.chat.tabular_llm_guarded_planner import maybe_execute_llm_guarded_tabular
 from app.services.chat.tabular_temporal_planner import (
     build_temporal_aggregation_plan,
     build_temporal_bucket_expression,
@@ -65,7 +65,6 @@ from app.services.tabular import (
     SQLGuardrails,
     TabularExecutionSession,
     TabularSQLException,
-    resolve_tabular_dataset,
     rows_to_result_text,
     to_tabular_error_payload,
 )
@@ -878,29 +877,6 @@ def _apply_scope_debug_fields(*, payload: Dict[str, Any], scope_debug: Dict[str,
     return apply_tabular_debug_fields(payload, fields=fields)
 
 
-async def _maybe_execute_llm_guarded_payload(
-    *,
-    query: str,
-    parsed_query_route: str,
-    selected_route: str,
-    dataset: ResolvedTabularDataset,
-    table: ResolvedTabularTable,
-    target_file: Any,
-    scope_debug_fields: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    llm_guarded_payload = await maybe_execute_llm_guarded_tabular(
-        query=query,
-        parsed_query_route=parsed_query_route,
-        selected_route=selected_route,
-        dataset=dataset,
-        table=table,
-        target_file=target_file,
-    )
-    if isinstance(llm_guarded_payload, dict):
-        return _apply_scope_debug_fields(payload=llm_guarded_payload, scope_debug=scope_debug_fields)
-    return None
-
-
 def _execute_chart_sync(
     *,
     query: str,
@@ -1051,228 +1027,148 @@ def _execute_chart_sync(
     return payload
 
 
-async def _execute_tabular_sql_path_legacy(
-    *,
-    query: str,
-    files: List[Any],
-) -> Optional[Dict[str, Any]]:
-    scope_decision = select_tabular_scope(
-        query=query,
-        files=_collect_eligible_tabular_files(files),
-        resolve_dataset_fn=resolve_tabular_dataset,
-    )
-    scope_debug_fields = dict(scope_decision.debug_fields or {})
-    parsed_query = parse_tabular_query(query)
-    if scope_decision.status == "no_tabular_dataset":
-        return None
-    if scope_decision.status == "ambiguous_file":
-        scope_kind = "file"
-        return build_scope_clarification_route_payload(
-            query=query,
-            scope_kind=scope_kind,
-            scope_options=list(scope_decision.clarification_options or []),
-            scope_debug=scope_debug_fields,
-        )
-    if scope_decision.status == "ambiguous_table" and parsed_query.route != "schema_question":
-        scope_kind = "sheet/table"
-        return build_scope_clarification_route_payload(
-            query=query,
-            scope_kind=scope_kind,
-            scope_options=list(scope_decision.clarification_options or []),
-            scope_debug=scope_debug_fields,
-        )
-
-    target_file = scope_decision.target_file
-    dataset = scope_decision.dataset
-    table = scope_decision.table
-    if target_file is None or dataset is None:
-        return None
-
-    intent_decision = classify_tabular_query(query=query, table=table)
-    intent_kind = intent_decision.legacy_intent
-    if intent_kind is None:  # pragma: no cover - defensive intent gate
-        return None
-
-    selected_route = str(intent_decision.selected_route or "")
-    llm_guarded_payload = await _maybe_execute_llm_guarded_payload(
-        query=query,
-        parsed_query_route=str(parsed_query.route or ""),
-        selected_route=selected_route,
-        dataset=dataset,
-        table=table,
-        target_file=target_file,
-        scope_debug_fields=scope_debug_fields,
-    )
-    if isinstance(llm_guarded_payload, dict):
-        return llm_guarded_payload
-
-    if selected_route == "unsupported_missing_column":
-        payload = _build_missing_column_response(
-            query=query,
-            decision=intent_decision,
-            dataset=dataset,
-            table=table,
-            target_file=target_file,
-        )
-        return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
-    if selected_route == "schema_question":
-        payload = _build_schema_question_payload(
-            query=query,
-            dataset=dataset,
-            table=table,
-            target_file=target_file,
-            decision=intent_decision,
-        )
-        return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
-
-    detected_language = detect_preferred_response_language(query)
-    timeout_seconds = float(settings.TABULAR_SQL_TIMEOUT_SECONDS)
+def _extract_graph_runtime(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {
+            "analytics_engine_graph_run_id": None,
+            "analytics_engine_graph_node_path": [],
+            "analytics_engine_graph_attempts": 0,
+            "analytics_engine_graph_stop_reason": "none",
+        }
+    debug = payload.get("debug") if isinstance(payload.get("debug"), dict) else {}
+    node_path = debug.get("analytics_engine_graph_node_path") or debug.get("graph_node_path") or []
+    if not isinstance(node_path, list):
+        node_path = []
+    graph_attempts_raw = debug.get("analytics_engine_graph_attempts")
+    if graph_attempts_raw is None:
+        graph_attempts_raw = debug.get("graph_attempts")
     try:
-        started = perf_counter()
-        if selected_route in {"overview"}:
-            payload = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _execute_profile_sync,
-                    dataset=dataset,
-                    table=table,
-                    target_file=target_file,
-                    timeout_seconds=timeout_seconds,
-                ),
-                timeout=timeout_seconds,
-            )
-            payload = _apply_route_debug(
-                payload=payload,
-                decision=intent_decision,
-                detected_language=detected_language,
-            )
-            payload_debug = payload.get("debug", {})
-            if isinstance(payload_debug, dict):
-                payload_debug["intent"] = "tabular_overview"
-                tabular_debug = payload_debug.get("tabular_sql")
-                if isinstance(tabular_debug, dict):
-                    tabular_debug["intent"] = "tabular_overview"
-        elif selected_route in {"filtering"} or intent_kind == "lookup":
-            payload = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _execute_lookup_sync,
-                    query=query,
-                    dataset=dataset,
-                    table=table,
-                    target_file=target_file,
-                    timeout_seconds=timeout_seconds,
-                ),
-                timeout=timeout_seconds,
-            )
-            payload = _apply_route_debug(
-                payload=payload,
-                decision=intent_decision,
-                detected_language=detected_language,
-            )
-        elif selected_route in {"chart", "trend", "comparison"}:
-            payload = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _execute_chart_sync,
-                    query=query,
-                    dataset=dataset,
-                    table=table,
-                    target_file=target_file,
-                    timeout_seconds=timeout_seconds,
-                    decision=intent_decision,
-                ),
-                timeout=timeout_seconds,
-            )
-            payload = _apply_route_debug(
-                payload=payload,
-                decision=intent_decision,
-                detected_language=detected_language,
-            )
-        else:
-            payload = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _execute_aggregate_sync,
-                    query=query,
-                    dataset=dataset,
-                    table=table,
-                    target_file=target_file,
-                    timeout_seconds=timeout_seconds,
-                ),
-                timeout=timeout_seconds,
-            )
-            payload = _apply_route_debug(
-                payload=payload,
-                decision=intent_decision,
-                detected_language=detected_language,
-            )
-        observe_ms("tabular_sql_path_ms", (perf_counter() - started) * 1000.0, intent=intent_kind)
-        inc_counter("tabular_sql_path_total", intent=intent_kind, engine=dataset.engine)
-        return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
-    except TimeoutError:
-        inc_counter("tabular_sql_path_timeout_total", intent=intent_kind, engine=dataset.engine)
-        inc_counter(
-            "tabular_sql_path_error_total",
-            intent=intent_kind,
-            engine=dataset.engine,
-            error_code=SQL_ERROR_TIMEOUT,
-        )
-        logger.warning("Tabular SQL path timeout: intent=%s timeout=%s", intent_kind, timeout_seconds)
-        timeout_exc = TabularSQLException(
-            code=SQL_ERROR_TIMEOUT,
-            message="Tabular SQL path timeout",
-            details={"timeout_seconds": timeout_seconds},
-        )
-        payload = _build_tabular_error_result(
-            query=query,
-            intent_kind=intent_kind,
-            dataset=dataset,
-            table=table,
-            target_file=target_file,
-            error_payload=to_tabular_error_payload(timeout_exc),
-        )
-        payload = _apply_route_debug(
-            payload=payload,
-            decision=intent_decision,
-            detected_language=detected_language,
-        )
-        return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
+        graph_attempts = int(graph_attempts_raw or 0)
+    except Exception:
+        graph_attempts = 0
+    stop_reason = str(
+        debug.get("analytics_engine_graph_stop_reason")
+        or debug.get("stop_reason")
+        or "none"
+    ).strip() or "none"
+    return {
+        "analytics_engine_graph_run_id": str(
+            debug.get("analytics_engine_graph_run_id") or debug.get("graph_run_id") or ""
+        ).strip() or None,
+        "analytics_engine_graph_node_path": [str(item) for item in node_path if str(item or "").strip()],
+        "analytics_engine_graph_attempts": max(0, graph_attempts),
+        "analytics_engine_graph_stop_reason": stop_reason,
+    }
 
 
-    except Exception as exc:
-        error_payload = to_tabular_error_payload(exc)
-        error_code = str(error_payload.get("code") or SQL_ERROR_EXECUTION_FAILED)
-        inc_counter(
-            "tabular_sql_path_error_total",
-            intent=intent_kind,
-            engine=getattr(dataset, "engine", "unknown"),
-            error_code=error_code,
-        )
-        if str(error_payload.get("category") or "") == "guardrail":
-            inc_counter(
-                "tabular_sql_guardrail_violation_total",
-                intent=intent_kind,
-                engine=dataset.engine,
-                code=error_code,
-            )
-        logger.warning(
-            "Tabular SQL path failed: intent=%s code=%s message=%s",
-            intent_kind,
-            error_code,
-            error_payload.get("message"),
-            exc_info=True,
-        )
-        payload = _build_tabular_error_result(
-            query=query,
-            intent_kind=intent_kind,
-            dataset=dataset,
-            table=table,
-            target_file=target_file,
-            error_payload=error_payload,
-        )
-        payload = _apply_route_debug(
-            payload=payload,
-            decision=intent_decision,
-            detected_language=detected_language,
-        )
-        return _apply_scope_debug_fields(payload=payload, scope_debug=scope_debug_fields)
+def _attach_langgraph_runtime_debug(
+    *,
+    payload: Optional[Dict[str, Any]],
+    fallback_reason: str,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return payload
+
+    graph_runtime = _extract_graph_runtime(payload)
+    fields = {
+        "analytics_engine_mode_requested": "langgraph",
+        "analytics_engine_mode_served": "langgraph",
+        "analytics_engine_shadow_enabled": False,
+        "analytics_engine_shadow": None,
+        "analytics_engine_fallback_reason": str(fallback_reason or "none"),
+        "analytics_engine_rollback_mode_used": False,
+        "analytics_engine_legacy_activation_reason": "none",
+        "engine_mode_requested": "langgraph",
+        "engine_mode_served": "langgraph",
+        "shadow_mode": False,
+        "engine_fallback_reason": str(fallback_reason or "none"),
+        "rollback_mode_used": False,
+        "legacy_activation_reason": "none",
+        "graph_run_id": graph_runtime.get("analytics_engine_graph_run_id"),
+        "graph_node_path": list(graph_runtime.get("analytics_engine_graph_node_path") or []),
+        "graph_attempts": int(graph_runtime.get("analytics_engine_graph_attempts", 0) or 0),
+        "stop_reason": str(graph_runtime.get("analytics_engine_graph_stop_reason") or "none"),
+        "analytics_engine_graph_run_id": graph_runtime.get("analytics_engine_graph_run_id"),
+        "analytics_engine_graph_node_path": list(graph_runtime.get("analytics_engine_graph_node_path") or []),
+        "analytics_engine_graph_attempts": int(graph_runtime.get("analytics_engine_graph_attempts", 0) or 0),
+        "analytics_engine_graph_stop_reason": str(graph_runtime.get("analytics_engine_graph_stop_reason") or "none"),
+    }
+    return apply_tabular_debug_fields(payload, fields=fields)
+
+
+def _log_langgraph_runtime_route(
+    *,
+    payload: Optional[Dict[str, Any]],
+    fallback_reason: str,
+) -> None:
+    graph_runtime = _extract_graph_runtime(payload)
+    payload_debug = payload.get("debug") if isinstance(payload, dict) and isinstance(payload.get("debug"), dict) else {}
+    file_id = str(payload_debug.get("file_id") or payload_debug.get("scope_selected_file_id") or "").strip()
+    upload_id = str(payload_debug.get("upload_id") or "").strip()
+    document_id = str(payload_debug.get("document_id") or "").strip()
+    logger.info(
+        (
+            "tabular_analytics_runtime mode=%s fallback_reason=%s graph_run_id=%s graph_node_path=%s "
+            "graph_attempts=%s stop_reason=%s rid=%s uid=%s cid=%s fid=%s upload_id=%s document_id=%s"
+        ),
+        "langgraph",
+        str(fallback_reason or "none"),
+        graph_runtime.get("analytics_engine_graph_run_id"),
+        ",".join([str(node) for node in list(graph_runtime.get("analytics_engine_graph_node_path") or [])]),
+        graph_runtime.get("analytics_engine_graph_attempts"),
+        graph_runtime.get("analytics_engine_graph_stop_reason"),
+        request_id_ctx.get() or "-",
+        user_id_ctx.get() or "-",
+        conversation_id_ctx.get() or "-",
+        file_id or "-",
+        upload_id or "-",
+        document_id or "-",
+    )
+
+
+def _build_langgraph_runtime_error_payload(*, query: str, error_code: str) -> Dict[str, Any]:
+    preferred_lang = detect_preferred_response_language(query)
+    clarification_prompt = build_execution_error_message(preferred_lang=preferred_lang)
+    payload: Dict[str, Any] = {
+        "status": "error",
+        "clarification_prompt": clarification_prompt,
+        "prompt_context": "Tabular runtime error",
+        "sources": [],
+        "rows_expected_total": 0,
+        "rows_retrieved_total": 0,
+        "rows_used_map_total": 0,
+        "rows_used_reduce_total": 0,
+        "row_coverage_ratio": 0.0,
+        "debug": {
+            "retrieval_mode": "tabular_sql",
+            "execution_route": "tabular_sql",
+            "detected_intent": "tabular_sql",
+            "selected_route": "runtime_error",
+            "fallback_type": "tabular_runtime_error",
+            "fallback_reason": error_code,
+            "executor_attempted": True,
+            "executor_status": "error",
+            "executor_error_code": error_code,
+            "tabular_sql": {
+                "deterministic_path": True,
+                "deterministic_error": {
+                    "code": error_code,
+                    "message": "Tabular LangGraph execution failed",
+                },
+            },
+        },
+    }
+    return apply_tabular_debug_fields(
+        payload,
+        fields={
+            "deterministic_path": True,
+            "fallback_type": "tabular_runtime_error",
+            "fallback_reason": error_code,
+            "controlled_response_state": "tabular_execution_error",
+            "detected_language": preferred_lang,
+            "response_language": preferred_lang,
+        },
+    )
 
 
 async def execute_tabular_sql_path(
@@ -1280,13 +1176,29 @@ async def execute_tabular_sql_path(
     query: str,
     files: List[Any],
 ) -> Optional[Dict[str, Any]]:
-    from app.services.chat.tabular_engine_router import execute_tabular_engine_route
     from app.services.chat.tabular_langgraph import execute_tabular_langgraph_path
 
-    return await execute_tabular_engine_route(
-        query=query,
-        files=files,
-        legacy_executor=_execute_tabular_sql_path_legacy,
-        langgraph_executor=execute_tabular_langgraph_path,
+    fallback_reason = "none"
+    try:
+        payload = await execute_tabular_langgraph_path(
+            query=query,
+            files=files,
+        )
+    except Exception:  # pragma: no cover - defensive runtime guard
+        logger.exception("tabular_langgraph_runtime_exception")
+        fallback_reason = "langgraph_runtime_exception"
+        payload = _build_langgraph_runtime_error_payload(
+            query=query,
+            error_code=fallback_reason,
+        )
+
+    payload = _attach_langgraph_runtime_debug(
+        payload=payload,
+        fallback_reason=fallback_reason,
     )
+    _log_langgraph_runtime_route(
+        payload=payload,
+        fallback_reason=fallback_reason,
+    )
+    return payload
 

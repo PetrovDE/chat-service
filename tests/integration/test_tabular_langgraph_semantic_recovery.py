@@ -61,8 +61,6 @@ def _build_file(tmp_path: Path, *, rows: list[str], file_id: str) -> SimpleNames
 
 
 def _enable_langgraph_guarded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.services.chat.tabular_sql.settings.ANALYTICS_ENGINE_MODE", "langgraph")
-    monkeypatch.setattr("app.services.chat.tabular_sql.settings.ANALYTICS_ENGINE_SHADOW", False)
     monkeypatch.setattr("app.services.chat.tabular_sql.settings.TABULAR_LLM_GUARDED_PLANNER_ENABLED", True)
     monkeypatch.setattr(guarded_planner.settings, "TABULAR_LLM_GUARDED_PLANNER_ENABLED", True)
     monkeypatch.setattr(guarded_planner.settings, "TABULAR_LLM_GUARDED_MAX_ATTEMPTS", 2)

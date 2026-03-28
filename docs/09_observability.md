@@ -378,16 +378,15 @@ This makes each guarded repair iteration and final outcome inspectable without c
 - Runtime no longer emits `template_runtime_fallback` execution behavior.
 - Compose-stage local formatter fallback remains unchanged (`response_status=fallback`) because it is deterministic formatting of executed evidence, not template analytics generation.
 
-## Update 2026-03-27 (Stage 3: Analytics Engine Routing)
+## Update 2026-03-27 (Stage 3: Analytics Runtime Posture)
 
-Deterministic tabular execution now emits engine-routing observability for parallel rollout:
+Tabular execution now emits single-runtime observability for active LangGraph runtime:
 
 - structured log event:
-  - `tabular_analytics_engine_route`
-  - fields: `requested_mode`, `served_mode`, `shadow_enabled`, `fallback_reason`, `rollback_mode_used`, `legacy_activation_reason`
+  - `tabular_analytics_runtime`
+  - fields: `mode`, `fallback_reason`, graph summary fields, and correlation IDs
 - structured error logs:
-  - `tabular_analytics_engine_primary_failed`
-  - `tabular_analytics_engine_legacy_fallback_failed` (when fail-open fallback also fails)
+  - `tabular_langgraph_runtime_exception` (explicit runtime error path)
 
 Additive debug fields (backward compatible):
 
@@ -414,14 +413,14 @@ Correlation fields (when available) are now propagated into debug payload and st
 - `upload_id`
 - `document_id`
 
-Engine/graph routing visibility (additive):
+Engine/graph runtime visibility (additive):
 
-- `engine_mode_requested` / `analytics_engine_mode_requested`
-- `engine_mode_served` / `analytics_engine_mode_served`
-- `shadow_mode` / `analytics_engine_shadow_enabled`
-- `engine_fallback_reason` / `analytics_engine_fallback_reason`
-- `rollback_mode_used` / `analytics_engine_rollback_mode_used`
-- `legacy_activation_reason` / `analytics_engine_legacy_activation_reason`
+- `engine_mode_requested` / `analytics_engine_mode_requested` (fixed to `langgraph`)
+- `engine_mode_served` / `analytics_engine_mode_served` (fixed to `langgraph`)
+- `shadow_mode` / `analytics_engine_shadow_enabled` (fixed to `false`)
+- `engine_fallback_reason` / `analytics_engine_fallback_reason` (`none` or explicit runtime error reason)
+- `rollback_mode_used` / `analytics_engine_rollback_mode_used` (fixed to `false`)
+- `legacy_activation_reason` / `analytics_engine_legacy_activation_reason` (fixed to `none`)
 - `graph_run_id` / `analytics_engine_graph_run_id`
 - `graph_node_path` / `analytics_engine_graph_node_path`
 - `graph_attempts` / `analytics_engine_graph_attempts`
@@ -462,16 +461,15 @@ Cache semantics are now explicit and truthful when response cache is inactive:
 - `cache_reason=response_cache_not_implemented`
 - compatibility keys `cache_hit` and `cache_miss` remain present and are both `false` when inactive
 
-Structured log events now include engine/graph summary fields and correlation IDs:
+Structured log events now include runtime/graph summary fields and correlation IDs:
 
-- `tabular_analytics_engine_route` includes mode request/serve, shadow state, fallback reason, graph run/path/attempts/stop reason, and correlation IDs.
+- `tabular_analytics_runtime` includes active mode, fallback reason, graph run/path/attempts/stop reason, and correlation IDs.
 - `chat_route_decision` includes additive engine/graph and file/upload/document observability fields when present.
 
-Mode posture clarification for stabilization window:
+Mode posture clarification:
 
-- default requested mode is `langgraph` when mode is omitted or invalid,
-- `legacy` requested mode is explicit emergency rollback,
-- `legacy_activation_reason` distinguishes explicit rollback (`explicit_rollback_mode`) from fail-open (`langgraph_fail_open_fallback`).
+- active runtime is `langgraph` only in production path,
+- compatibility debug fields for requested/served/shadow/rollback remain present with fixed values.
 
 Safety:
 

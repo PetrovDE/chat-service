@@ -203,21 +203,15 @@ Guarded execution-spec normalization is now more contract-aligned for supported 
 - missing execution-spec shape details are backfilled from validated plan when deterministic equivalents are available (for example `derived_time_grain`, `source_datetime_field`, `filters`, `output_columns`),
 - this avoids pre-execution `invalid_selected_route` failures for supported chart requests while preserving bounded validation and no-guess schema behavior.
 
-## Update 2026-03-27 (Stage 3: Parallel LangGraph Engine)
+## Update 2026-03-27 (Stage 3: LangGraph Runtime Activation)
 
-Deterministic analytics runtime now supports a parallel LangGraph orchestration path without changing the external tabular/API payload envelope.
-
-Configuration:
-
-- `ANALYTICS_ENGINE_MODE=langgraph|legacy`
-- `ANALYTICS_ENGINE_SHADOW=true|false`
+Tabular analytics runtime now serves a single production execution runtime: LangGraph orchestration.
 
 Runtime behavior:
 
-- default mode is `langgraph` when mode is omitted or invalid.
-- `legacy` mode serves the existing deterministic execution path only as an explicit emergency rollback posture.
-- `langgraph` mode serves the LangGraph path and keeps explicit fail-open fallback to legacy when graph execution is unavailable.
-- when shadow mode is enabled, the non-served engine runs for comparison/debug only; served payload contract remains unchanged.
+- `execute_tabular_sql_path(...)` invokes LangGraph runtime directly.
+- deterministic SQL/profile/lookup/chart executors remain active backend tools used by LangGraph nodes.
+- no runtime mode switching, shadow execution, or fail-open fallback to legacy runtime remains in the production call path.
 
 LangGraph node contract (first supported slice):
 
@@ -256,14 +250,14 @@ LangGraph execution now emits additive per-run explainability fields in determin
 - `executed_tools`
 - `tool_errors`
 
-Engine-router additive fields are mirrored at the top-level debug contract for both legacy-served and langgraph-served responses:
+Runtime-posture additive fields remain mirrored at the top-level debug contract for backward compatibility:
 
-- `engine_mode_requested` (`legacy|langgraph`)
-- `engine_mode_served` (`legacy|langgraph`)
-- `shadow_mode`
-- `engine_fallback_reason`
-- `rollback_mode_used`
-- `legacy_activation_reason` (`none|explicit_rollback_mode|langgraph_fail_open_fallback`)
+- `engine_mode_requested` (`langgraph`)
+- `engine_mode_served` (`langgraph`)
+- `shadow_mode` (`false`)
+- `engine_fallback_reason` (`none` or explicit runtime error reason)
+- `rollback_mode_used` (`false`)
+- `legacy_activation_reason` (`none`)
 
 These fields are additive and do not change the existing stable tabular/API payload envelope.
 

@@ -67,7 +67,7 @@ async def execute_tabular_langgraph_path(
             final_state = await graph.ainvoke(initial_state)
     except Exception:  # pragma: no cover - defensive runtime guard
         logger.exception("tabular_langgraph_execution_failed graph_run_id=%s", graph_run_id)
-        return None
+        raise
     if not isinstance(final_state, dict):
         return None
     payload = final_state.get("payload")

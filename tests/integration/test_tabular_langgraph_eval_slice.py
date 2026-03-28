@@ -90,8 +90,6 @@ def test_langgraph_eval_slice_queries(
 
     file_obj = _build_file(tmp_path)
     monkeypatch.setattr("app.services.chat.tabular_sql.render_chart_artifact", _fake_chart_delivery)
-    monkeypatch.setattr("app.services.chat.tabular_sql.settings.ANALYTICS_ENGINE_MODE", "langgraph")
-    monkeypatch.setattr("app.services.chat.tabular_sql.settings.ANALYTICS_ENGINE_SHADOW", False)
     monkeypatch.setattr("app.services.chat.tabular_sql.settings.TABULAR_LLM_GUARDED_PLANNER_ENABLED", False)
 
     result = asyncio.run(execute_tabular_sql_path(query=query_text, files=[file_obj]))

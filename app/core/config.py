@@ -162,8 +162,6 @@ class Settings(BaseSettings):
     TABULAR_SQL_MAX_SCANNED_ROWS: int = Field(default=1000000, ge=100, le=100000000)
     TABULAR_SQL_MAX_CHARS: int = Field(default=4000, ge=200, le=50000)
     TABULAR_PROFILE_MAX_COLUMNS: int = Field(default=160, ge=1, le=5000)
-    ANALYTICS_ENGINE_MODE: str = Field(default="langgraph")
-    ANALYTICS_ENGINE_SHADOW: bool = Field(default=False)
     LANGSMITH_TRACING_ENABLED: bool = Field(default=False)
     LANGSMITH_PROJECT: str = Field(default="llama-service")
     LANGSMITH_TAGS: str = Field(default="tabular-langgraph")
@@ -240,14 +238,6 @@ class Settings(BaseSettings):
         normalized = str(value or "fallback_default").strip().lower()
         if normalized not in {"fallback_default", "error"}:
             return "fallback_default"
-        return normalized
-
-    @field_validator("ANALYTICS_ENGINE_MODE", mode="before")
-    @classmethod
-    def _normalize_analytics_engine_mode(cls, value: str) -> str:
-        normalized = str(value or "langgraph").strip().lower()
-        if normalized not in {"legacy", "langgraph"}:
-            return "langgraph"
         return normalized
 
     @property

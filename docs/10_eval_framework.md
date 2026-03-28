@@ -166,14 +166,13 @@ py -3 scripts/evals/run_ci_gates.py --mode offline --datasets-root tests/evals/d
 py -3 scripts/evals/run_eval_suite.py --mode hybrid --datasets-root tests/evals/datasets --online-base-url http://localhost:8000
 ```
 
-## Stage 6 Promotion Gates (Explicit Pass/Fail)
+## Stage 6 Runtime Regression Gates (Explicit Pass/Fail)
 
-### 1) Legacy -> LangGraph Promotion Readiness
+### 1) LangGraph Runtime Correctness Readiness
 
 Pass when all are true:
 
 - `offline_metric::langgraph_eval_correctness >= 1.0`
-- `offline_metric::langgraph_vs_legacy_correctness_delta >= 0.0`
 - `offline_metric::langgraph_explainability_gain >= 1.0`
 
 Fail when any condition is false.
@@ -205,12 +204,12 @@ fallback diagnostics).
 
 Fail on missing or mismatched required fields.
 
-### 5) Rollback Readiness
+### 5) Runtime Failure Explainability Readiness
 
-Pass when fallback visibility remains explicit (`fallback_reason`, mode served,
-engine fallback diagnostics) and no silent route downgrade is observed in evals.
+Pass when runtime failure visibility remains explicit (`fallback_reason`, runtime
+diagnostics) and no silent route downgrade is observed in evals.
 
-Fail if fallback path is opaque or unavailable.
+Fail if runtime failure path is opaque.
 
 ## Definition of Done (Stage 6)
 
@@ -221,20 +220,19 @@ Stage 6 is done only if all are true:
 3. Offline hooks are runnable without uncontrolled external dependencies.
 4. Online slices are controlled by explicit environment gating and report skipped cases.
 5. Promotion gate thresholds are codified in `tests/evals/gates.preprod.json`.
-6. Rollback criteria are documented and testable.
+6. Runtime failure criteria are documented and testable.
 7. Eval tests validate dataset contract, runner behavior, online check operators, and CI gate logic.
 
-## Rollback Triggers (Operational)
+## Runtime Alert Triggers (Operational)
 
-Rollback from LangGraph-preferred mode to legacy-preferred mode is triggered when
-any of the following happens during staged rollout:
+Investigate runtime regressions when any of the following happens:
 
-1. `langgraph_vs_legacy_correctness_delta < 0.0` in controlled eval runs.
+1. `offline_metric::langgraph_eval_correctness < 1.0`.
 2. `online_metric::retrieval_relevance` or `online_metric::grounding_uploaded_content`
    drops below gate threshold for two consecutive runs.
 3. Explainability metric fails (`online_metric::explainability_debug_usefulness`).
 4. Latency violations exceed configured budgets.
-5. Unexpected surge in fallback behavior for non-fallback control cases.
+5. Unexpected surge in runtime-error fallback behavior for non-failure control cases.
 
 ## Runtime Validation Still Required
 

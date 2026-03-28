@@ -5,7 +5,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
-from app.core.config import settings
 from scripts.evals.datasets import load_named_datasets
 from scripts.evals.offline_langgraph_slice import run_tabular_langgraph_eval_slice
 from scripts.evals.offline import (
@@ -155,26 +154,18 @@ def run_eval_suite(
     if selected_mode in {"offline", "hybrid"}:
         with tempfile.TemporaryDirectory(prefix="llama_eval_") as tmp_dir_raw:
             tmp_dir = Path(tmp_dir_raw)
-            original_mode = str(settings.ANALYTICS_ENGINE_MODE)
-            original_shadow = bool(settings.ANALYTICS_ENGINE_SHADOW)
-            try:
-                settings.ANALYTICS_ENGINE_MODE = "legacy"
-                settings.ANALYTICS_ENGINE_SHADOW = False
-                offline_reports["tabular_aggregate_golden"] = run_tabular_aggregate_eval(
-                    offline_datasets["tabular_aggregate_golden"],
-                    temp_dir=tmp_dir,
-                )
-                offline_reports["tabular_profile_golden"] = run_tabular_profile_eval(
-                    offline_datasets["tabular_profile_golden"],
-                    temp_dir=tmp_dir,
-                )
-                offline_reports["complex_analytics_quality_golden"] = run_complex_analytics_quality_eval(
-                    offline_datasets["complex_analytics_quality_golden"],
-                    temp_dir=tmp_dir,
-                )
-            finally:
-                settings.ANALYTICS_ENGINE_MODE = original_mode
-                settings.ANALYTICS_ENGINE_SHADOW = original_shadow
+            offline_reports["tabular_aggregate_golden"] = run_tabular_aggregate_eval(
+                offline_datasets["tabular_aggregate_golden"],
+                temp_dir=tmp_dir,
+            )
+            offline_reports["tabular_profile_golden"] = run_tabular_profile_eval(
+                offline_datasets["tabular_profile_golden"],
+                temp_dir=tmp_dir,
+            )
+            offline_reports["complex_analytics_quality_golden"] = run_complex_analytics_quality_eval(
+                offline_datasets["complex_analytics_quality_golden"],
+                temp_dir=tmp_dir,
+            )
             offline_reports["tabular_langgraph_eval_slice_golden"] = run_tabular_langgraph_eval_slice(
                 offline_datasets["tabular_langgraph_eval_slice_golden"],
                 temp_dir=tmp_dir,

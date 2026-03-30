@@ -29,12 +29,15 @@ class SettingsManager {
             embedding_model: { local: this.settings.embedding_model || null },
         };
         this.modelLoadRequestId = 0;
+        this.previousModeKey = this.modeKey(this.settings.mode);
         console.log('SettingsManager initialized');
     }
 
     async loadAvailableModels(mode = null) {
         console.log('Loading models...');
         const selectedMode = mode || this.settings.mode || 'local';
+        const selectedProviderKey = this.modeKey(selectedMode);
+        const switchingToAihub = selectedProviderKey === 'aihub' && this.previousModeKey !== 'aihub';
         const requestId = ++this.modelLoadRequestId;
 
         try {
@@ -62,6 +65,7 @@ class SettingsManager {
                 emptyLabel: 'No chat models',
                 collectCapabilities: true,
                 providerMode: selectedMode,
+                forceDefaultSelection: switchingToAihub,
             });
             const embeddingSelection = this.renderModelSelector({
                 selectorId: 'embedding-model-selector',
@@ -70,6 +74,7 @@ class SettingsManager {
                 emptyLabel: 'No embedding models',
                 collectCapabilities: false,
                 providerMode: selectedMode,
+                forceDefaultSelection: switchingToAihub,
             });
             this.updateModelSelectionHint(selectedMode, [chatSelection, embeddingSelection]);
 
@@ -135,6 +140,7 @@ class SettingsManager {
         emptyLabel,
         collectCapabilities = false,
         providerMode = null,
+        forceDefaultSelection = false,
     }) {
         const selector = document.getElementById(selectorId);
         if (!selector) return null;
@@ -195,7 +201,16 @@ class SettingsManager {
 
         let selectedValue = null;
         let reason = 'kept';
-        if (optionExists) {
+        if (forceDefaultSelection) {
+            if (availableDefaultModel) {
+                selectedValue = availableDefaultModel;
+                reason = currentValue ? 'replaced_with_provider_default' : 'provider_default';
+            } else {
+                const first = options[0];
+                selectedValue = typeof first === 'string' ? first : (first.name || first.id || null);
+                reason = currentValue ? 'replaced_with_first_available' : 'first_available';
+            }
+        } else if (optionExists) {
             selectedValue = currentValue;
             reason = 'kept';
         } else if (availableDefaultModel) {
@@ -261,6 +276,7 @@ class SettingsManager {
             console.warn(`Invalid mode: ${mode}, keeping current: ${this.settings.mode}`);
             return;
         }
+        this.previousModeKey = this.modeKey(this.settings.mode);
         this.settings.mode = mode;
         console.log('Mode set to:', mode);
     }

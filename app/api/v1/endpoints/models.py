@@ -13,6 +13,10 @@ from app.services.llm.model_resolver import CAP_CHAT, CAP_EMBEDDING, infer_model
 logger = logging.getLogger(__name__)
 router = APIRouter()
 HTTP_TIMEOUT_MODELS = httpx.Timeout(10.0, connect=3.0)
+AIHUB_PREFERRED_DEFAULTS = {
+    CAP_CHAT: "gpt-oss",
+    CAP_EMBEDDING: "qwen3-emb",
+}
 
 
 def _normalize_mode(mode: str) -> str:
@@ -33,6 +37,14 @@ def _parse_catalog(raw_catalog: str) -> List[str]:
         if model and model not in out:
             out.append(model)
     return out
+
+
+def _preferred_default_for_mode_capability(mode: str, capability: str) -> str | None:
+    if mode != "aihub":
+        return None
+    preferred = AIHUB_PREFERRED_DEFAULTS.get(capability)
+    value = str(preferred or "").strip()
+    return value or None
 
 
 def _catalog_for_mode_capability(mode: str, capability: str) -> List[str]:
@@ -177,7 +189,21 @@ async def list_models(
             if normalized and normalized not in merged_names:
                 merged_names.append(normalized)
 
-        available_default_model = decision.resolved_model if decision.resolved_model in merged_names else None
+        preferred_default_model = _preferred_default_for_mode_capability(
+            mode=selected_mode,
+            capability=selected_capability,
+        )
+        available_preferred_default = (
+            preferred_default_model
+            if preferred_default_model in merged_names
+            else None
+        )
+        available_provider_default = (
+            decision.resolved_model
+            if decision.resolved_model in merged_names
+            else None
+        )
+        available_default_model = available_preferred_default or available_provider_default
         models = _model_rows(
             names=merged_names,
             capability=selected_capability,
@@ -186,14 +212,17 @@ async def list_models(
         logger.info(
             (
                 "Models listed: mode=%s capability=%s provider=%s default_model=%s "
-                "resolved_default=%s resolution_source=%s default_available=%s count=%d"
+                "preferred_default=%s resolved_default=%s resolution_source=%s "
+                "preferred_available=%s default_available=%s count=%d"
             ),
             mode,
             selected_capability,
             selected_mode,
             available_default_model,
+            preferred_default_model,
             decision.resolved_model,
             decision.source,
+            bool(available_preferred_default),
             bool(available_default_model),
             len(models),
         )

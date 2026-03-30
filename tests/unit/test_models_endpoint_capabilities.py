@@ -84,3 +84,74 @@ def test_models_list_local_embedding_excludes_unknown_non_embedding_tags(monkeyp
     assert "qwen3-emb" in names
     assert "llama3.2:latest" not in names
     assert "custom-local:latest" not in names
+
+
+def test_models_list_aihub_chat_prefers_gpt_oss_when_available(monkeypatch):
+    async def _available_detailed(source, capability=None):  # noqa: ANN001
+        assert source == "aihub"
+        assert capability == "chat"
+        return [
+            {"name": "vikhr", "type": "chatbot"},
+            {"name": "gpt-oss", "type": "chatbot"},
+            {"name": "qwen3-emb", "type": "embedding"},
+        ]
+
+    monkeypatch.setattr("app.api.v1.endpoints.models.llm_manager.get_available_models_detailed", _available_detailed)
+
+    payload = asyncio.run(list_models(mode="aihub", capability="chat"))
+    names = [row["name"] for row in payload["models"]]
+
+    assert "gpt-oss" in names
+    assert "vikhr" in names
+    assert "qwen3-emb" not in names
+    assert payload["default_model"] == "gpt-oss"
+
+
+def test_models_list_aihub_only_one_preferred_available_uses_fallbacks(monkeypatch):
+    async def _available_detailed(source, capability=None):  # noqa: ANN001
+        assert source == "aihub"
+        if capability == "chat":
+            return [
+                {"name": "vikhr", "type": "chatbot"},
+                {"name": "nemo_12b", "type": "chatbot"},
+                {"name": "qwen3-emb", "type": "embedding"},
+            ]
+        assert capability == "embedding"
+        return [
+            {"name": "qwen3-emb", "type": "embedding"},
+            {"name": "arctic", "type": "embedding"},
+            {"name": "vikhr", "type": "chatbot"},
+        ]
+
+    monkeypatch.setattr("app.api.v1.endpoints.models.llm_manager.get_available_models_detailed", _available_detailed)
+
+    chat_payload = asyncio.run(list_models(mode="aihub", capability="chat"))
+    emb_payload = asyncio.run(list_models(mode="aihub", capability="embedding"))
+
+    assert chat_payload["default_model"] == "vikhr"
+    assert emb_payload["default_model"] == "qwen3-emb"
+
+
+def test_models_list_aihub_neither_preferred_nor_provider_default_available(monkeypatch):
+    async def _available_detailed(source, capability=None):  # noqa: ANN001
+        assert source == "aihub"
+        if capability == "chat":
+            return [
+                {"name": "nemo_12b", "type": "chatbot"},
+                {"name": "yandex", "type": "chatbot"},
+            ]
+        assert capability == "embedding"
+        return [
+            {"name": "arctic", "type": "embedding"},
+            {"name": "bge", "type": "embedding"},
+        ]
+
+    monkeypatch.setattr("app.api.v1.endpoints.models.llm_manager.get_available_models_detailed", _available_detailed)
+
+    chat_payload = asyncio.run(list_models(mode="aihub", capability="chat"))
+    emb_payload = asyncio.run(list_models(mode="aihub", capability="embedding"))
+
+    assert chat_payload["default_model"] is None
+    assert emb_payload["default_model"] is None
+    assert [row["name"] for row in chat_payload["models"]] == ["nemo_12b", "yandex"]
+    assert [row["name"] for row in emb_payload["models"]] == ["arctic", "bge"]

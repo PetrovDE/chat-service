@@ -35,11 +35,64 @@ def _parse_catalog(raw_catalog: str) -> List[str]:
     return out
 
 
+def _catalog_for_mode_capability(mode: str, capability: str) -> List[str]:
+    if mode == "aihub":
+        return _parse_catalog(
+            settings.AIHUB_CHAT_MODEL_CATALOG if capability == CAP_CHAT else settings.AIHUB_EMBED_MODEL_CATALOG
+        )
+    if mode == "ollama":
+        return _parse_catalog(
+            settings.OLLAMA_CHAT_MODEL_CATALOG if capability == CAP_CHAT else settings.OLLAMA_EMBED_MODEL_CATALOG
+        )
+    if mode == "openai":
+        if capability == CAP_CHAT and settings.OPENAI_MODEL:
+            return [settings.OPENAI_MODEL]
+        if capability == CAP_EMBEDDING and settings.OPENAI_EMBEDDING_MODEL:
+            return [settings.OPENAI_EMBEDDING_MODEL]
+    return []
+
+
+def _filter_provider_models_by_capability(
+    *,
+    mode: str,
+    capability: str,
+    provider_models: List[str],
+) -> List[str]:
+    if mode == "aihub":
+        out: List[str] = []
+        for candidate in provider_models:
+            model = str(candidate or "").strip()
+            if model and model not in out:
+                out.append(model)
+        return out
+
+    catalog = set(_catalog_for_mode_capability(mode, capability))
+    filtered: List[str] = []
+    for candidate in provider_models:
+        model = str(candidate or "").strip()
+        if not model:
+            continue
+        inferred = infer_model_capability(model)
+        if capability == CAP_CHAT:
+            if inferred == CAP_EMBEDDING:
+                continue
+            if model not in filtered:
+                filtered.append(model)
+            continue
+
+        # Embedding selector should not include unknown chat-like tags unless
+        # explicitly configured in provider embedding catalog.
+        if inferred == CAP_EMBEDDING or model in catalog:
+            if model not in filtered:
+                filtered.append(model)
+    return filtered
+
+
 def _model_rows(
     *,
     names: List[str],
     capability: str,
-    default_model: str,
+    default_model: str | None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     seen = set()
@@ -61,27 +114,6 @@ def _model_rows(
                 "is_default": bool(model == default_model),
             }
         )
-
-    if default_model and default_model not in seen:
-        rows.insert(
-            0,
-            {
-                "name": default_model,
-                "size": 0,
-                "capability": infer_model_capability(default_model),
-                "is_default": True,
-            },
-        )
-
-    if not rows and default_model:
-        rows = [
-            {
-                "name": default_model,
-                "size": 0,
-                "capability": infer_model_capability(default_model),
-                "is_default": True,
-            }
-        ]
 
     return rows
 
@@ -132,26 +164,12 @@ async def list_models(
                 capability=selected_capability,
             )
 
-        catalog_models: List[str] = []
-        if selected_mode == "aihub":
-            catalog_models = _parse_catalog(
-                settings.AIHUB_CHAT_MODEL_CATALOG if selected_capability == CAP_CHAT else settings.AIHUB_EMBED_MODEL_CATALOG
-            )
-        elif selected_mode == "ollama":
-            catalog_models = _parse_catalog(
-                settings.OLLAMA_CHAT_MODEL_CATALOG if selected_capability == CAP_CHAT else settings.OLLAMA_EMBED_MODEL_CATALOG
-            )
-        elif selected_mode == "openai":
-            if selected_capability == CAP_CHAT and settings.OPENAI_MODEL:
-                catalog_models = [settings.OPENAI_MODEL]
-            if selected_capability == CAP_EMBEDDING and settings.OPENAI_EMBEDDING_MODEL:
-                catalog_models = [settings.OPENAI_EMBEDDING_MODEL]
-
-        # Provider-aware candidate policy:
-        # - For AI HUB, prefer typed provider discovery (`type=embedding|chatbot`).
-        # - If discovery is empty/unavailable, fallback to configured catalog defaults.
-        use_catalog_fallback = bool(selected_mode == "aihub" and not provider_models)
-        candidates = catalog_models if use_catalog_fallback else (provider_models + catalog_models)
+        # Visible selectors must use provider-discovered availability only.
+        candidates = _filter_provider_models_by_capability(
+            mode=selected_mode,
+            capability=selected_capability,
+            provider_models=provider_models,
+        )
 
         merged_names: List[str] = []
         for name in candidates:
@@ -159,28 +177,30 @@ async def list_models(
             if normalized and normalized not in merged_names:
                 merged_names.append(normalized)
 
+        available_default_model = decision.resolved_model if decision.resolved_model in merged_names else None
         models = _model_rows(
             names=merged_names,
             capability=selected_capability,
-            default_model=decision.resolved_model,
+            default_model=available_default_model,
         )
         logger.info(
             (
                 "Models listed: mode=%s capability=%s provider=%s default_model=%s "
-                "resolution_source=%s catalog_fallback=%s count=%d"
+                "resolved_default=%s resolution_source=%s default_available=%s count=%d"
             ),
             mode,
             selected_capability,
             selected_mode,
+            available_default_model,
             decision.resolved_model,
             decision.source,
-            use_catalog_fallback,
+            bool(available_default_model),
             len(models),
         )
         return {
             "mode": selected_mode,
             "capability": selected_capability,
-            "default_model": decision.resolved_model,
+            "default_model": available_default_model,
             "models": models,
             "count": len(models),
         }

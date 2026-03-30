@@ -44,6 +44,30 @@ Current error envelope shape:
 | GET | `/api/v1/files/{file_id}/debug` | Debug payload for file/runtime/processing |
 | DELETE | `/api/v1/files/{file_id}` | Delete file lifecycle (links, vectors, artifacts, raw) |
 
+## Models API
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/models/list` | List provider models for requested `mode` and `capability` |
+| GET | `/api/v1/models/status` | Provider connectivity/status snapshot |
+
+`GET /api/v1/models/list` request params:
+- `mode`: `local|ollama|aihub|openai` (provider aliases are normalized server-side)
+- `capability`: `chat|embedding` (defaults to `chat`)
+
+Response shape:
+- `mode`
+- `capability`
+- `default_model`: nullable, set only when resolved provider default is currently present in returned `models`
+- `models`: provider-available model rows (`name`, `size`, `capability`, `is_default`)
+- `count`
+- optional `error`
+
+Selector correctness policy (2026-03-29):
+- visible model rows are derived from provider-discovered availability for active provider/mode;
+- unavailable catalog/default entries are not injected into selector options;
+- when provider default is unavailable, `default_model` is `null` and clients must choose from returned `models` only.
+
 ## Removed Legacy Contract
 
 - Removed endpoint:

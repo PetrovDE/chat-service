@@ -53,6 +53,13 @@ class ConversationsManager {
         try {
             const response = await this.apiService.getConversations();
             this.conversations = Array.isArray(response) ? response : [];
+            const currentConversation = this.chatManager.getCurrentConversation();
+            if (currentConversation) {
+                const active = this.conversations.find((item) => String(item.id) === String(currentConversation));
+                if (active?.title) {
+                    this.chatManager.setConversationTitle(active.title);
+                }
+            }
             this.filterConversations();
             this.renderConversations();
         } catch (error) {
@@ -145,7 +152,8 @@ class ConversationsManager {
     async loadConversation(conversationId) {
         try {
             const messages = await this.apiService.getConversationMessages(conversationId);
-            this.chatManager.setCurrentConversation(conversationId);
+            const target = this.conversations.find((item) => String(item.id) === String(conversationId));
+            this.chatManager.setCurrentConversation(conversationId, target?.title || null);
             const renderHistory = this.chatManager.renderConversationHistory || this.chatManager.renderConversationHistori;
             if (typeof renderHistory === 'function') {
                 renderHistory.call(this.chatManager, messages);

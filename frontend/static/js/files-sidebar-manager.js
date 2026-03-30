@@ -66,15 +66,12 @@ export class FilesSidebarManager {
     bindDom() {
         this.dom = {
             fileInput: document.getElementById('fileInput'),
-            attachBtn: document.querySelector('.attach-btn'),
-            uploadBtn: document.getElementById('uploadLibraryFileBtn'),
+            composerAttachBtn: document.getElementById('composerAttachBtn'),
+            openFilesDrawerBtn: document.getElementById('openFilesDrawerBtn'),
+            drawerUploadBtn: document.getElementById('filesDrawerUploadBtn'),
             sidebarList: document.getElementById('filesSidebarList'),
             sidebarQuota: document.getElementById('filesSidebarQuota'),
             detailsPanel: document.getElementById('fileDetailsPanel'),
-            chatFilesList: document.getElementById('chatFilesList'),
-            chatAttachSelect: document.getElementById('chatFileSelect'),
-            chatAttachBtn: document.getElementById('attachExistingFileBtn'),
-            chatHint: document.getElementById('chatFilesHint'),
         };
     }
 
@@ -87,24 +84,14 @@ export class FilesSidebarManager {
         }
 
         const openFilePicker = () => this.dom.fileInput?.click();
-        if (this.dom.attachBtn) this.dom.attachBtn.addEventListener('click', openFilePicker);
-        if (this.dom.uploadBtn) this.dom.uploadBtn.addEventListener('click', openFilePicker);
+        if (this.dom.composerAttachBtn) this.dom.composerAttachBtn.addEventListener('click', openFilePicker);
+        if (this.dom.openFilesDrawerBtn) this.dom.openFilesDrawerBtn.addEventListener('click', () => window.toggleFilesSidebar?.());
+        if (this.dom.drawerUploadBtn) this.dom.drawerUploadBtn.addEventListener('click', openFilePicker);
 
         if (this.dom.sidebarList) {
             this.dom.sidebarList.addEventListener('click', (event) => this.handleActionClick(event));
         }
 
-        if (this.dom.chatFilesList) {
-            this.dom.chatFilesList.addEventListener('click', (event) => this.handleActionClick(event));
-        }
-
-        if (this.dom.chatAttachBtn) {
-            this.dom.chatAttachBtn.addEventListener('click', async () => {
-                const fileId = this.dom.chatAttachSelect?.value || '';
-                if (!fileId) return;
-                await this.handleAttachToCurrentChat(fileId);
-            });
-        }
     }
 
     destroy() {
@@ -266,54 +253,7 @@ export class FilesSidebarManager {
     }
 
     renderChatPanel() {
-        const hint = this.dom.chatHint;
-        const list = this.dom.chatFilesList;
-        const select = this.dom.chatAttachSelect;
-        const attachBtn = this.dom.chatAttachBtn;
-        if (!hint || !list || !select || !attachBtn) return;
-
-        if (!this.currentConversationId) {
-            hint.textContent = 'Open a chat to attach existing files. Upload still adds files to your library.';
-            list.innerHTML = '<div class="chat-files-empty">No chat selected yet.</div>';
-            select.innerHTML = '<option value="">No chat selected</option>';
-            select.disabled = true;
-            attachBtn.disabled = true;
-            return;
-        }
-
-        const attached = this.getCurrentChatFiles();
-        const attachedReady = attached.filter((file) => normalizeStatus(this.getEffectiveStatus(file)) === 'ready').length;
-        const attachedNotReady = attached.length - attachedReady;
-        const available = this.files.filter(
-            (file) => !includesConversation(file.chat_ids, this.currentConversationId)
-                && ATTACHABLE_STATUSES.has(this.getEffectiveStatus(file))
-        );
-
-        hint.textContent = attached.length > 0
-            ? `${attached.length} file(s) connected: ${attachedReady} ready, ${attachedNotReady} processing.`
-            : 'No files connected yet. Attach from library or upload a new file.';
-
-        if (attached.length === 0) {
-            list.innerHTML = '<div class="chat-files-empty">No files connected to this chat.</div>';
-        } else {
-            list.innerHTML = attached
-                .map((file) => this.renderFileCard(file, { context: 'chat' }))
-                .join('');
-        }
-
-        if (available.length === 0) {
-            select.innerHTML = '<option value="">No attachable files</option>';
-            select.disabled = true;
-            attachBtn.disabled = true;
-            return;
-        }
-
-        select.disabled = false;
-        attachBtn.disabled = false;
-        select.innerHTML = available.map((file) => {
-            const fileId = extractFileId(file);
-            return `<option value="${fileId}">${this.escapeHtml(file.original_filename)} (${this.humanStatusLabel(this.getEffectiveStatus(file))})</option>`;
-        }).join('');
+        // Main chat no longer renders file summary UI in-flow.
     }
 
     renderDetailsPanel() {
@@ -415,22 +355,39 @@ export class FilesSidebarManager {
         const canDetach = Boolean(this.currentConversationId && isAttached && !isBusy);
         const canDelete = status !== 'deleting' && status !== 'deleted';
         const canReprocess = status !== 'deleting' && status !== 'deleted';
-        const attachLabel = canAttach ? 'Attach' : '';
-        const detachLabel = canDetach ? 'Detach' : '';
         const attachDisabled = !canAttach ? 'disabled aria-disabled="true"' : '';
         const detachDisabled = !canDetach ? 'disabled aria-disabled="true"' : '';
         const reprocessDisabled = (!canReprocess || isBusy) ? 'disabled aria-disabled="true"' : '';
         const deleteDisabled = (!canDelete || isBusy) ? 'disabled aria-disabled="true"' : '';
         const detailsDisabled = isBusy ? 'disabled aria-disabled="true"' : '';
 
+        const primaryActions = [
+            `<button class="file-item-btn is-primary" data-action="attach" data-file-id="${fileId}" type="button" ${attachDisabled}>Attach</button>`,
+            `<button class="file-item-btn delete" data-action="delete" data-file-id="${fileId}" type="button" ${deleteDisabled}>Delete</button>`,
+        ].filter(Boolean).join('');
+
+        const overflowItems = [
+            canDetach
+                ? `<button class="file-item-btn" data-action="detach" data-file-id="${fileId}" type="button" ${detachDisabled}>Detach</button>`
+                : '',
+            canReprocess
+                ? `<button class="file-item-btn" data-action="reprocess" data-file-id="${fileId}" type="button" ${reprocessDisabled}>Reprocess</button>`
+                : '',
+            `<button class="file-item-btn subtle" data-action="details" data-file-id="${fileId}" type="button" ${detailsDisabled}>Details</button>`,
+        ].filter(Boolean).join('');
+
         return `
-            ${attachLabel ? `<button class="file-item-btn" data-action="attach" data-file-id="${fileId}" type="button" ${attachDisabled}>Attach</button>` : ''}
-            ${detachLabel ? `<button class="file-item-btn" data-action="detach" data-file-id="${fileId}" type="button" ${detachDisabled}>Detach</button>` : ''}
-            ${canReprocess ? `<button class="file-item-btn" data-action="reprocess" data-file-id="${fileId}" type="button" ${reprocessDisabled}>Reprocess</button>` : ''}
-            ${canDelete ? `<button class="file-item-btn delete" data-action="delete" data-file-id="${fileId}" type="button" ${deleteDisabled}>Delete</button>` : ''}
-            <button class="file-item-btn subtle" data-action="details" data-file-id="${fileId}" type="button" ${detailsDisabled}>Details</button>
-            ${context === 'chat' ? '<span class="file-item-context">Linked</span>' : ''}
-            ${isBusy ? '<span class="file-item-context">Updating...</span>' : ''}
+            <div class="file-item-primary-actions">
+                ${primaryActions}
+                ${context === 'chat' ? '<span class="file-item-context">Linked</span>' : ''}
+                ${isBusy ? '<span class="file-item-context">Updating...</span>' : ''}
+            </div>
+            <details class="file-item-overflow">
+                <summary class="file-item-btn subtle">More</summary>
+                <div class="file-item-overflow-menu">
+                    ${overflowItems}
+                </div>
+            </details>
         `;
     }
 
@@ -879,5 +836,12 @@ window.toggleFilesSidebar = function() {
     const sidebar = document.getElementById('filesSidebar');
     if (sidebar) {
         sidebar.classList.toggle('active');
+    }
+};
+
+window.openFilesSidebar = function() {
+    const sidebar = document.getElementById('filesSidebar');
+    if (sidebar) {
+        sidebar.classList.add('active');
     }
 };

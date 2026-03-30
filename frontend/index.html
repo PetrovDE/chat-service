@@ -50,7 +50,10 @@
 <aside class="files-sidebar" id="filesSidebar" aria-label="Files">
     <div class="sidebar-header">
         <h3>My files</h3>
-        <button class="close-files-sidebar" onclick="toggleFilesSidebar()" type="button" aria-label="Close files panel">X</button>
+        <div class="files-sidebar-header-actions">
+            <button id="filesDrawerUploadBtn" class="header-icon-btn" type="button" aria-label="Upload file">Upload</button>
+            <button class="close-files-sidebar" onclick="toggleFilesSidebar()" type="button" aria-label="Close files panel">X</button>
+        </div>
     </div>
 
     <div class="files-sidebar-info">
@@ -69,6 +72,10 @@
 
 <main class="main-container" role="main">
     <section class="chat-container">
+        <header class="chat-thread-header" aria-live="polite">
+            <h1 id="chatThreadTitle">New chat</h1>
+            <p id="chatThreadSubtitle">Select a chat or send a message to start a new conversation.</p>
+        </header>
         <div id="chatMessages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions text">
             <section class="chat-empty-state">
                 <h2>Start a new conversation</h2>
@@ -78,83 +85,97 @@
     </section>
 
     <section class="input-area" aria-label="Message composer">
-        <div id="chatFilesPanel" class="chat-files-panel">
-            <div class="chat-files-header">
-                <span>Files in this chat</span>
-                <button id="uploadLibraryFileBtn" class="chat-files-upload-btn" type="button">Upload file</button>
-            </div>
-            <p id="chatFilesHint" class="chat-files-hint">Open a chat to attach files.</p>
-            <div class="chat-files-attach-row">
-                <label class="visually-hidden" for="chatFileSelect">Attach existing file</label>
-                <select id="chatFileSelect" aria-label="Attach existing file">
-                    <option value="">No files available</option>
-                </select>
-                <button id="attachExistingFileBtn" class="chat-files-attach-btn" type="button">Attach to chat</button>
-            </div>
-            <p class="chat-files-subhint">Upload always stores file in your library. If this chat is open, upload auto-attaches.</p>
-            <div id="chatFilesList" class="chat-files-list">
-                <div class="chat-files-empty">No files connected yet.</div>
-            </div>
-        </div>
-
         <div class="input-container">
-            <div class="composer-controls">
-                <div class="control-with-hint">
-                    <label class="visually-hidden" for="mode-selector">Mode</label>
-                    <select id="mode-selector" aria-label="Model source">
-                        <option value="local">Local models (Ollama)</option>
-                        <option value="aihub">Corporate AI HUB</option>
-                    </select>
-                    <small class="control-hint">Model provider</small>
-                </div>
-
-                <div class="control-with-hint">
-                    <label class="visually-hidden" for="model-selector">Model</label>
-                    <select id="model-selector" aria-label="Model"></select>
-                    <small class="control-hint">Chat model</small>
-                </div>
-
-                <div class="control-with-hint">
-                    <label class="visually-hidden" for="embedding-model-selector">Embedding model</label>
-                    <select id="embedding-model-selector" aria-label="Embedding model"></select>
-                    <small class="control-hint">Embedding model</small>
-                </div>
-
-                <div class="control-with-hint">
-                    <label class="visually-hidden" for="ragModeSelector">RAG mode</label>
-                    <select id="ragModeSelector" aria-label="RAG mode">
-                        <option value="auto">RAG: Auto</option>
-                        <option value="hybrid">RAG: Hybrid</option>
-                        <option value="full_file">RAG: Full file</option>
-                    </select>
-                    <small class="control-hint">File context mode</small>
-                </div>
-
-                <small id="modelCapsHint">Model limits: loading...</small>
+            <div class="composer-main-row">
+                <label class="visually-hidden" for="messageInput">Message</label>
+                <textarea
+                    id="messageInput"
+                    class="message-input"
+                    placeholder="Message... Enter to send, Shift+Enter for newline"
+                    rows="1"
+                    aria-label="Message input"
+                ></textarea>
             </div>
 
-            <button class="attach-btn" type="button" aria-label="Upload file to library">Upload to library</button>
+            <div class="composer-footer-row" aria-label="Primary composer controls">
+                <div class="composer-footer-left" aria-label="Secondary controls left">
+                    <button id="composerAttachBtn" class="attach-btn icon-action-btn" type="button" aria-label="Upload file" title="Upload file">
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                            <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+                        </svg>
+                    </button>
 
-            <label class="visually-hidden" for="messageInput">Message</label>
-            <textarea
-                id="messageInput"
-                class="message-input"
-                placeholder="Message... Enter to send, Shift+Enter for newline"
-                rows="1"
-                aria-label="Message input"
-            ></textarea>
+                    <button id="openFilesDrawerBtn" class="file-drawer-btn" type="button" aria-label="Open file drawer" title="Open file drawer">
+                        Files
+                    </button>
 
-            <button id="sendMessage" class="send-button icon-action-btn" type="button" aria-label="Send message" title="Send">
-                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                    <path d="M3 20L21 12L3 4L3 10L15 12L3 14Z" fill="currentColor"></path>
-                </svg>
-            </button>
-            <button id="stopGeneration" class="stop-button icon-action-btn" style="display: none;" type="button" aria-label="Stop generation" title="Stop">
-                <span class="btn-spinner" aria-hidden="true"></span>
-                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-                    <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect>
-                </svg>
-            </button>
+                    <div class="control-with-hint">
+                        <label class="visually-hidden" for="mode-selector">Mode</label>
+                        <select id="mode-selector" aria-label="Model source">
+                            <option value="local">Local models (Ollama)</option>
+                            <option value="aihub">Corporate AI HUB</option>
+                        </select>
+                        <small class="control-hint">Model provider</small>
+                    </div>
+
+                    <div class="control-with-hint">
+                        <label class="visually-hidden" for="model-selector">Model</label>
+                        <select id="model-selector" aria-label="Model"></select>
+                        <small class="control-hint">Chat model</small>
+                    </div>
+                </div>
+
+                <div class="composer-footer-right" aria-label="Secondary controls right">
+                    <div class="composer-advanced-anchor">
+                        <button
+                            id="composerAdvancedToggle"
+                            class="composer-advanced-toggle"
+                            type="button"
+                            aria-expanded="false"
+                            aria-controls="composerAdvancedPanel"
+                        >
+                            Advanced
+                        </button>
+                        <div id="composerAdvancedPanel" class="composer-advanced-panel" hidden>
+                            <div class="composer-advanced-controls">
+                                <div class="control-with-hint">
+                                    <label class="visually-hidden" for="embedding-model-selector">Embedding model</label>
+                                    <select id="embedding-model-selector" aria-label="Embedding model"></select>
+                                    <small class="control-hint">Embedding model</small>
+                                </div>
+
+                                <div class="control-with-hint">
+                                    <label class="visually-hidden" for="ragModeSelector">RAG mode</label>
+                                    <select id="ragModeSelector" aria-label="RAG mode">
+                                        <option value="auto">RAG: Auto</option>
+                                        <option value="hybrid">RAG: Hybrid</option>
+                                        <option value="full_file">RAG: Full file</option>
+                                    </select>
+                                    <small class="control-hint">File context mode</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="composer-action-buttons">
+                        <button id="sendMessage" class="send-button icon-action-btn" type="button" aria-label="Send message" title="Send">
+                            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                                <path d="M3 20L21 12L3 4L3 10L15 12L3 14Z" fill="currentColor"></path>
+                            </svg>
+                        </button>
+                        <button id="stopGeneration" class="stop-button icon-action-btn" style="display: none;" type="button" aria-label="Stop generation" title="Stop">
+                            <span class="btn-spinner" aria-hidden="true"></span>
+                            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                                <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <small id="modelSelectionHint" class="model-selection-hint" aria-live="polite"></small>
+
+            <small id="modelCapsHint">Model limits: loading...</small>
         </div>
     </section>
 </main>
@@ -280,5 +301,3 @@
 <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>
-
-

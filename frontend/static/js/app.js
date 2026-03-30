@@ -119,6 +119,34 @@ class App {
             });
         }
 
+        const advancedToggle = document.getElementById('composerAdvancedToggle');
+        const advancedPanel = document.getElementById('composerAdvancedPanel');
+        if (advancedToggle && advancedPanel) {
+            const closeAdvancedPanel = () => {
+                advancedToggle.setAttribute('aria-expanded', 'false');
+                advancedPanel.hidden = true;
+            };
+
+            advancedToggle.addEventListener('click', () => {
+                const nextExpanded = advancedToggle.getAttribute('aria-expanded') !== 'true';
+                advancedToggle.setAttribute('aria-expanded', String(nextExpanded));
+                advancedPanel.hidden = !nextExpanded;
+            });
+
+            document.addEventListener('click', (event) => {
+                if (advancedPanel.hidden) return;
+                const target = event.target;
+                if (advancedPanel.contains(target) || advancedToggle.contains(target)) return;
+                closeAdvancedPanel();
+            });
+
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && !advancedPanel.hidden) {
+                    closeAdvancedPanel();
+                }
+            });
+        }
+
         const modelSelector = document.getElementById('model-selector');
         if (modelSelector) {
             modelSelector.addEventListener('change', (event) => {

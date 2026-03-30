@@ -12,6 +12,7 @@ class ChatManager {
         this.apiService = apiService;
         this.uiController = uiController;
         this.currentConversation = null;
+        this.currentConversationTitle = null;
         this.isGenerating = false;
         this.abortController = null;
         this.conversationsManager = null;
@@ -28,9 +29,38 @@ class ChatManager {
         return this.currentConversation;
     }
 
-    setCurrentConversation(id) {
+    setCurrentConversation(id, title = null) {
         this.currentConversation = id;
+        if (!id) {
+            this.currentConversationTitle = null;
+        } else if (typeof title === 'string') {
+            const normalized = title.trim();
+            this.currentConversationTitle = normalized || null;
+        }
         this.lastRenderedDate = null;
+        this.updateChatHeader();
+    }
+
+    setConversationTitle(title) {
+        if (!this.currentConversation) return;
+        const normalized = String(title || '').trim();
+        this.currentConversationTitle = normalized || null;
+        this.updateChatHeader();
+    }
+
+    updateChatHeader() {
+        const titleEl = document.getElementById('chatThreadTitle');
+        const subtitleEl = document.getElementById('chatThreadSubtitle');
+        if (!titleEl || !subtitleEl) return;
+
+        if (!this.currentConversation) {
+            titleEl.textContent = 'New chat';
+            subtitleEl.textContent = 'Select a chat or send a message to start a new conversation.';
+            return;
+        }
+
+        titleEl.textContent = this.currentConversationTitle || 'Current chat';
+        subtitleEl.textContent = `Conversation ID: ${String(this.currentConversation)}`;
     }
 
     renderWelcomeState() {
@@ -44,6 +74,7 @@ class ChatManager {
             </section>
         `;
         this.lastRenderedDate = null;
+        this.updateChatHeader();
     }
 
     renderConversationHistory(messages) {
@@ -92,7 +123,7 @@ class ChatManager {
                 provider_mode: (settings.mode === 'local' || settings.mode === 'ollama' || settings.mode === 'openai')
                     ? 'explicit'
                     : 'policy',
-                model_name: settings.model || 'llama3',
+                model_name: settings.model || null,
                 temperature: settings.temperature || 0.7,
                 max_tokens: settings.max_tokens || 2048,
                 prompt_max_chars: settings.prompt_max_chars || null,

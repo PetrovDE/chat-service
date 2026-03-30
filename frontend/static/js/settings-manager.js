@@ -2,6 +2,7 @@
 const PROMPT_MAX_CHARS_DEFAULT = 50000;
 const PROMPT_MAX_CHARS_MIN = 2000;
 const PROMPT_MAX_CHARS_MAX = 500000;
+const VALID_PROVIDER_MODES = ['local', 'ollama', 'openai', 'aihub'];
 
 function clampPromptMaxChars(value) {
     const parsed = Number.parseInt(value, 10);
@@ -23,17 +24,23 @@ class SettingsManager {
             rag_debug: false,
         };
         this.modelCapabilities = {};
+        this.providerScopedSelections = {
+            model: { local: this.settings.model || null },
+            embedding_model: { local: this.settings.embedding_model || null },
+        };
+        this.modelLoadRequestId = 0;
         console.log('SettingsManager initialized');
     }
 
     async loadAvailableModels(mode = null) {
         console.log('Loading models...');
+        const selectedMode = mode || this.settings.mode || 'local';
+        const requestId = ++this.modelLoadRequestId;
+
         try {
-            const selectedMode = mode || this.settings.mode || 'local';
             console.log(`Loading models for mode: ${selectedMode}`);
 
-            const validModes = ['local', 'ollama', 'openai', 'aihub'];
-            if (!validModes.includes(selectedMode)) {
+            if (!VALID_PROVIDER_MODES.includes(selectedMode)) {
                 console.warn(`Invalid mode ${selectedMode}, using local`);
                 this.settings.mode = 'local';
                 return this.loadAvailableModels('local');
@@ -43,26 +50,37 @@ class SettingsManager {
                 this.apiService.get(`/models/list?mode=${selectedMode}&capability=chat`),
                 this.apiService.get(`/models/list?mode=${selectedMode}&capability=embedding`),
             ]);
+            if (!this.isLatestModelLoad(requestId, selectedMode)) {
+                console.debug(`Ignoring stale model response: mode=${selectedMode} request_id=${requestId}`);
+                return;
+            }
 
-            this.renderModelSelector({
+            const chatSelection = this.renderModelSelector({
                 selectorId: 'model-selector',
                 modelsData: chatModelsData,
                 settingsKey: 'model',
                 emptyLabel: 'No chat models',
                 collectCapabilities: true,
+                providerMode: selectedMode,
             });
-            this.renderModelSelector({
+            const embeddingSelection = this.renderModelSelector({
                 selectorId: 'embedding-model-selector',
                 modelsData: embeddingModelsData,
                 settingsKey: 'embedding_model',
                 emptyLabel: 'No embedding models',
                 collectCapabilities: false,
+                providerMode: selectedMode,
             });
+            this.updateModelSelectionHint(selectedMode, [chatSelection, embeddingSelection]);
 
             const selectedChatModel = document.getElementById('model-selector')?.value || this.settings.model;
             this.applyModelCapabilities(selectedChatModel);
             console.log('Loaded provider-aware chat/embedding models for mode:', selectedMode);
         } catch (error) {
+            if (!this.isLatestModelLoad(requestId, selectedMode)) {
+                console.debug(`Ignoring stale model error response: mode=${selectedMode} request_id=${requestId}`);
+                return;
+            }
             console.error('Load models error:', error);
             const modelSelector = document.getElementById('model-selector');
             if (modelSelector) {
@@ -72,8 +90,34 @@ class SettingsManager {
             if (embeddingSelector) {
                 embeddingSelector.innerHTML = '<option value="">Model load error</option>';
             }
+            this.updateModelSelectionHint(mode || this.settings.mode, []);
             this.updateModelCapsHint('');
         }
+    }
+
+    modeKey(mode) {
+        const raw = String(mode || '').trim().toLowerCase();
+        if (raw === 'local' || raw === 'ollama') return 'local';
+        if (VALID_PROVIDER_MODES.includes(raw)) return raw;
+        return 'local';
+    }
+
+    isLatestModelLoad(requestId, requestedMode) {
+        return requestId === this.modelLoadRequestId && this.modeKey(this.settings.mode) === this.modeKey(requestedMode);
+    }
+
+    getProviderScopedSelection(settingsKey, providerMode) {
+        const providerKey = this.modeKey(providerMode);
+        const map = this.providerScopedSelections[settingsKey] || {};
+        return map[providerKey] || null;
+    }
+
+    setProviderScopedSelection(settingsKey, providerMode, value) {
+        const providerKey = this.modeKey(providerMode);
+        if (!this.providerScopedSelections[settingsKey]) {
+            this.providerScopedSelections[settingsKey] = {};
+        }
+        this.providerScopedSelections[settingsKey][providerKey] = value || null;
     }
 
     extractModelsList(modelsData) {
@@ -84,10 +128,18 @@ class SettingsManager {
         return [];
     }
 
-    renderModelSelector({ selectorId, modelsData, settingsKey, emptyLabel, collectCapabilities = false }) {
+    renderModelSelector({
+        selectorId,
+        modelsData,
+        settingsKey,
+        emptyLabel,
+        collectCapabilities = false,
+        providerMode = null,
+    }) {
         const selector = document.getElementById(selectorId);
-        if (!selector) return;
+        if (!selector) return null;
 
+        const providerKey = this.modeKey(providerMode || this.settings.mode);
         const modelsList = this.extractModelsList(modelsData);
         const defaultModel = typeof modelsData?.default_model === 'string' ? modelsData.default_model : null;
 
@@ -100,17 +152,20 @@ class SettingsManager {
             options.push(model);
         }
 
-        if (defaultModel && !seen.has(defaultModel)) {
-            options.unshift({ name: defaultModel, is_default: true });
-            seen.add(defaultModel);
-        }
-
         if (options.length === 0) {
+            const rememberedValue = this.getProviderScopedSelection(settingsKey, providerKey);
+            const previousValue = rememberedValue || this.settings[settingsKey];
             selector.innerHTML = `<option value="">${emptyLabel}</option>`;
-            if (settingsKey === 'embedding_model') {
-                this.settings.embedding_model = null;
+            this.setProviderScopedSelection(settingsKey, providerKey, null);
+            if (this.modeKey(this.settings.mode) === providerKey) {
+                this.settings[settingsKey] = null;
             }
-            return;
+            return {
+                settingsKey,
+                previousValue: previousValue || null,
+                selectedValue: null,
+                reason: 'no_options',
+            };
         }
 
         if (collectCapabilities) {
@@ -131,30 +186,78 @@ class SettingsManager {
             return `<option value="${modelValue}">${modelLabel}</option>`;
         }).join('');
 
-        const currentValue = this.settings[settingsKey];
+        const rememberedValue = this.getProviderScopedSelection(settingsKey, providerKey);
+        const currentValue = rememberedValue || this.settings[settingsKey];
         const optionExists = currentValue
             ? Array.from(selector.options).some((opt) => opt.value === currentValue)
             : false;
+        const availableDefaultModel = defaultModel && seen.has(defaultModel) ? defaultModel : null;
 
         let selectedValue = null;
+        let reason = 'kept';
         if (optionExists) {
             selectedValue = currentValue;
-        } else if (defaultModel && seen.has(defaultModel)) {
-            selectedValue = defaultModel;
+            reason = 'kept';
+        } else if (availableDefaultModel) {
+            selectedValue = availableDefaultModel;
+            reason = currentValue ? 'replaced_with_provider_default' : 'provider_default';
         } else {
             const first = options[0];
             selectedValue = typeof first === 'string' ? first : (first.name || first.id || null);
+            reason = currentValue ? 'replaced_with_first_available' : 'first_available';
         }
 
         if (selectedValue) {
             selector.value = selectedValue;
-            this.settings[settingsKey] = selectedValue;
+            this.setProviderScopedSelection(settingsKey, providerKey, selectedValue);
+            if (this.modeKey(this.settings.mode) === providerKey) {
+                this.settings[settingsKey] = selectedValue;
+            }
         }
+
+        return {
+            settingsKey,
+            previousValue: currentValue || null,
+            selectedValue: selectedValue || null,
+            reason,
+        };
+    }
+
+    updateModelSelectionHint(mode, selections) {
+        const target = document.getElementById('modelSelectionHint');
+        if (!target) return;
+
+        const noChatModels = selections.find((item) => item?.settingsKey === 'model' && item.reason === 'no_options');
+        if (noChatModels) {
+            target.textContent = `No chat models are currently available for provider "${mode}".`;
+            return;
+        }
+
+        const changed = selections.filter(
+            (item) => item
+                && item.previousValue
+                && item.selectedValue
+                && item.previousValue !== item.selectedValue
+                && (item.reason === 'replaced_with_provider_default' || item.reason === 'replaced_with_first_available')
+        );
+        if (changed.length === 0) {
+            target.textContent = '';
+            return;
+        }
+
+        const labels = {
+            model: 'Chat model',
+            embedding_model: 'Embedding model',
+        };
+        const parts = changed.map((item) => {
+            const control = labels[item.settingsKey] || item.settingsKey;
+            return `${control} switched to "${item.selectedValue}" because "${item.previousValue}" is unavailable for provider "${mode}".`;
+        });
+        target.textContent = parts.join(' ');
     }
 
     setMode(mode) {
-        const validModes = ['local', 'ollama', 'openai', 'aihub'];
-        if (!validModes.includes(mode)) {
+        if (!VALID_PROVIDER_MODES.includes(mode)) {
             console.warn(`Invalid mode: ${mode}, keeping current: ${this.settings.mode}`);
             return;
         }
@@ -163,12 +266,14 @@ class SettingsManager {
     }
 
     setModel(model) {
-        this.settings.model = model;
-        console.log('Model set to:', model);
+        this.settings.model = model || null;
+        this.setProviderScopedSelection('model', this.settings.mode, this.settings.model);
+        console.log('Model set to:', this.settings.model);
     }
 
     setEmbeddingModel(model) {
         this.settings.embedding_model = model || null;
+        this.setProviderScopedSelection('embedding_model', this.settings.mode, this.settings.embedding_model);
         console.log('Embedding model set to:', this.settings.embedding_model);
     }
 
@@ -240,13 +345,15 @@ class SettingsManager {
         const promptMaxCharsInput = document.getElementById('promptMaxCharsInput');
         const ragDebugToggle = document.getElementById('ragDebugToggle');
 
-        if (modelSelector && modelSelector.value) {
-            this.settings.model = modelSelector.value;
-            this.applyModelCapabilities(modelSelector.value);
+        if (modelSelector) {
+            this.setModel(modelSelector.value || null);
+            if (modelSelector.value) {
+                this.applyModelCapabilities(modelSelector.value);
+            }
         }
 
-        if (embeddingSelector && embeddingSelector.value) {
-            this.settings.embedding_model = embeddingSelector.value;
+        if (embeddingSelector) {
+            this.setEmbeddingModel(embeddingSelector.value || null);
         }
 
         if (tempSlider && tempValue) {

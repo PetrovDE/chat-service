@@ -18,10 +18,13 @@ _EXPLICIT_DATA_CONTEXT_RE = re.compile(
     r"(?:\b(?:from|in|by)\s+(?:the\s+)?(?:table|data|sheet)\b|\b(?:table|data)\b\s+(?:summary|analysis)|\b(?:\u043f\u043e|\u0438\u0437|\u0432)\s+(?:\u0442\u0430\u0431\u043b\u0438\u0446|\u0434\u0430\u043d\u043d|\u043b\u0438\u0441\u0442))"
 )
 _TABULAR_STRUCTURE_SIGNAL_RE = re.compile(
-    r"(?:\b(?:schema|column|columns|row|rows|record|records|table|sheet|spreadsheet|dataset)\b|(?:\u0441\u0445\u0435\u043c|\u0441\u0442\u043e\u043b\u0431\u0435\u0446|\u0441\u0442\u043e\u043b\u0431\u0446\u044b|\u043a\u043e\u043b\u043e\u043d\u043a|\u0441\u0442\u0440\u043e\u043a|\u0442\u0430\u0431\u043b\u0438\u0446|\u043b\u0438\u0441\u0442))"
+    r"(?:\b(?:schema|column|columns|row|rows|record|records|table|sheet|spreadsheet|dataset)\b|(?:\u0441\u0445\u0435\u043c|\u0441\u0442\u043e\u043b\u0431|\u043a\u043e\u043b\u043e\u043d\u043a|\u0441\u0442\u0440\u043e\u043a|\u0442\u0430\u0431\u043b\u0438\u0446|\u043b\u0438\u0441\u0442|\u0437\u0430\u043f\u0438\u0441))"
 )
 _CODING_OR_EDUCATIONAL_SIGNAL_RE = re.compile(
     r"(?:\b(?:python|pandas|matplotlib|seaborn|plotly|numpy|snippet|example|tutorial|how to|what is|explain|difference)\b|\b(?:write|show|provide|generate)\s+code\b|\b(?:\u043d\u0430\u043f\u0438\u0448\u0438|\u043f\u043e\u043a\u0430\u0436\u0438|\u0434\u0430\u0439|\u043f\u0440\u0438\u0432\u0435\u0434\u0438)\s+\u043a\u043e\u0434\b|(?:\u043f\u0438\u0442\u043e\u043d|\u043f\u0440\u0438\u043c\u0435\u0440|\u043e\u0431\u044a\u044f\u0441\u043d|\u0447\u0442\u043e \u0442\u0430\u043a\u043e\u0435|\u0440\u0430\u0437\u043d\u0438\u0446))"
+)
+_LOOKUP_STYLE_SIGNAL_RE = re.compile(
+    r"(?:\b(?:where|filter|lookup)\b|(?:\u0433\u0434\u0435|\u0444\u0438\u043b\u044c\u0442\u0440|\u043d\u0430\u0439\u0434\u0438))"
 )
 
 
@@ -46,6 +49,8 @@ def classify_top_level_intent(
     tabular_structure_signal = bool(_TABULAR_STRUCTURE_SIGNAL_RE.search(lowered))
     strong_file_data_signal = bool(explicit_file_or_data_signal or tabular_structure_signal)
     coding_or_educational_signal = bool(_CODING_OR_EDUCATIONAL_SIGNAL_RE.search(lowered))
+    requested_time_grain = detect_requested_time_grain(text)
+    temporal_grouping_signal = has_temporal_grouping_signal(text)
 
     if is_complex_analytics_query(text):
         if strong_file_data_signal:
@@ -76,8 +81,6 @@ def classify_top_level_intent(
         if strong_file_data_signal or lookup_field_text:
             return "file_lookup"
         return "general_chat"
-    requested_time_grain = detect_requested_time_grain(text)
-    temporal_grouping_signal = has_temporal_grouping_signal(text)
 
     if selected_route in {"chart", "comparison", "trend"}:
         if prioritize_general_coding:
@@ -97,6 +100,15 @@ def classify_top_level_intent(
         ):
             return "tabular_analytics"
         return "general_chat"
+    if selected_route in {"", "unknown"}:
+        if prioritize_general_coding:
+            return "general_chat"
+        if strong_file_data_signal:
+            if _LOOKUP_STYLE_SIGNAL_RE.search(lowered):
+                return "file_lookup"
+            if requested_time_grain or temporal_grouping_signal or requested_fields:
+                return "tabular_analytics"
+            return "file_question"
 
     legacy_tabular_intent = detect_tabular_intent(text)
     if strong_file_data_signal or requested_fields:

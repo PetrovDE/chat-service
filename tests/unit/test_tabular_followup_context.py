@@ -59,3 +59,36 @@ def test_russian_temporal_followup_reuses_prior_tabular_context():
     assert result.prior_tabular_intent_reused is True
     assert "Follow-up refinement" in result.effective_query
     assert followup in result.effective_query
+
+
+def test_column_description_followup_reuses_prior_schema_intent():
+    history = [
+        {"role": "user", "content": "what columns are in the file"},
+        {"role": "assistant", "content": "Here is the schema."},
+    ]
+
+    result = apply_tabular_followup_context(
+        query="show full description for each column",
+        conversation_history=history,
+    )
+
+    assert result.followup_context_used is True
+    assert result.prior_tabular_intent_reused is True
+    assert "Follow-up refinement" in result.effective_query
+    assert "what columns are in the file" in result.effective_query
+
+
+def test_coding_followup_does_not_hijack_tabular_context():
+    history = [
+        {"role": "user", "content": "what columns are in the file"},
+        {"role": "assistant", "content": "Here is the schema."},
+    ]
+
+    result = apply_tabular_followup_context(
+        query="write python code for chart rendering",
+        conversation_history=history,
+    )
+
+    assert result.followup_context_used is False
+    assert result.prior_tabular_intent_reused is False
+    assert result.effective_query == "write python code for chart rendering"

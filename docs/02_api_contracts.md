@@ -186,3 +186,9 @@ SSE transport is unchanged (`start`, `chunk`, `done`, `error`), but stabilized f
 - `clarification_required` and `controlled_fallback` are explicit and no longer inferred from mixed fields.
 - Chart delivery state is explicit via `chart_artifact_available`; chart success is not inferred from chart spec generation.
 - `fallback_reason` in route telemetry is normalized (`none|timeout|network|hub_5xx|circuit_open`) for stable transport-level interpretation.
+
+### Update 2026-03-30 (File-Aware Stream Grounding)
+
+- SSE event types remain unchanged (`start|chunk|done|error`), but file-aware routes now apply evidence grounding before user-visible chunk emission.
+- For file-aware turns, provider draft text may be buffered internally and replaced by the grounded final answer before the first emitted `chunk`.
+- `final_refinement` remains an additive event type and is no longer required for the primary file-aware grounding path.

@@ -104,3 +104,13 @@ Boundary intent:
 - chat response-composition layer owns final user-facing RU/EN wording,
 - controlled fallback wording stays consistent across file resolution, no-retrieval,
   missing-column, chart-delivery-failed, and runtime-error states.
+
+## Update 2026-03-30 (Evidence-First File-Aware Finalization)
+
+File-aware chat finalization now uses an evidence-first gate before user-visible final text:
+
+- runtime evaluates route/file state and available evidence (`file_resolution_status`, retrieval hits/docs, matched/unmatched fields, sources),
+- stream path may buffer provider draft chunks for file-aware turns and emit only grounded final chunk text,
+- non-stream and stream paths both pass through the same evidence gate contract,
+- contradictory "no file access" claims are blocked when runtime state confirms attached-ready file context,
+- when evidence is insufficient, response switches to precise missing-evidence clarification instead of generic limitation text.

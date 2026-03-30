@@ -12,6 +12,10 @@ from app.core.config import settings
 from app.crud import crud_message
 from app.schemas import ChatMessage, ChatResponse
 from app.services.chat.controlled_response_composer import build_runtime_error_message
+from app.services.chat.evidence_answer_gate import (
+    run_evidence_gate,
+    should_buffer_file_aware_stream_output,
+)
 from app.services.chat.orchestrator_stream_payloads import (
     build_stream_contract_fields,
     build_stream_done_payload,
@@ -111,6 +115,8 @@ def _build_chat_response(
         response_contract=response_contract,
         rag_debug=rag_debug_payload,
     )
+
+
 async def stream_chat_events(
     *,
     orchestrator: Any,
@@ -226,23 +232,50 @@ async def stream_chat_events(
         start_payload_json = safe_stream_payload_json(start_payload, logger=logger)
         yield f"data: {start_payload_json}\n\n"
 
+        buffer_stream_output = should_buffer_file_aware_stream_output(
+            query=chat_data.message,
+            rag_debug=ctx.get("rag_debug") if isinstance(ctx.get("rag_debug"), dict) else None,
+            context_docs=ctx.get("context_docs") if isinstance(ctx.get("context_docs"), list) else [],
+            rag_sources=ctx.get("rag_sources") if isinstance(ctx.get("rag_sources"), list) else [],
+        )
         async for chunk in routed_stream.stream:
             full_response += chunk
-            yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
+            if not buffer_stream_output:
+                yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
 
         route_telemetry = dict(routed_stream.telemetry.as_dict())
+        gate_outcome = await run_evidence_gate(
+            query=chat_data.message,
+            generation_kwargs=generation_kwargs,
+            raw_response=full_response,
+            rag_debug=ctx.get("rag_debug"),
+            context_docs=ctx.get("context_docs"),
+            rag_sources=ctx.get("rag_sources"),
+        )
+        full_response = gate_outcome.response_text
 
         generation_time = (datetime.utcnow() - start_time).total_seconds()
-        postprocess = await orchestrator._postprocess_generated_answer(
-            chat_data=chat_data,
-            ctx=ctx,
-            raw_answer=full_response,
-            include_stream_events=True,
-        )
-        full_response = postprocess["answer_text"]
-        summary_text = postprocess["summary_text"]
-        for event in postprocess["stream_events"]:
+        postprocess_events: list[dict[str, Any]] = []
+        if gate_outcome.mode == "clarification":
+            summary_text = None
+        else:
+            postprocess = await orchestrator._postprocess_generated_answer(
+                chat_data=chat_data,
+                ctx=ctx,
+                raw_answer=full_response,
+                include_stream_events=True,
+            )
+            full_response = postprocess["answer_text"]
+            summary_text = postprocess["summary_text"]
+            postprocess_events = postprocess["stream_events"]
+        if buffer_stream_output and full_response:
+            yield f"data: {json.dumps({'type': 'chunk', 'content': full_response, 'evidence_grounded': True})}\n\n"
+        for event in postprocess_events:
+            if buffer_stream_output and str(event.get("type") or "").strip().lower() == "final_refinement":
+                continue
             yield f"data: {json.dumps(event)}\n\n"
+        if not buffer_stream_output and gate_outcome.changed:
+            yield f"data: {json.dumps({'type': 'final_refinement', 'content': full_response, 'evidence_grounded': True})}\n\n"
 
         await crud_message.create_message(
             db=db,
@@ -337,6 +370,8 @@ async def stream_chat_events(
         if error_rag_debug_payload is not None:
             error_payload["rag_debug"] = error_rag_debug_payload
         yield f"data: {safe_stream_payload_json(error_payload, logger=logger)}\n\n"
+
+
 async def run_nonstream_chat(
     *,
     orchestrator: Any,
@@ -461,6 +496,15 @@ async def run_nonstream_chat(
     try:
         generation_kwargs = orchestrator._build_generation_kwargs(chat_data=chat_data, ctx=ctx)
         result = await llm_manager.generate_response(**generation_kwargs)
+        gate_outcome = await run_evidence_gate(
+            query=chat_data.message,
+            generation_kwargs=generation_kwargs,
+            raw_response=result.get("response", ""),
+            rag_debug=ctx.get("rag_debug"),
+            context_docs=ctx.get("context_docs"),
+            rag_sources=ctx.get("rag_sources"),
+        )
+        result["response"] = gate_outcome.response_text
         orchestrator._log_route_event(
             route_telemetry=result,
             execution_telemetry=execution_telemetry,
@@ -468,16 +512,19 @@ async def run_nonstream_chat(
             stream=False,
         )
 
-        postprocess = await orchestrator._postprocess_generated_answer(
-            chat_data=chat_data,
-            ctx=ctx,
-            raw_answer=result.get("response", ""),
-            include_stream_events=False,
-        )
-        result["response"] = postprocess["answer_text"]
-        summary_text = postprocess["summary_text"]
-        if postprocess["critic_meta"] is not None:
-            logger.info("RAG critic(non-stream, summarize=%s): %s", chat_data.summarize, postprocess["critic_meta"])
+        if gate_outcome.mode == "clarification":
+            summary_text = None
+        else:
+            postprocess = await orchestrator._postprocess_generated_answer(
+                chat_data=chat_data,
+                ctx=ctx,
+                raw_answer=result.get("response", ""),
+                include_stream_events=False,
+            )
+            result["response"] = postprocess["answer_text"]
+            summary_text = postprocess["summary_text"]
+            if postprocess["critic_meta"] is not None:
+                logger.info("RAG critic(non-stream, summarize=%s): %s", chat_data.summarize, postprocess["critic_meta"])
 
         generation_time = (datetime.utcnow() - start_time).total_seconds()
 

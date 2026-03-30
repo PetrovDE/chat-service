@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Dict, List, Optional
 
 from app.services.chat.tabular_query_parser import parse_tabular_query
@@ -15,10 +16,20 @@ _FOLLOWUP_PREFIXES = (
     "use ",
     "take ",
     "from ",
+    "show ",
+    "describe ",
+    "explain ",
+    "what about ",
+    "how about ",
     "group by ",
     "yes",
     "\u0434\u0430",
     "\u0430\u0433\u0430",
+    "\u043f\u043e\u043a\u0430\u0436\u0438",
+    "\u043e\u0431\u044a\u044f\u0441\u043d\u0438",
+    "\u043e\u043f\u0438\u0448\u0438",
+    "\u0447\u0442\u043e \u0432\u0438\u0434\u043d\u043e",
+    "\u0447\u0442\u043e \u0437\u043d\u0430\u0447\u0438\u0442",
     "\u0438\u0437 ",
     "\u043f\u043e ",
     "\u043c\u0435\u0441\u044f\u0446",
@@ -48,12 +59,36 @@ _FOLLOWUP_SUBSTRINGS = (
     "group by day",
     "group by quarter",
     "group by year",
+    "distribution by",
+    "split by",
+    "breakdown by",
+    "per column",
+    "each column",
+    "each field",
+    "what does",
+    "what is in column",
+    "column ",
+    "field ",
     "\u0438\u0437 \u0434\u0430\u0442",
     "\u0438\u0437 \u0434\u0430\u0442\u044b",
     "\u0432\u0437\u044f\u0442\u044c \u0438\u0437 \u0434\u0430\u0442",
     "\u0432\u044b\u0434\u0435\u043b\u0438\u0432 \u043c\u0435\u0441\u044f\u0446",
     "\u043d\u0443\u0436\u043d\u043e \u0433\u0440\u0430\u0444\u0438\u043a",
+    "\u043f\u043e \u043a\u0430\u0436\u0434\u043e\u043c\u0443 \u0441\u0442\u043e\u043b\u0431",
+    "\u043f\u043e \u043a\u0430\u0436\u0434\u043e\u0439 \u043a\u043e\u043b\u043e\u043d",
+    "\u0447\u0442\u043e \u0432\u0438\u0434\u043d\u043e \u043f\u043e",
+    "\u0447\u0442\u043e \u0437\u043d\u0430\u0447\u0438\u0442 \u043a\u043e\u043b\u043e\u043d\u043a",
+    "\u043e\u0431\u044a\u044f\u0441\u043d\u0438 \u043a\u043e\u043b\u043e\u043d\u043a",
+    "\u0441\u0434\u0435\u043b\u0430\u0439 \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b",
 )
+
+_DATA_FOLLOWUP_CUE_RE = re.compile(
+    r"(?:\b(?:column|columns|field|fields|row|rows|record|records|table|sheet|schema|distribution|breakdown)\b|(?:\u0441\u0442\u043e\u043b\u0431|\u043a\u043e\u043b\u043e\u043d\u043a|\u0441\u0442\u0440\u043e\u043a|\u0437\u0430\u043f\u0438\u0441|\u0442\u0430\u0431\u043b\u0438\u0446|\u043b\u0438\u0441\u0442|\u0441\u0445\u0435\u043c|\u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b|\u043e\u043f\u0438\u0441\u0430\u043d))"
+)
+_CODING_SIGNAL_RE = re.compile(
+    r"(?:\b(?:python|pandas|numpy|matplotlib|seaborn|plotly|sql|code|snippet|tutorial|example|api|function|class|script)\b|\b(?:write|generate|provide|show)\s+code\b|\b(?:\u043a\u043e\u0434|\u043f\u0438\u0442\u043e\u043d)\b)"
+)
+_IDENTIFIER_TOKEN_RE = re.compile(r"\b[a-z_][a-z0-9_]{2,}\b")
 
 
 @dataclass(frozen=True)
@@ -136,12 +171,32 @@ def _looks_like_short_followup_refinement(query: str) -> bool:
     token_count = len([token for token in text.replace("\n", " ").split(" ") if token.strip()])
     if token_count > 20:
         return False
+    if _CODING_SIGNAL_RE.search(text):
+        return False
     if any(text.startswith(prefix) for prefix in _FOLLOWUP_PREFIXES):
         return True
     if any(token in text for token in _FOLLOWUP_SUBSTRINGS):
         return True
     if extract_datetime_source_hint(text):
         return True
+    if token_count <= 16 and _DATA_FOLLOWUP_CUE_RE.search(text):
+        return True
+    if token_count <= 12 and _IDENTIFIER_TOKEN_RE.search(text):
+        if any(
+            marker in text
+            for marker in (
+                " by ",
+                " per ",
+                "\u043f\u043e ",
+                "show ",
+                "describe ",
+                "explain ",
+                "\u043f\u043e\u043a\u0430\u0436\u0438",
+                "\u043e\u0431\u044a\u044f\u0441\u043d\u0438",
+                "\u0447\u0442\u043e ",
+            )
+        ):
+            return True
     return False
 
 

@@ -298,6 +298,109 @@ def test_attached_file_temporal_chart_routes_file_aware(monkeypatch):
     assert rag_debug["fallback_type"] != "no_context"
 
 
+def test_schema_followup_detail_question_reuses_file_context(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    planner_called = {"value": False}
+
+    async def fake_get_conversation_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [_attached_ready_file(file_id=file_id, extension="xlsx")]
+
+    async def fake_query_rag(**kwargs):  # noqa: ANN003
+        ids = kwargs.get("file_ids") or []
+        return {
+            "docs": [
+                {
+                    "content": "Column details: city (text), status (category), amount_rub (numeric).",
+                    "metadata": {"file_id": ids[0], "filename": "dataset.xlsx", "chunk_index": 0},
+                    "similarity_score": 0.99,
+                }
+            ],
+            "debug": {"intent": "fact_lookup", "retrieval_mode": "hybrid"},
+        }
+
+    def fake_query_planner(**kwargs):  # noqa: ANN003
+        planner_called["value"] = True
+        return _narrative_planner_decision()
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_conversation_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
+
+    _, rag_used, rag_debug, _, _, _ = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="show full description for each column",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+            query_planner=fake_query_planner,
+            conversation_history=[
+                {"role": "user", "content": "what columns are in the file"},
+                {"role": "assistant", "content": "I can list the schema and examples."},
+            ],
+        )
+    )
+
+    assert planner_called["value"] is True
+    assert rag_used is True
+    assert rag_debug["followup_context_used"] is True
+    assert rag_debug["prior_tabular_intent_reused"] is True
+    assert rag_debug["selected_route"] != "general_chat"
+    assert rag_debug["retrieval_mode"] != "assistant_direct"
+
+
+def test_attached_file_arbitrary_column_question_routes_file_aware(monkeypatch):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    planner_called = {"value": False}
+
+    async def fake_get_conversation_files(db, conversation_id, user_id):  # noqa: ARG001
+        return [_attached_ready_file(file_id=file_id, extension="xlsx")]
+
+    async def fake_query_rag(**kwargs):  # noqa: ANN003
+        ids = kwargs.get("file_ids") or []
+        return {
+            "docs": [
+                {
+                    "content": "calc_need_spravka indicates whether supporting documents are required.",
+                    "metadata": {"file_id": ids[0], "filename": "dataset.xlsx", "chunk_index": 1},
+                    "similarity_score": 0.98,
+                }
+            ],
+            "debug": {"intent": "fact_lookup", "retrieval_mode": "hybrid"},
+        }
+
+    def fake_query_planner(**kwargs):  # noqa: ANN003
+        planner_called["value"] = True
+        return _narrative_planner_decision()
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_conversation_files)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fake_query_rag)
+
+    _, rag_used, rag_debug, _, _, _ = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query="explain column calc_need_spravka",
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+            query_planner=fake_query_planner,
+        )
+    )
+
+    assert planner_called["value"] is True
+    assert rag_used is True
+    assert rag_debug["selected_route"] != "general_chat"
+    assert rag_debug["retrieval_mode"] != "assistant_direct"
+    assert rag_debug["fallback_type"] != "no_context"
+
+
 def test_no_file_refusal_for_generic_python_chart_how_to(monkeypatch):
     user_id = uuid.uuid4()
     conversation_id = uuid.uuid4()

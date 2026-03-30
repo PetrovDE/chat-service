@@ -232,6 +232,10 @@ async def run_narrative_retrieval_path(
         rag_debug["file_ids"] = rag_file_ids
         rag_debug["rag_mode"] = rag_mode or "auto"
         rag_debug["rag_mode_effective"] = selected_rag_mode or rag_mode or "auto"
+        rag_debug["followup_context_used"] = bool(planner_decision_payload.get("followup_context_used", False))
+        rag_debug["prior_tabular_intent_reused"] = bool(
+            planner_decision_payload.get("prior_tabular_intent_reused", False)
+        )
         rag_debug["mixed_embedding_groups"] = [
             {"mode": mode, "model": model, "file_count": len(ids)}
             for (mode, model), ids in groups.items()

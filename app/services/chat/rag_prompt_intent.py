@@ -17,8 +17,11 @@ _EXPLICIT_FILE_REQUEST_RE = re.compile(
 _EXPLICIT_DATA_CONTEXT_RE = re.compile(
     r"(?:\b(?:from|in|by)\s+(?:the\s+)?(?:table|data|sheet)\b|\b(?:table|data)\b\s+(?:summary|analysis)|\b(?:\u043f\u043e|\u0438\u0437|\u0432)\s+(?:\u0442\u0430\u0431\u043b\u0438\u0446|\u0434\u0430\u043d\u043d|\u043b\u0438\u0441\u0442))"
 )
-_TABULAR_ACTION_SIGNAL_RE = re.compile(
-    r"(?:\b(?:chart|graph|plot|histogram|trend|comparison|schema|column|columns|row|rows|record|records|table|sheet|spreadsheet|dataset)\b|(?:\u0433\u0440\u0430\u0444\u0438\u043a|\u0434\u0438\u0430\u0433\u0440\u0430\u043c|\u0441\u0442\u043e\u043b\u0431\u0435\u0446|\u0441\u0442\u043e\u043b\u0431\u0446\u044b|\u043a\u043e\u043b\u043e\u043d\u043a|\u0441\u0442\u0440\u043e\u043a|\u0442\u0430\u0431\u043b\u0438\u0446|\u043b\u0438\u0441\u0442))"
+_TABULAR_STRUCTURE_SIGNAL_RE = re.compile(
+    r"(?:\b(?:schema|column|columns|row|rows|record|records|table|sheet|spreadsheet|dataset)\b|(?:\u0441\u0445\u0435\u043c|\u0441\u0442\u043e\u043b\u0431\u0435\u0446|\u0441\u0442\u043e\u043b\u0431\u0446\u044b|\u043a\u043e\u043b\u043e\u043d\u043a|\u0441\u0442\u0440\u043e\u043a|\u0442\u0430\u0431\u043b\u0438\u0446|\u043b\u0438\u0441\u0442))"
+)
+_CODING_OR_EDUCATIONAL_SIGNAL_RE = re.compile(
+    r"(?:\b(?:python|pandas|matplotlib|seaborn|plotly|numpy|snippet|example|tutorial|how to|what is|explain|difference)\b|\b(?:write|show|provide|generate)\s+code\b|\b(?:\u043d\u0430\u043f\u0438\u0448\u0438|\u043f\u043e\u043a\u0430\u0436\u0438|\u0434\u0430\u0439|\u043f\u0440\u0438\u0432\u0435\u0434\u0438)\s+\u043a\u043e\u0434\b|(?:\u043f\u0438\u0442\u043e\u043d|\u043f\u0440\u0438\u043c\u0435\u0440|\u043e\u0431\u044a\u044f\u0441\u043d|\u0447\u0442\u043e \u0442\u0430\u043a\u043e\u0435|\u0440\u0430\u0437\u043d\u0438\u0446))"
 )
 
 
@@ -40,12 +43,15 @@ def classify_top_level_intent(
         _EXPLICIT_FILE_REQUEST_RE.search(lowered)
         or _EXPLICIT_DATA_CONTEXT_RE.search(lowered)
     )
-    tabular_action_signal = bool(_TABULAR_ACTION_SIGNAL_RE.search(lowered))
-    strong_file_data_signal = bool(explicit_file_or_data_signal or tabular_action_signal)
+    tabular_structure_signal = bool(_TABULAR_STRUCTURE_SIGNAL_RE.search(lowered))
+    strong_file_data_signal = bool(explicit_file_or_data_signal or tabular_structure_signal)
+    coding_or_educational_signal = bool(_CODING_OR_EDUCATIONAL_SIGNAL_RE.search(lowered))
 
     if is_complex_analytics_query(text):
         if strong_file_data_signal:
             return "tabular_analytics"
+        if coding_or_educational_signal:
+            return "general_chat"
         return "general_chat"
 
     try:
@@ -57,6 +63,10 @@ def classify_top_level_intent(
         selected_route = ""
         requested_fields = []
         lookup_field_text = ""
+
+    prioritize_general_coding = bool(
+        coding_or_educational_signal and not strong_file_data_signal
+    )
 
     if selected_route == "schema_question":
         if strong_file_data_signal:
@@ -70,10 +80,16 @@ def classify_top_level_intent(
     temporal_grouping_signal = has_temporal_grouping_signal(text)
 
     if selected_route in {"chart", "comparison", "trend"}:
+        if prioritize_general_coding:
+            return "general_chat"
         if strong_file_data_signal or temporal_grouping_signal or requested_time_grain:
+            return "tabular_analytics"
+        if requested_fields:
             return "tabular_analytics"
         return "general_chat"
     if selected_route in {"overview", "aggregation", "unsupported_missing_column"}:
+        if prioritize_general_coding:
+            return "general_chat"
         if strong_file_data_signal:
             return "tabular_analytics"
         if selected_route in {"aggregation", "unsupported_missing_column"} and (

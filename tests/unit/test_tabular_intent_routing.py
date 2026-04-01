@@ -1,8 +1,11 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.chat import tabular_sql as tsql
 from app.services.chat.complex_analytics import composer
+from app.services.chat.tabular_query_parser import detect_legacy_tabular_intent, parse_tabular_query
 from app.services.tabular.sql_execution import ResolvedTabularDataset, ResolvedTabularTable
 
 
@@ -263,3 +266,29 @@ def test_tell_me_about_this_file_routes_to_schema_summary(monkeypatch):
     assert '"summary_statement"' in prompt_context
     assert '"relevant_fields"' in prompt_context
     assert '"next_question_suggestions"' in prompt_context
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "what fields and data in test_requests_460_rows.xlsx file?",
+        "get test_requests_460_rows.xlsx and show me the data there",
+        "can you read the file .xlsx and get me information about data there",
+        "what columns are in the file?",
+        (
+            "\u043a\u0430\u043a\u0438\u0435 \u0434\u0430\u043d\u043d\u044b\u0435 \u0432 \u0444\u0430\u0439\u043b\u0435 "
+            "test_requests_460_rows.xlsx \u0438 \u043a\u0430\u043a\u0438\u0435 \u0441\u0442\u043e\u043b\u0431\u0446\u044b"
+        ),
+    ],
+    ids=[
+        "en_explicit_filename_schema",
+        "en_explicit_filename_data_there",
+        "en_single_file_data_there",
+        "en_columns_in_file",
+        "ru_schema_parity",
+    ],
+)
+def test_multilingual_schema_file_queries_parse_to_schema_profile(query):
+    parsed = parse_tabular_query(query)
+    assert parsed.route == "schema_question"
+    assert detect_legacy_tabular_intent(query) == "profile"

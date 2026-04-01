@@ -2,6 +2,9 @@ import asyncio
 import uuid
 from types import SimpleNamespace
 
+import pytest
+
+import app.domain.chat.query_planner as planner_module
 from app.domain.chat.query_planner import (
     INTENT_NARRATIVE_RETRIEVAL,
     ROUTE_NARRATIVE_RETRIEVAL,
@@ -430,3 +433,121 @@ def test_no_file_refusal_for_generic_python_chart_how_to(monkeypatch):
     assert rag_debug["fallback_reason"] == "none"
     assert "There are no ready files in this chat" not in final_prompt
     assert "Attach a file to this chat" not in final_prompt
+
+
+@pytest.mark.parametrize(
+    ("query", "case_id"),
+    [
+        ("what fields and data in test_requests_460_rows.xlsx file?", "en_explicit_filename_schema"),
+        ("get test_requests_460_rows.xlsx and show me the data there", "en_explicit_filename_data_there"),
+        ("can you read the file .xlsx and get me information about data there", "en_single_file_data_there"),
+        ("what columns are in the file?", "en_columns_in_file"),
+        (
+            "\u043a\u0430\u043a\u0438\u0435 \u0434\u0430\u043d\u043d\u044b\u0435 \u0432 \u0444\u0430\u0439\u043b\u0435 "
+            "test_requests_460_rows.xlsx \u0438 \u043a\u0430\u043a\u0438\u0435 \u0441\u0442\u043e\u043b\u0431\u0446\u044b",
+            "ru_schema_parity",
+        ),
+    ],
+    ids=[
+        "en_explicit_filename_schema",
+        "en_explicit_filename_data_there",
+        "en_single_file_data_there",
+        "en_columns_in_file",
+        "ru_schema_parity",
+    ],
+)
+def test_attached_ready_tabular_schema_queries_do_not_fall_to_narrative_empty_retrieval(
+    monkeypatch,
+    query: str,
+    case_id: str,  # noqa: ARG001
+):
+    user_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    planner_calls = {"count": 0}
+    executed_queries = []
+
+    async def fake_get_conversation_files(db, conversation_id, user_id):  # noqa: ARG001
+        file_obj = _attached_ready_file(file_id=file_id, extension="xlsx")
+        file_obj.original_filename = "test_requests_460_rows.xlsx"
+        file_obj.stored_filename = "test_requests_460_rows.xlsx"
+        return [file_obj]
+
+    dataset = SimpleNamespace(
+        tables=[
+            SimpleNamespace(
+                table_name="sheet_1",
+                sheet_name="Sheet1",
+                columns=["office", "request_date", "status"],
+                column_aliases={},
+            )
+        ]
+    )
+
+    def fake_resolve_tabular_dataset(file_obj):  # noqa: ARG001
+        return dataset
+
+    def tracking_query_planner(*, query, files):  # noqa: ANN003
+        planner_calls["count"] += 1
+        return planner_module.plan_query(query=query, files=files)
+
+    async def fake_tabular_sql_executor(*, query, files):  # noqa: ANN003
+        executed_queries.append(query)
+        _ = files
+        return {
+            "status": "ok",
+            "prompt_context": "Deterministic schema/file summary context (source of truth).",
+            "debug": {
+                "retrieval_mode": "tabular_sql",
+                "intent": "tabular_profile",
+                "detected_intent": "schema_question",
+                "selected_route": "schema_question",
+                "tabular_sql": {
+                    "schema_payload": {
+                        "file_name": "test_requests_460_rows.xlsx",
+                        "tables_total": 1,
+                        "rows_total": 460,
+                        "columns": ["office", "request_date", "status"],
+                        "selected_scope": {"scope_label": "sheet=Sheet1"},
+                    }
+                },
+            },
+            "sources": ["test_requests_460_rows.xlsx | schema"],
+            "rows_expected_total": 460,
+            "rows_retrieved_total": 460,
+            "rows_used_map_total": 460,
+            "rows_used_reduce_total": 460,
+            "row_coverage_ratio": 1.0,
+        }
+
+    async def fail_query_rag(**kwargs):  # noqa: ANN003
+        raise AssertionError(f"query_rag must not run for schema/profile path: {kwargs.get('query')}")
+
+    monkeypatch.setattr(rag_builder.crud_file, "get_conversation_files", fake_get_conversation_files)
+    monkeypatch.setattr(planner_module, "resolve_tabular_dataset", fake_resolve_tabular_dataset)
+    monkeypatch.setattr(rag_builder, "execute_tabular_sql_path", fake_tabular_sql_executor)
+    monkeypatch.setattr(rag_builder.rag_retriever, "query_rag", fail_query_rag)
+
+    final_prompt, rag_used, rag_debug, _, _, _ = asyncio.run(
+        rag_builder.build_rag_prompt(
+            db=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            query=query,
+            top_k=8,
+            model_source="local",
+            rag_mode="auto",
+            query_planner=tracking_query_planner,
+        )
+    )
+
+    assert planner_calls["count"] == 1
+    assert executed_queries
+    assert rag_used is True
+    assert isinstance(final_prompt, str) and final_prompt
+    assert rag_debug["retrieval_mode"] == "tabular_sql"
+    assert rag_debug["selected_route"] == "schema_question"
+    assert rag_debug["fallback_type"] == "none"
+    assert rag_debug["fallback_reason"] == "none"
+    assert rag_debug["retrieval_mode"] != "narrative_no_retrieval"
+    assert rag_debug.get("controlled_response_state") != "no_retrieval"

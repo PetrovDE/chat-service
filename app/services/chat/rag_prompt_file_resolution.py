@@ -12,17 +12,12 @@ from app.services.chat.controlled_response_composer import (
     build_file_not_found_message,
     build_no_context_message as build_no_context_controlled_message,
 )
+from app.services.chat.file_reference_candidates import extract_filename_candidates
 
 logger = logging.getLogger(__name__)
 RagPromptResult = Tuple[str, bool, Optional[Dict[str, Any]], List[Dict[str, Any]], List[str], List[str]]
 READY_PROCESSING_STATUSES = {"ready", "completed", "partial_success", "partial_failed"}
 
-_QUOTED_FILENAME_TOKEN_RE = re.compile(
-    r"[\"'`\u00ab]([^\"'`\u00bb]{1,220}\.[A-Za-z0-9]{1,10})[\"'`\u00bb]"
-)
-_BARE_FILENAME_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u04510-9._\-])([A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u04510-9._\-\[\]()]{1,220}\.[A-Za-z0-9]{1,10})(?![A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u04510-9._\-])"
-)
 _STORED_PREFIX_RE = re.compile(r"^[0-9a-fA-F\-]{8,}_")
 
 
@@ -33,22 +28,6 @@ def _normalize_filename_token(value: str) -> str:
         text = text.split("/")[-1]
     text = re.sub(r"\s+", " ", text).strip().lower()
     return text
-
-
-def _extract_filename_candidates(query: str) -> List[str]:
-    candidates: List[str] = []
-    seen = set()
-    text = str(query or "")
-    raw_hits = list(_QUOTED_FILENAME_TOKEN_RE.findall(text))
-    raw_hits.extend(_BARE_FILENAME_TOKEN_RE.findall(text))
-    for raw in raw_hits:
-        value = str(raw or "").strip().strip(".,;:!?)]}\u00bb")
-        normalized = _normalize_filename_token(value)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        candidates.append(value)
-    return candidates
 
 
 def _collect_file_aliases(file_obj: Any) -> List[str]:
@@ -373,7 +352,10 @@ async def resolve_file_references(
     rag_mode: Optional[str],
     top_k: int,
 ) -> Tuple[List[Any], Dict[str, Any], Optional[RagPromptResult]]:
-    requested_file_names = _extract_filename_candidates(query)
+    requested_file_names = extract_filename_candidates(
+        query=query,
+        conversation_files=files,
+    )
     resolution_meta: Dict[str, Any] = {
         "detected_language": preferred_lang,
         "requested_file_names": requested_file_names,

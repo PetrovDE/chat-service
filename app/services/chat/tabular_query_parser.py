@@ -102,6 +102,62 @@ OVERVIEW_HINTS: Tuple[str, ...] = (
     _CYR_SHOW_METRICS,
 )
 
+FILE_REFERENCE_HINTS: Tuple[str, ...] = (
+    "file",
+    "files",
+    "dataset",
+    "spreadsheet",
+    "workbook",
+    "sheet",
+    "table",
+    "csv",
+    "tsv",
+    "xlsx",
+    "xls",
+)
+
+SCHEMA_OVERVIEW_PHRASE_HINTS: Tuple[str, ...] = (
+    "what fields",
+    "which fields",
+    "what data in",
+    "what data is in",
+    "what data are in",
+    "data in file",
+    "data there",
+    "show me the data there",
+    "information about data",
+    "information about the data",
+    "get me information about data",
+    "read the file and",
+    "read this file and",
+)
+
+CODING_CONTEXT_HINTS: Tuple[str, ...] = (
+    "python",
+    "pandas",
+    "numpy",
+    "matplotlib",
+    "seaborn",
+    "plotly",
+    "code",
+    "script",
+    "function",
+    "class",
+    "attributeerror",
+    "exception",
+    "traceback",
+)
+
+SCHEMA_STRONG_TERMS: Tuple[str, ...] = (
+    "schema",
+    "column",
+    "columns",
+    "field",
+    "fields",
+    "sheet",
+    "table",
+)
+
 CHART_HINTS: Tuple[str, ...] = (
     "chart",
     "graph",
@@ -227,11 +283,27 @@ def _dedupe(items: Sequence[Optional[str]]) -> List[str]:
     return out
 
 
+def _is_file_schema_overview_query(query_norm: str) -> bool:
+    q = str(query_norm or "").strip()
+    if not q:
+        return False
+    has_file_reference = any(hint in q for hint in FILE_REFERENCE_HINTS)
+    has_schema_overview_phrase = any(hint in q for hint in SCHEMA_OVERVIEW_PHRASE_HINTS)
+    if not (has_file_reference and has_schema_overview_phrase):
+        return False
+
+    coding_context = any(hint in q for hint in CODING_CONTEXT_HINTS)
+    strong_schema = any(hint in q for hint in SCHEMA_STRONG_TERMS)
+    if coding_context and not strong_schema:
+        return False
+    return True
+
+
 def detect_tabular_route(query: str) -> str:
     q = normalize_text(query)
     if not q:
         return "unknown"
-    if any(h in q for h in SCHEMA_HINTS):
+    if any(h in q for h in SCHEMA_HINTS) or _is_file_schema_overview_query(q):
         return "schema_question"
     if any(h in q for h in OVERVIEW_HINTS):
         return "overview"

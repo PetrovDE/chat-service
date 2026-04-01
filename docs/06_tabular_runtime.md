@@ -305,3 +305,21 @@ Compatibility:
 
 - API response envelope and `response_contract` fields are unchanged,
 - deterministic SQL execution, chart artifact delivery, and debug sections remain backward compatible.
+
+## Update 2026-04-01 (Follow-Up Analytics Routing Reliability)
+
+Deterministic tabular intent parsing now prioritizes the latest explicit follow-up refinement clause when
+the execution query contains composed follow-up context (`Follow-up refinement: ...`).
+
+Behavioral impact:
+
+- schema-first continuity is preserved, but follow-up analytical asks no longer get forced back to prior schema route,
+- natural aggregate wording for count-style ranking (for example "most records by X")
+  maps to deterministic aggregation intent with explicit grouping extraction,
+- combined aggregate+chart prompts favor a stable executable chart/aggregation field extraction path instead of
+  over-greedy clause capture.
+
+Compatibility:
+
+- external API envelope and debug contract remain additive/backward compatible,
+- deterministic entrypoint (`execute_tabular_sql_path(...)`) is unchanged.

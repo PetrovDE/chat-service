@@ -292,3 +292,57 @@ def test_multilingual_schema_file_queries_parse_to_schema_profile(query):
     parsed = parse_tabular_query(query)
     assert parsed.route == "schema_question"
     assert detect_legacy_tabular_intent(query) == "profile"
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_route", "expected_group_by", "expected_requested_field", "expected_operation"),
+    [
+        (
+            "what columns are in the file\nFollow-up refinement: show full description for each column",
+            "overview",
+            None,
+            None,
+            None,
+        ),
+        (
+            "\u043f\u043e \u043a\u0430\u043a\u043e\u043c\u0443 office \u0431\u043e\u043b\u044c\u0448\u0435 \u0432\u0441\u0435\u0433\u043e \u0437\u0430\u043f\u0438\u0441\u0435\u0439?",
+            "aggregation",
+            "office",
+            None,
+            "count",
+        ),
+        (
+            "\u0434\u0430\u0439 \u0433\u0440\u0430\u0444\u0438\u043a \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f \u0437\u0430\u043f\u0438\u0441\u0435\u0439 \u043f\u043e office",
+            "chart",
+            "office",
+            "office",
+            None,
+        ),
+        (
+            "\u043f\u043e \u043a\u0430\u043a\u043e\u043c\u0443 office \u0431\u043e\u043b\u044c\u0448\u0435 \u0432\u0441\u0435\u0433\u043e \u0437\u0430\u043f\u0438\u0441\u0435\u0439? "
+            "\u0434\u0430\u0439 \u0433\u0440\u0430\u0444\u0438\u043a \u0440\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f \u0437\u0430\u043f\u0438\u0441\u0435\u0439 \u043f\u043e office",
+            "chart",
+            "office",
+            "office",
+            "count",
+        ),
+    ],
+    ids=[
+        "followup_schema_detail_routes_overview",
+        "aggregate_most_records_by_dimension",
+        "chart_distribution_by_dimension",
+        "combined_aggregate_and_chart_prefers_dimension",
+    ],
+)
+def test_followup_analytics_queries_parse_to_expected_routes(
+    query: str,
+    expected_route: str,
+    expected_group_by: str | None,
+    expected_requested_field: str | None,
+    expected_operation: str | None,
+):
+    parsed = parse_tabular_query(query)
+    assert parsed.route == expected_route
+    assert parsed.group_by_field_text == expected_group_by
+    assert parsed.requested_field_text == expected_requested_field
+    assert parsed.operation == expected_operation

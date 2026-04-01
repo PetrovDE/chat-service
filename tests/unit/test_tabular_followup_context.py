@@ -1,4 +1,5 @@
 from app.services.chat.tabular_followup_context import apply_tabular_followup_context
+from app.services.chat.tabular_query_parser import parse_tabular_query
 
 
 def test_short_temporal_followup_reuses_prior_tabular_intent():
@@ -76,6 +77,41 @@ def test_column_description_followup_reuses_prior_schema_intent():
     assert result.prior_tabular_intent_reused is True
     assert "Follow-up refinement" in result.effective_query
     assert "what columns are in the file" in result.effective_query
+
+
+def test_column_description_followup_parses_as_overview_not_schema():
+    history = [
+        {"role": "user", "content": "what columns are in the file"},
+        {"role": "assistant", "content": "Here is the schema."},
+    ]
+
+    result = apply_tabular_followup_context(
+        query="show full description for each column",
+        conversation_history=history,
+    )
+    parsed = parse_tabular_query(result.effective_query)
+
+    assert result.followup_context_used is True
+    assert parsed.route == "overview"
+    assert parsed.legacy_intent == "profile"
+
+
+def test_analytics_followup_keeps_group_dimension_in_effective_query():
+    history = [
+        {"role": "user", "content": "what columns are in the file"},
+        {"role": "assistant", "content": "Columns include office and status."},
+    ]
+
+    result = apply_tabular_followup_context(
+        query="\u043f\u043e \u043a\u0430\u043a\u043e\u043c\u0443 office \u0431\u043e\u043b\u044c\u0448\u0435 \u0432\u0441\u0435\u0433\u043e \u0437\u0430\u043f\u0438\u0441\u0435\u0439?",
+        conversation_history=history,
+    )
+    parsed = parse_tabular_query(result.effective_query)
+
+    assert result.followup_context_used is True
+    assert parsed.route == "aggregation"
+    assert parsed.operation == "count"
+    assert parsed.group_by_field_text == "office"
 
 
 def test_coding_followup_does_not_hijack_tabular_context():

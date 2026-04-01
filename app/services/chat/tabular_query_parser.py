@@ -89,12 +89,20 @@ OVERVIEW_HINTS: Tuple[str, ...] = (
     "summary",
     "summarize table",
     "full analysis",
+    "full description",
+    "description for each column",
+    "show full description for each column",
     "analyze dataset",
     "column statistics",
     "per column",
+    "each column",
+    "each field",
     "dataset profile",
     "table summary",
     "dataset summary",
+    "\u043f\u043e\u043b\u043d\u043e\u0435 \u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435",
+    "\u043f\u043e \u043a\u0430\u0436\u0434\u043e\u043c\u0443 \u0441\u0442\u043e\u043b\u0431",
+    "\u043f\u043e \u043a\u0430\u0436\u0434\u043e\u0439 \u043a\u043e\u043b\u043e\u043d",
     _CYR_OVERVIEW,
     _CYR_GENERAL_ANALYSIS,
     _CYR_FULL_ANALYSIS,
@@ -229,6 +237,17 @@ MIN_HINTS: Tuple[str, ...] = ("min", _CYR_MIN)
 MAX_HINTS: Tuple[str, ...] = ("max", _CYR_MAX)
 
 GROUP_BY_HINTS: Tuple[str, ...] = ("group by", "by ", f"{_CYR_BY} ")
+COUNT_SUPERLATIVE_HINTS: Tuple[str, ...] = (
+    "most records",
+    "most rows",
+    "highest number of records",
+    "largest number of records",
+    "\u0431\u043e\u043b\u044c\u0448\u0435 \u0432\u0441\u0435\u0433\u043e \u0437\u0430\u043f\u0438\u0441",
+    "\u0431\u043e\u043b\u044c\u0448\u0435 \u0432\u0441\u0435\u0433\u043e \u0441\u0442\u0440\u043e\u043a",
+    "\u043c\u0430\u043a\u0441\u0438\u043c\u0443\u043c \u0437\u0430\u043f\u0438\u0441",
+    "\u043c\u0430\u043a\u0441\u0438\u043c\u0443\u043c \u0441\u0442\u0440\u043e\u043a",
+)
+FOLLOWUP_REFINEMENT_MARKER = "follow-up refinement:"
 
 GENERIC_FIELD_STOP_WORDS = {
     "month",
@@ -247,6 +266,16 @@ GENERIC_FIELD_STOP_WORDS = {
     _CYR_DAYS,
     _CYR_YEAR,
     _CYR_YEARS,
+    "records",
+    "record",
+    "rows",
+    "row",
+    "\u0437\u0430\u043f\u0438\u0441",
+    "\u0437\u0430\u043f\u0438\u0441\u0438",
+    "\u0437\u0430\u043f\u0438\u0441\u0435\u0439",
+    "\u0441\u0442\u0440\u043e\u043a\u0430",
+    "\u0441\u0442\u0440\u043e\u043a\u0438",
+    "\u0441\u0442\u0440\u043e\u043a",
 }
 
 
@@ -266,6 +295,19 @@ class ParsedTabularQuery:
 
 def normalize_text(text: str) -> str:
     return _NORM_RE.sub(" ", (text or "").lower()).strip()
+
+
+def _focus_query_text(query: str) -> str:
+    raw = str(query or "").strip()
+    if not raw:
+        return ""
+    if FOLLOWUP_REFINEMENT_MARKER not in raw.lower():
+        return raw
+    matches = re.findall(r"follow-up refinement:\s*(.+)", raw, flags=re.IGNORECASE)
+    if matches:
+        return str(matches[-1]).strip()
+    lines = [str(item).strip() for item in raw.splitlines() if str(item).strip()]
+    return str(lines[-1]).strip() if lines else raw
 
 
 def _dedupe(items: Sequence[Optional[str]]) -> List[str]:
@@ -299,14 +341,14 @@ def _is_file_schema_overview_query(query_norm: str) -> bool:
     return True
 
 
-def detect_tabular_route(query: str) -> str:
-    q = normalize_text(query)
+def _detect_route_for_normalized_query(query_norm: str) -> str:
+    q = str(query_norm or "").strip()
     if not q:
         return "unknown"
-    if any(h in q for h in SCHEMA_HINTS) or _is_file_schema_overview_query(q):
-        return "schema_question"
     if any(h in q for h in OVERVIEW_HINTS):
         return "overview"
+    if any(h in q for h in SCHEMA_HINTS) or _is_file_schema_overview_query(q):
+        return "schema_question"
     if any(h in q for h in CHART_HINTS):
         return "chart"
     if has_temporal_grouping_signal(q):
@@ -317,8 +359,22 @@ def detect_tabular_route(query: str) -> str:
         return "comparison"
     if any(h in q for h in FILTERING_HINTS):
         return "filtering"
+    if any(h in q for h in COUNT_SUPERLATIVE_HINTS):
+        return "aggregation"
     if any(h in q for h in (COUNT_HINTS + SUM_HINTS + AVG_HINTS + MIN_HINTS + MAX_HINTS)):
         return "aggregation"
+    return "unknown"
+
+
+def detect_tabular_route(query: str) -> str:
+    q_full = normalize_text(query)
+    if not q_full:
+        return "unknown"
+    q_focus = normalize_text(_focus_query_text(query))
+    for candidate in _dedupe([q_focus, q_full]):
+        detected = _detect_route_for_normalized_query(candidate)
+        if detected != "unknown":
+            return detected
     return "unknown"
 
 
@@ -334,19 +390,21 @@ def detect_legacy_tabular_intent(query: str) -> Optional[str]:
 
 
 def detect_operation(query: str) -> Optional[str]:
-    q = normalize_text(query)
-    if not q:
-        return None
-    if any(h in q for h in SUM_HINTS):
-        return "sum"
-    if any(h in q for h in AVG_HINTS):
-        return "avg"
-    if any(h in q for h in MIN_HINTS):
-        return "min"
-    if any(h in q for h in MAX_HINTS):
-        return "max"
-    if any(h in q for h in COUNT_HINTS):
-        return "count"
+    q_full = normalize_text(query)
+    q_focus = normalize_text(_focus_query_text(query))
+    for q in _dedupe([q_focus, q_full]):
+        if not q:
+            continue
+        if any(h in q for h in SUM_HINTS):
+            return "sum"
+        if any(h in q for h in AVG_HINTS):
+            return "avg"
+        if any(h in q for h in MIN_HINTS):
+            return "min"
+        if any(h in q for h in MAX_HINTS):
+            return "max"
+        if any(h in q for h in (COUNT_HINTS + COUNT_SUPERLATIVE_HINTS)):
+            return "count"
     return None
 
 
@@ -362,8 +420,63 @@ def _truncate_clause(candidate: str) -> str:
     return normalize_text(text)
 
 
+def _clean_field_candidate(candidate: str) -> str:
+    text = _truncate_clause(candidate)
+    if not text:
+        return ""
+    text = re.sub(r"\b(show|build|plot|graph|chart|give|draw|display)\b.*$", " ", text)
+    text = re.sub(r"\b(\u0434\u0430\u0439|\u043f\u043e\u043a\u0430\u0436\u0438|\u043f\u043e\u0441\u0442\u0440\u043e\u0439)\b.*$", " ", text)
+    text = re.sub(r"^(which|what|the|a|an|for|by)\s+", "", text)
+    text = re.sub(
+        r"^(?:\u043a\u0430\u043a\u043e\u043c\u0443|\u043a\u0430\u043a\u043e\u0439|\u043a\u0430\u043a\u0430\u044f|\u043a\u0430\u043a\u0438\u0435)\s+",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"\b(?:most|highest|largest)\s+(?:records?|rows?)\b.*$",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"\b(?:\u0431\u043e\u043b\u044c\u0448\u0435\s+\u0432\u0441\u0435\u0433\u043e|\u043c\u0430\u043a\u0441\u0438\u043c\u0443\u043c)\s+(?:\u0437\u0430\u043f\u0438\u0441\w*|\u0441\u0442\u0440\u043e\u043a\w*)\b.*$",
+        "",
+        text,
+    )
+    text = normalize_text(text)
+    if not text:
+        return ""
+    tokens = [token for token in text.split(" ") if token]
+    while tokens and tokens[0] in {
+        "which",
+        "what",
+        "column",
+        "columns",
+        "field",
+        "fields",
+        "for",
+        "by",
+        "\u043a\u0430\u043a\u043e\u043c\u0443",
+        "\u043a\u0430\u043a\u043e\u0439",
+        "\u043a\u0430\u043a\u0430\u044f",
+        "\u043a\u0430\u043a\u0438\u0435",
+        "\u0441\u0442\u043e\u043b\u0431\u0435\u0446",
+        "\u0441\u0442\u043e\u043b\u0431\u0446\u044b",
+        "\u043a\u043e\u043b\u043e\u043d\u043a\u0430",
+        "\u043a\u043e\u043b\u043e\u043d\u043a\u0438",
+    }:
+        tokens.pop(0)
+    while tokens and tokens[-1] in GENERIC_FIELD_STOP_WORDS:
+        tokens.pop()
+    if not tokens or len(tokens) > 8:
+        return ""
+    normalized = " ".join(tokens).strip()
+    if not normalized or normalized in GENERIC_FIELD_STOP_WORDS:
+        return ""
+    return normalized
+
+
 def _extract_field_after_preposition(query: str) -> Optional[str]:
-    q = normalize_text(query)
+    q = normalize_text(_focus_query_text(query))
     if not q:
         return None
     patterns = (
@@ -371,21 +484,21 @@ def _extract_field_after_preposition(query: str) -> Optional[str]:
         rf"\b{_CYR_BY}\s+({_TEXT_PATTERN}{{2,120}})",
         rf"\bfor\s+({_TEXT_PATTERN}{{2,120}})",
     )
+    candidates: List[str] = []
     for pattern in patterns:
-        match = re.search(pattern, q)
-        if not match:
-            continue
-        candidate = _truncate_clause(str(match.group(1) or ""))
-        if not candidate or candidate in GENERIC_FIELD_STOP_WORDS:
-            continue
-        return candidate
-    return None
+        for match in re.finditer(pattern, q):
+            candidate = _clean_field_candidate(str(match.group(1) or ""))
+            if not candidate:
+                continue
+            candidates.append(candidate)
+    deduped = _dedupe(candidates)
+    return deduped[-1] if deduped else None
 
 
 def _extract_operation_field(query: str, operation: Optional[str]) -> Optional[str]:
     if operation not in {"sum", "avg", "min", "max"}:
         return None
-    q = normalize_text(query)
+    q = normalize_text(_focus_query_text(query))
     if not q:
         return None
     operation_patterns = {
@@ -398,14 +511,14 @@ def _extract_operation_field(query: str, operation: Optional[str]) -> Optional[s
     match = re.search(pattern, q)
     if not match:
         return None
-    candidate = _truncate_clause(str(match.group(3) or ""))
+    candidate = _clean_field_candidate(str(match.group(3) or ""))
     if not candidate:
         return None
     return candidate
 
 
 def _extract_group_by_field(query: str) -> Optional[str]:
-    q = normalize_text(query)
+    q = normalize_text(_focus_query_text(query))
     if not q:
         return None
     patterns = (
@@ -413,19 +526,19 @@ def _extract_group_by_field(query: str) -> Optional[str]:
         rf"\bby\s+({_TEXT_PATTERN}{{2,120}})",
         rf"\b{_CYR_BY}\s+({_TEXT_PATTERN}{{2,120}})",
     )
+    candidates: List[str] = []
     for pattern in patterns:
-        match = re.search(pattern, q)
-        if not match:
-            continue
-        candidate = _truncate_clause(str(match.group(1) or ""))
-        if not candidate or candidate in GENERIC_FIELD_STOP_WORDS:
-            continue
-        return candidate
-    return None
+        for match in re.finditer(pattern, q):
+            candidate = _clean_field_candidate(str(match.group(1) or ""))
+            if not candidate:
+                continue
+            candidates.append(candidate)
+    deduped = _dedupe(candidates)
+    return deduped[-1] if deduped else None
 
 
 def _extract_metric_before_grouping(query: str) -> Optional[str]:
-    q = normalize_text(query)
+    q = normalize_text(_focus_query_text(query))
     if not q:
         return None
     patterns = (
@@ -441,9 +554,7 @@ def _extract_metric_before_grouping(query: str) -> Optional[str]:
         match = re.search(pattern, q)
         if not match:
             continue
-        candidate = _truncate_clause(str(match.group(1) or ""))
-        candidate = re.sub(r"\b(show|build|plot|graph|chart|a|an|the|distribution|trend|group)\b", " ", candidate)
-        candidate = normalize_text(candidate)
+        candidate = _clean_field_candidate(str(match.group(1) or ""))
         if not candidate or candidate in GENERIC_FIELD_STOP_WORDS:
             continue
         return candidate
@@ -451,7 +562,7 @@ def _extract_metric_before_grouping(query: str) -> Optional[str]:
 
 
 def _extract_lookup_components(query: str) -> Tuple[Optional[str], Optional[str]]:
-    q = str(query or "").strip()
+    q = str(_focus_query_text(query) or "").strip()
     if not q:
         return None, None
 
@@ -474,22 +585,31 @@ def _extract_lookup_components(query: str) -> Tuple[Optional[str], Optional[str]
 
 
 def parse_tabular_query(query: str) -> ParsedTabularQuery:
+    focused_query = _focus_query_text(query)
     route = detect_tabular_route(query)
     legacy_intent = detect_legacy_tabular_intent(query)
     operation = detect_operation(query)
-    requested_time_grain = detect_requested_time_grain(query)
-    source_datetime_field_hint = extract_datetime_source_hint(query) if requested_time_grain else None
-    group_by_field_text = _extract_group_by_field(query)
-    lookup_field_text, lookup_value_text = _extract_lookup_components(query)
+    requested_time_grain = detect_requested_time_grain(focused_query)
+    source_datetime_field_hint = extract_datetime_source_hint(focused_query) if requested_time_grain else None
+    group_by_field_text: Optional[str] = None
+    lookup_field_text: Optional[str] = None
+    lookup_value_text: Optional[str] = None
+    if route in {"aggregation", "chart", "trend", "comparison"}:
+        group_by_field_text = _extract_group_by_field(focused_query)
+    if route == "filtering":
+        lookup_field_text, lookup_value_text = _extract_lookup_components(focused_query)
 
     requested_field_text: Optional[str] = None
     if route in {"chart", "trend", "comparison"}:
         if requested_time_grain:
-            requested_field_text = _extract_metric_before_grouping(query) or _extract_operation_field(query, operation)
+            requested_field_text = _extract_metric_before_grouping(focused_query) or _extract_operation_field(
+                focused_query,
+                operation,
+            )
         else:
-            requested_field_text = _extract_field_after_preposition(query)
+            requested_field_text = _extract_field_after_preposition(focused_query)
     elif route == "aggregation":
-        requested_field_text = _extract_operation_field(query, operation)
+        requested_field_text = _extract_operation_field(focused_query, operation)
     elif route == "filtering":
         requested_field_text = lookup_field_text
 

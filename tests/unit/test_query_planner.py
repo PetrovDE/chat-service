@@ -56,6 +56,33 @@ def test_planner_routes_aggregate_query_to_deterministic():
     )
     assert decision.route == ROUTE_DETERMINISTIC_ANALYTICS
     assert decision.intent == INTENT_TABULAR_AGGREGATE
+
+
+def test_planner_routes_russian_schema_filename_query_to_profile(monkeypatch):
+    from app.domain.chat import query_planner as planner_module
+
+    dataset = SimpleNamespace(
+        tables=[
+            SimpleNamespace(
+                table_name="sheet_1",
+                sheet_name="Sheet1",
+                row_count=460,
+                columns=["office", "status"],
+                column_aliases={},
+            )
+        ]
+    )
+    monkeypatch.setattr(planner_module, "resolve_tabular_dataset", lambda _file: dataset)
+
+    decision = plan_query(
+        query=(
+            "\u043a\u0430\u043a\u0438\u0435 \u0434\u0430\u043d\u043d\u044b\u0435 \u0432 \u0444\u0430\u0439\u043b\u0435 "
+            "test_requests_460_rows.xlsx \u0438 \u043a\u0430\u043a\u0438\u0435 \u0441\u0442\u043e\u043b\u0431\u0446\u044b"
+        ),
+        files=[_tabular_file()],
+    )
+    assert decision.route == ROUTE_DETERMINISTIC_ANALYTICS
+    assert decision.intent == INTENT_TABULAR_PROFILE
     assert decision.requires_clarification is False
 
 

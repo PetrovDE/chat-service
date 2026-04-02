@@ -558,6 +558,14 @@ def test_attached_ready_tabular_schema_queries_do_not_fall_to_narrative_empty_re
     ("query", "expected_route", "history"),
     [
         (
+            "show full description for each column",
+            "overview",
+            [
+                {"role": "user", "content": "what fields and data in test_requests_460_rows.xlsx file?"},
+                {"role": "assistant", "content": "office, status, calc_need_spravka"},
+            ],
+        ),
+        (
             "\u043f\u043e\u043a\u0430\u0436\u0438 \u043f\u043e\u043b\u043d\u043e\u0435 \u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435 \u043f\u043e \u043a\u0430\u0436\u0434\u043e\u043c\u0443 \u0441\u0442\u043e\u043b\u0431\u0446\u0443",
             "overview",
             [
@@ -592,6 +600,7 @@ def test_attached_ready_tabular_schema_queries_do_not_fall_to_narrative_empty_re
         ),
     ],
     ids=[
+        "schema_followup_full_description_en",
         "schema_followup_full_description",
         "schema_to_aggregation_followup",
         "chart_distribution_followup",
@@ -709,3 +718,5 @@ def test_attached_ready_tabular_followups_do_not_downgrade_to_narrative(
     assert rag_debug["fallback_reason"] == "none"
     assert rag_debug["retrieval_mode"] != "narrative_no_retrieval"
     assert rag_debug.get("controlled_response_state") != "no_retrieval"
+    if expected_route in {"aggregation", "chart"}:
+        assert "columns:" not in final_prompt.lower()

@@ -379,6 +379,67 @@ def test_schema_to_analytics_followup_does_not_repeat_schema(monkeypatch):
     assert "columns:" not in result.response.lower()
 
 
+def test_chart_analytics_answer_not_overwritten_by_schema_or_file_access_denial(monkeypatch):
+    orchestrator = ChatOrchestrator()
+    conversation_id = uuid.uuid4()
+    ctx = _build_context(
+        conversation_id,
+        selected_route="chart",
+        retrieval_mode="tabular_sql",
+        execution_route="tabular_sql",
+    )
+
+    async def fake_prepare_context(*, chat_data, db, user_id):  # noqa: ARG001
+        return ctx
+
+    async def fake_create_message(
+        db,  # noqa: ARG001
+        conversation_id,  # noqa: ARG001
+        role,  # noqa: ARG001
+        content,  # noqa: ARG001
+        model_name,  # noqa: ARG001
+        temperature,  # noqa: ARG001
+        max_tokens,  # noqa: ARG001
+        tokens_used=None,  # noqa: ARG001
+        generation_time=None,  # noqa: ARG001
+    ):
+        return SimpleNamespace(id=uuid.uuid4())
+
+    async def fake_generate_response(**kwargs):  # noqa: ANN003
+        prompt = str(kwargs.get("prompt") or "")
+        if "Evidence-grounded answer composition task." in prompt:
+            return _llm_payload(
+                "office has the highest count in the current file context; distribution chart by office is prepared."
+            )
+        return _llm_payload("Columns: office, status. I cannot access attached files in this environment.")
+
+    monkeypatch.setattr(orchestrator, "_prepare_request_context", fake_prepare_context)
+    monkeypatch.setattr("app.services.chat.orchestrator_runtime.crud_message.create_message", fake_create_message)
+    monkeypatch.setattr("app.services.chat.orchestrator_runtime.llm_manager.generate_response", fake_generate_response)
+    monkeypatch.setattr("app.services.chat.evidence_answer_gate.llm_manager.generate_response", fake_generate_response)
+
+    result = asyncio.run(
+        orchestrator.chat(
+            chat_data=ChatMessage(
+                message="which office has most records? give distribution chart by office",
+                conversation_id=conversation_id,
+                model_source="local",
+                provider_mode="explicit",
+                rag_debug=True,
+            ),
+            db=object(),
+            current_user=None,
+        )
+    )
+
+    response_lower = result.response.lower()
+    assert "office has the highest count" in response_lower
+    assert "distribution chart by office" in response_lower
+    assert "cannot access attached files" not in response_lower
+    assert "columns:" not in response_lower
+    assert result.rag_debug["evidence_gate_mode"] == "llm_compose"
+
+
 def test_attached_file_unrelated_coding_question_keeps_general_answer(monkeypatch):
     orchestrator = ChatOrchestrator()
     conversation_id = uuid.uuid4()

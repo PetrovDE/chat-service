@@ -56,9 +56,9 @@ _CYR_DAYS = "\u0434\u043d\u0438"
 _CYR_YEAR = "\u0433\u043e\u0434"
 _CYR_YEARS = "\u0433\u043e\u0434\u044b"
 
-_TEXT_PATTERN = r"[a-z\u0430-\u044f\u04510-9_ ]"
-_VALUE_PATTERN = r"[a-z\u0430-\u044f\u04510-9_./:\\-]"
-_NORM_RE = re.compile(r"[^a-z\u0430-\u044f\u04510-9]+")
+_TEXT_PATTERN = "[a-z\u0430-\u044f\u04510-9_ ]"
+_VALUE_PATTERN = "[a-z\u0430-\u044f\u04510-9_./:\\-]"
+_NORM_RE = re.compile("[^a-z\u0430-\u044f\u04510-9]+")
 
 
 SCHEMA_HINTS: Tuple[str, ...] = (

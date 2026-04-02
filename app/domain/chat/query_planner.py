@@ -133,7 +133,7 @@ class QueryPlanDecision:
 
 
 def _norm(text: str) -> str:
-    return re.sub(r"[^a-z\u0430-\u044f\u04510-9]+", " ", (text or "").lower()).strip()
+    return re.sub("[^a-z\u0430-\u044f\u04510-9]+", " ", (text or "").lower()).strip()
 
 
 def _is_tabular_file(file_obj: Any) -> bool:
